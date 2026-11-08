@@ -1,0 +1,240 @@
+"""Every mode, fed a test signal through the same interface the window uses.
+
+    python3 -m pytest tests
+"""
+
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import signals  # noqa: E402
+from sdr_toolkit.engines.morse.synth import transmission as morse_tx  # noqa: E402
+from sdr_toolkit.engines.navtex import encode as navtex_words  # noqa: E402
+from sdr_toolkit.engines.navtex import to_audio as navtex_audio  # noqa: E402
+from sdr_toolkit.engines.psk import encode_bits, to_audio as psk_audio  # noqa: E402
+from sdr_toolkit.engines.sstv.modes import BY_NAME  # noqa: E402
+from sdr_toolkit.engines.sstv.synth import color_bars, encode as sstv_encode  # noqa: E402
+from sdr_toolkit.engines.wefax import to_audio as wefax_audio  # noqa: E402
+from sdr_toolkit.modes import MODES  # noqa: E402
+
+BY_ID = {M.id: M for M in MODES}
+
+
+def run(mode_id, audio, chunk=0.05, start_time=1_800_000_000.0, **values):
+    mode = BY_ID[mode_id]()
+    v = dict(mode.values)
+    v.update(values)
+    mode.start(v)
+    events = []
+    n = max(int(chunk * mode.rate), 1)
+    for i in range(0, len(audio), n):
+        events += mode.feed(audio[i : i + n], start_time + (i + n) / mode.rate)
+        events += mode.poll()
+    events += mode.stop()
+    return mode, events
+
+
+def lines(events):
+    return [e.text for e in events if e.kind == "line"]
+
+
+def text(events):
+    return "\n".join(lines(events))
+
+
+def pad(a, rate, before=0.5, after=1.5, level=0.0):
+    out = np.concatenate([np.zeros(int(before * rate), np.float32), a, np.zeros(int(after * rate), np.float32)])
+    return out + signals.noise(len(out), level) if level else out
+
+
+def test_every_mode_has_tuning_help_and_settings():
+    for M in MODES:
+        m = M()
+        assert m.tuning.sdr_mode and m.tuning.bandwidth and m.summary, m.id
+        for s in m.settings:
+            assert s.key in m.values
+            if s.kind == "choice":
+                assert any(v == s.default for v, _ in s.choices), (m.id, s.key)
+
+
+@pytest.mark.parametrize("tone", [600, 700, 850])
+def test_morse_at_any_tone(tone):
+    a = morse_tx("CQ TEST DE VK2ABC", 25, 20)                     # made at 700 Hz
+    a = signals.resample(a, 8000, 8000)
+    if tone != 700:
+        # Move the whole signal: mix with a carrier and keep the upper sideband.
+        from scipy.signal import hilbert
+        t = np.arange(len(a)) / 8000
+        a = np.real(hilbert(a) * np.exp(2j * np.pi * (tone - 700) * t)).astype(np.float32)
+    _, ev = run("morse", pad(a, 8000, after=3), tone=tone, speed="any")
+    assert "CQ TEST DE VK2ABC" in text(ev)
+
+
+def test_morse_misses_a_signal_off_its_tone():
+    a = morse_tx("PARIS", 30, 20)
+    _, ev = run("morse", pad(a, 8000, after=3), tone=1200)
+    assert "PARIS" not in text(ev)
+
+
+@pytest.mark.parametrize("mark,shift,baud", [(2125, 170, 45.45), (1500, 450, 50.0), (2000, 850, 75.0)])
+def test_rtty(mark, shift, baud):
+    a = signals.rtty("RYRY CQ DE VK2ABC 599 TEST 73", 8000, mark, shift, baud)
+    _, ev = run("rtty", pad(a, 8000, level=0.05), mark=mark, shift=shift, baud=baud)
+    out = text(ev) + "".join(e.text for e in ev if e.kind == "live")[-200:]
+    assert "CQ DE VK2ABC 599 TEST 73" in out
+
+
+def test_rtty_reverse():
+    a = signals.rtty("THE QUICK BROWN FOX", 8000, 2295, -170)        # space below mark
+    _, ev = run("rtty", pad(a, 8000), mark=2295, reverse=True)
+    assert "THE QUICK BROWN FOX" in "".join(e.text for e in ev if e.kind in ("line", "live"))
+
+
+@pytest.mark.parametrize("baud", [31.25, 62.5, 125.0])
+def test_psk(baud):
+    msg = "CQ CQ de VK2ABC pse k"
+    a = psk_audio(encode_bits(msg + "\n"), 8000, 1503, baud)
+    _, ev = run("psk", pad(a, 8000, level=0.05), freq=1500, baud=baud)
+    assert msg in text(ev)
+
+
+def test_psk_click_to_tune():
+    m = BY_ID["psk"]()
+    m.start(dict(m.values))
+    assert m.set_frequency(1234.4) == "freq" and m.values["freq"] == 1234 and m.dec.freq == 1234
+
+
+def test_navtex_filters_stations():
+    words = navtex_words("ZCZC EA01\r\nGALE WARNING\r\nNNNN\r\n") + \
+        navtex_words("ZCZC KB02\r\nOTHER\r\nNNNN\r\n", phasing_s=0.5)
+    a = pad(navtex_audio(words, 8000), 8000, level=0.1)
+    _, ev = run("navtex", a)
+    assert "GALE WARNING" in text(ev) and "OTHER" in text(ev)
+    _, ev = run("navtex", a, stations="E")
+    assert "GALE WARNING" in text(ev) and "OTHER" not in text(ev)
+
+
+def test_navtex_reversed_bit_order_and_polarity():
+    words = navtex_words("ZCZC EA01\r\nGALE WARNING\r\nNNNN\r\n")
+    a = pad(navtex_audio(words, 8000, lsb_first=True, invert=True), 8000)
+    _, ev = run("navtex", a)
+    assert "GALE WARNING" in text(ev)
+
+
+def test_sstv(tmp_path):
+    mode = BY_NAME["Robot 36"]
+    a = pad(sstv_encode(color_bars(320, 240), mode), 12000)
+    _, ev = run("sstv", a, folder=str(tmp_path))
+    done = [e for e in ev if e.kind == "image" and e.done]
+    assert len(done) == 1 and "complete" in done[0].title
+    assert len(list(tmp_path.glob("*_Robot36.png"))) == 1
+
+
+def test_wefax(tmp_path):
+    img = np.tile(np.linspace(0, 255, 1810).astype(np.uint8), (60, 1))
+    a = pad(wefax_audio(img, 12000), 12000, after=3)
+    m, ev = run("wefax", a, folder=str(tmp_path))
+    done = [e for e in ev if e.kind == "image" and e.done]
+    assert len(done) == 1
+    rows = done[0].image[:, :, 0].astype(int)
+    assert 55 <= len(rows) <= 62
+    assert np.abs(rows[5:50] - img[0]).mean() < 8
+    assert len(list(tmp_path.glob("*_WEFAX.png"))) == 1
+
+
+def test_tones():
+    d = signals.dcs(0o023, 4)
+    with_dcs = d + signals.ctcss_voice(0, 5)[: len(d)]      # voice without a CTCSS tone
+    a = np.concatenate([signals.dtmf("123#"), np.zeros(8000 * 3, np.float32),
+                        signals.ctcss_voice(88.5, 4), np.zeros(8000 * 2, np.float32), with_dcs])
+    _, ev = run("tones", a)
+    out = text(ev)
+    assert "DTMF  123#" in out
+    assert "CTCSS 88.5 Hz" in out
+    assert "DCS D023N" in out
+
+
+def test_aprs():
+    a = signals.aprs_packets(48000)
+    _, ev = run("aprs", pad(a, 48000))
+    pk = [t for t in lines(ev) if "WB2OSZ-15>TEST" in t]
+    assert len(pk) == 4
+
+
+@pytest.mark.parametrize("baud", [512, 1200, 2400])
+def test_pager(baud):
+    a = signals.resample(signals.pocsag(1234567, "HELLO PAGER 42", baud), 22050, 22050)
+    _, ev = run("pager", pad(a, 22050))
+    rows = [e.data for e in ev if e.kind == "row"]
+    assert any(r["address"] == "1234567" and r["message"] == "HELLO PAGER 42" and
+               r["proto"] == f"POCSAG{baud}" for r in rows), rows
+
+
+def test_pager_address_filter_and_invert():
+    a = pad(signals.pocsag(1234567, "INVERTED", 1200, invert=True), 22050)
+    _, ev = run("pager", a)
+    assert not [e for e in ev if e.kind == "row" and e.data["message"] == "INVERTED"]
+    _, ev = run("pager", a, invert=True)
+    assert [e for e in ev if e.kind == "row" and e.data["message"] == "INVERTED"]
+    _, ev = run("pager", a, invert=True, only="7654321")
+    assert not [e for e in ev if e.kind == "row"]
+
+
+def _wsjt(mode_id, slot_audio, period, **values):
+    """Feed one slot (plus a little either side) on the wall clock it belongs to."""
+    start = 1_800_000_000.0 - 1_800_000_000.0 % period + period     # a slot boundary
+    a = np.concatenate([np.zeros(12000, np.float32), slot_audio, np.zeros(int(period * 12000), np.float32)])
+    mode = BY_ID[mode_id]()
+    v = dict(mode.values)
+    v.update(values)
+    mode.start(v)
+    events = []
+    n = 600
+    for i in range(0, len(a), n):
+        events += mode.feed(a[i : i + n], start - 1.0 + (i + n) / 12000)
+        events += mode.poll()
+    deadline = time.time() + 30
+    while time.time() < deadline and mode._busy:
+        time.sleep(0.2)
+        events += mode.poll()
+    events += mode.stop()
+    return mode, events
+
+
+def test_ft8():
+    slot = signals.ft8("CQ VK2ABC QF56", 1200, -10)
+    mode, ev = _wsjt("ft8", slot, 15.0, auto_delay=False)
+    rows = [e.data for e in ev if e.kind == "row"]
+    assert [r["message"] for r in rows] == ["CQ VK2ABC QF56"]
+    assert abs(rows[0]["freq"] - 1200) < 5 and abs(rows[0]["dt"]) < 0.5
+
+
+def test_ft8_audio_delay_followed():
+    # The audio arrives 1.5 s late (a WebSDR stream); Follow DT moves the delay.
+    slot = np.concatenate([np.zeros(18000, np.float32), signals.ft8("CQ VK2ABC QF56", 1500, -5)])[:180000]
+    mode, ev = _wsjt("ft8", slot, 15.0, auto_delay=True)
+    rows = [e.data for e in ev if e.kind == "row"]
+    assert rows and abs(rows[0]["dt"] - 1.5) < 0.3
+    assert 0.8 < mode.values["delay"] < 1.6
+    assert [e for e in ev if e.kind == "setting"]
+
+
+def test_ft4():
+    slot = signals.ft4("CQ VK2ABC QF56", 1000)
+    _, ev = _wsjt("ft4", slot, 7.5, auto_delay=False)
+    assert [e.data["message"] for e in ev if e.kind == "row"] == ["CQ VK2ABC QF56"]
+
+
+@pytest.mark.parametrize("mode_id", ["morse", "rtty", "psk", "navtex", "tones"])
+def test_quiet_on_noise(mode_id):
+    # Noise (a receiver with nothing on frequency) must not print text.
+    rate = BY_ID[mode_id].rate
+    _, ev = run(mode_id, signals.noise(rate * 20, 0.1, seed=3))
+    printed = "".join(e.text for e in ev if e.kind in ("line", "live")).strip()
+    assert len(printed) <= 2, printed

@@ -1,0 +1,19 @@
+[project]
+name = "sdr-toolkit"
+version = "0.1.0"
+description = "Decoders for amateur and utility radio data modes, fed by any audio playing on an Ubuntu desktop"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "pyqt6>=6.7",
+    "pillow>=10",
+]
+
+[project.scripts]
+sdr-toolkit = "sdr_toolkit.main:main"
+
+[build-system]
+requires = ["uv_build>=0.8,<0.13.0"]
+build-backend = "uv_build"
