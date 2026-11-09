@@ -25,18 +25,44 @@ and receivers. Click a signal on the waterfall to tune the decoder to it.
 
 Pictures go to `~/Pictures/SSTV` and `~/Pictures/WEFAX` (changeable).
 
-**Phase 2 (planned):** modes that need raw radio samples from the RTL-SDR rather than audio: ADS-B,
-UAT, ISM sensors (rtl_433), LoRa / Meshtastic / MeshCore, DMR and P25 voice, trunk tracking (driving
-SDRTrunk), Mobitex. A WebSDR can't carry these: they are wider than an audio channel, or need the
-receiver to be retuned.
+## Modes (phase 2: RTL-SDR)
+
+These need the radio samples themselves, which a WebSDR can't give: the toolkit runs the RTL-SDR
+directly. Each can also read an **IQ recording** instead (unsigned 8-bit, as `rtl_sdr` writes
+it), set under **Settings → Input**: handy without a dongle, or to decode something again.
+
+| Mode | Decoder | Adjustable |
+|---|---|---|
+| ISM sensors (433/868/915/315 MHz) | rtl_433 | frequency or several to hop between, sample rate, protocol filter |
+| ADS-B aircraft (1090 MHz) | readsb | your position (for distance and bearing), units, how long aircraft stay listed |
+| AIS ships (161.975 / 162.025 MHz) | rtl_fm + direwolf | channel, NMEA display |
+| LoRa / Meshtastic / MeshCore | gr-lora_sdr (built separately, see below) | network preset, region, frequency, SF/BW/CR/sync word, channel keys |
+
+Every RTL-SDR mode also has device, gain and ppm correction settings. With no dongle plugged in
+it says so instead of hanging.
+
+**LoRa** decodes Meshtastic texts, positions and node names on the default channel (key `AQ==`, and
+any private channel you add the key for), and MeshCore adverts and Public channel texts. MeshCore
+direct messages are end-to-end encrypted and show only as sender → receiver. The LoRa demodulator is
+[gr-lora_sdr](https://github.com/tapparelj/gr-lora_sdr) (EPFL), which isn't packaged for Ubuntu:
+
+```bash
+scripts/build-gr-lora-sdr.sh      # a few minutes; installs into ~/.local/share/sdr-toolkit
+```
+
+**Not done yet:** DMR and P25 (Ubuntu's DSDcc gives false DMR frames on plain noise and has no P25;
+DSD-FME is the candidate, built from source like gr-lora_sdr), UAT 978 MHz (US only; dump978 isn't
+packaged), trunk tracking through SDRTrunk, and Mobitex (no open decoder known).
 
 ## Install
 
-Needs Ubuntu with PipeWire and `python3-numpy python3-scipy python3-pyqt6 python3-pil`; FT8/FT4,
-APRS and pagers also need `wsjtx direwolf multimon-ng` (the app tells you if one is missing).
+Needs Ubuntu with PipeWire and `python3-numpy python3-scipy python3-pyqt6 python3-pil
+python3-cryptography`. The modes that use outside decoders need them installed (the app tells you if
+one is missing).
 
 ```bash
-sudo apt install wsjtx direwolf multimon-ng
+sudo apt install wsjtx direwolf multimon-ng rtl-433 readsb rtl-sdr
+sudo systemctl disable --now readsb     # its service would hold the RTL-SDR; the toolkit runs readsb itself
 scripts/install.sh
 ```
 
@@ -73,8 +99,15 @@ What the tests check, and against what:
 | SSTV | the SSTV Decoder's encoder, which was checked against PySSTV |
 | Morse, PSK, NAVTEX, WEFAX, DTMF, CTCSS, DCS | encoders in this project (so they show the decoders agree with my reading of each format, not with other software) |
 
-Also tested: noise must not print text in the text modes, and a live run through PipeWire (FT8 on the
-real UTC clock, APRS and RTTY). Not yet tested on real off-air signals.
+| ISM | a Nexus-TH sensor synthesized from rtl_433's protocol description, decoded by rtl_433 |
+| ADS-B | DF17 squitters (CRC-24, identification, CPR positions) encoded from the standard, decoded by readsb |
+| AIS | type 1 reports (HDLC, CRC-16, NRZI, GMSK) encoded from the standard, decoded by direwolf |
+| Meshtastic, MeshCore | packets built to the published formats (Meshtastic firmware and protobufs, MeshCore docs); the LongFast channel hash (8), MeshCore Public hash (0x11) and Meshtastic's documented default frequencies come out right |
+
+Also tested: noise must not print text in the text modes; a live run through PipeWire (FT8 on the
+real UTC clock, APRS and RTTY); each RTL-SDR mode with no dongle plugged in. Not yet tested: any
+mode on real off-air signals, the RTL-SDR modes with a dongle, and LoRa demodulation (gr-lora_sdr
+not built here yet).
 
 ## Problem reports
 

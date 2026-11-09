@@ -18,6 +18,7 @@ import numpy as np
 from .base import Event, Mode
 
 log = logging.getLogger(__name__)
+UPSTREAM = "\x00upstream "      # marks an error line from the upstream program
 
 
 class ProcessMode(Mode):
@@ -38,6 +39,10 @@ class ProcessMode(Mode):
         return [Event("line", line)]
 
     def workdir(self):
+        return None
+
+    def env(self):
+        """Environment for the decoder (None: this process's)."""
         return None
 
     def start(self, values):
@@ -61,7 +66,7 @@ class ProcessMode(Mode):
             threading.Thread(target=self._read_stderr, args=(self._up, up[0]), daemon=True).start()
         log.info("starting %s", " ".join(cmd))
         self._proc = subprocess.Popen(cmd, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                      cwd=self.workdir(), bufsize=0)
+                                      cwd=self.workdir(), env=self.env(), bufsize=0)
         if self._up:
             self._up.stdout.close()          # the decoder holds the pipe now
         self._reader = threading.Thread(target=self._read, daemon=True)
@@ -80,6 +85,8 @@ class ProcessMode(Mode):
             line = raw.decode(errors="replace").rstrip()
             if line:
                 log.info("%s: %s", name, line)
+                if any(w in line.lower() for w in ("error", "no supported", "failed", "fatal")):
+                    self._lines.put(UPSTREAM + f"{name}: {line}")
 
     def _feed_from(self, feeder):
         try:
@@ -118,8 +125,14 @@ class ProcessMode(Mode):
             if line is None:
                 events += self.finished(self._proc.poll())
                 continue
+            if line.startswith(UPSTREAM):
+                events += self.upstream_error(line[len(UPSTREAM):])
+                continue
             events += self.parse(line)
         return events
+
+    def upstream_error(self, line) -> list[Event]:
+        return [Event("line", line, style="warn"), Event("status", line)]
 
     def finished(self, code) -> list[Event]:
         """The decoder exited by itself (a recording ended, or an error)."""

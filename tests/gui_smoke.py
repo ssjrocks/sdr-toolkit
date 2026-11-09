@@ -75,12 +75,27 @@ def pump(ticks):
         app.processEvents()
 
 
-# Every mode opens, starts and runs on quiet audio.
+# Every mode opens and runs: audio modes on quiet audio, RTL-SDR modes on their
+# default input (no dongle here: they must say so, not hang or pop up).
+from sdr_toolkit.modes.lora import lora_available  # noqa: E402
+
 for M in gui.MODES:
     win.tree.setCurrentItem(win._items[M.id])
     app.processEvents()
+    if M.id == "lora" and lora_available() is None:
+        assert not win.running and "build-gr-lora-sdr.sh" in win.title.text(), win.title.text()
+        continue
     assert win.mode.id == M.id and win.running, M.id
     pump(20)
+    if M.id in ("adsb", "ais", "ism"):
+        # No dongle on the test machine: the window must say so (in a table mode too).
+        import time as _t
+        end = _t.time() + 8
+        while _t.time() < end and "No RTL-SDR" not in (win.title.text() + win.text.toPlainText()):
+            pump(1)
+            _t.sleep(0.1)
+        if "0bda:28" not in __import__("subprocess").run(["lsusb"], capture_output=True, text=True).stdout:
+            assert "No RTL-SDR" in win.title.text() + win.text.toPlainText(), M.id
     if shots:
         win.grab().save(str(shots / f"mode_{M.id}.png"))
 

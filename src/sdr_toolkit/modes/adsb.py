@@ -61,7 +61,12 @@ class ADSBMode(RadioMode):
         return cmd
 
     def parse(self, line):
-        if any(w in line for w in ("rror", "No supported", "usb_claim", "Failed", "failed")):
+        problem = self.device_problem(line)
+        if problem is not None:
+            return problem
+        if self._problem:
+            return []          # readsb's follow-up lines ("sdrOpen() failed, exiting!")
+        if any(w in line for w in ("rror", "FATAL", "Failed", "failed")):
             return [Event("line", line, style="warn"), Event("status", line)]
         return []
 

@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 from scipy.signal import butter, resample_poly, sosfilt
 
-from .base import Setting
+from .base import Event, Setting
 from .process import ProcessMode
 
 RADIO_SETTINGS = (
@@ -97,6 +97,34 @@ class RadioMode(ProcessMode):
     def device_index(self) -> str:
         """rtl_fm / rtl_433 style: an index, or :serial."""
         return self.values["device"].strip() or "0"
+
+    NO_DEVICE = "No RTL-SDR found: plug it in, or set Settings → Input to an IQ recording."
+
+    def device_problem(self, line: str) -> list[Event] | None:
+        """A clear message for the usual live-input failures, or None."""
+        low = line.lower()
+        if "no supported devices" in low or "no matching devices" in low:
+            msg = self.NO_DEVICE
+        elif "usb_claim_interface" in low or "device or resource busy" in low:
+            msg = "The RTL-SDR is in use by another program (SDR++, GQRX, a readsb service...). Close it first."
+        else:
+            return None
+        if getattr(self, "_problem", None) == msg:
+            return []
+        self._problem = msg
+        return [Event("line", msg, style="warn"), Event("status", msg)]
+
+    def finished(self, code):
+        if getattr(self, "_problem", None):
+            return []          # the reason is already on screen
+        return super().finished(code)
+
+    def start(self, values):
+        self._problem = None
+        super().start(values)
+
+    def upstream_error(self, line):
+        return self.device_problem(line) or super().upstream_error(line)
 
     def gain_db(self) -> str | None:
         g = str(self.values["gain"]).strip().lower()

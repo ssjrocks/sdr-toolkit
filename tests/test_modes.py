@@ -303,3 +303,114 @@ def test_ais_channel_offset(tmp_path):
     path = radio_signals.save(tmp_path / "ais.cu8", radio_signals.ais_iq(repeats=2, offset_hz=50000))
     _, ev = run_radio("ais", path, file_rate=240000, file_offset=50000)
     assert text(ev).count("Position Report Class A") >= 1
+
+
+def _dongle_present():
+    import subprocess
+    out = subprocess.run(["lsusb"], capture_output=True, text=True).stdout
+    return any(i in out for i in ("0bda:2838", "0bda:2832"))
+
+
+@pytest.mark.skipif(_dongle_present(), reason="an RTL-SDR is plugged in; this test must not touch it")
+@pytest.mark.parametrize("mode_id", ["ism", "adsb", "ais"])
+def test_live_without_dongle_says_so(mode_id):
+    mode = BY_ID[mode_id]()
+    mode.start(dict(mode.values))            # input: RTL-SDR
+    events = []
+    deadline = time.time() + 10
+    while time.time() < deadline and not any(e.kind == "line" and "No RTL-SDR found" in e.text for e in events):
+        time.sleep(0.2)
+        events += mode.poll()
+    events += mode.stop()
+    assert any("No RTL-SDR found" in e.text for e in events if e.kind == "line"), [e.text for e in events]
+
+
+# ---- LoRa: Meshtastic and MeshCore packets
+
+from sdr_toolkit.engines import mesh  # noqa: E402
+
+
+def test_meshtastic_default_channel():
+    key = mesh.meshtastic_key("AQ==")
+    assert key == mesh.DEFAULT_PSK
+    # Meshtastic's LongFast channel carries hash 8 (name XOR key bytes).
+    assert mesh.channel_hash("LongFast", key) == 0x08
+    text = mesh.pb_encode([(1, 1), (2, "Hello mesh")])
+    frame = mesh.build_meshtastic(0x1234ABCD, 0x5555, text, key, 0x08)
+    p = mesh.parse_meshtastic(frame, [("LongFast", key)])
+    assert p.sender == 0x1234ABCD and p.dest == 0xFFFFFFFF and p.decoded["text"] == "Hello mesh"
+    pos = mesh.pb_encode([(1, ("f32", -338700000)), (2, ("f32", 1512100000)), (3, 42)])
+    p = mesh.parse_meshtastic(mesh.build_meshtastic(1, 2, mesh.pb_encode([(1, 3), (2, pos)]), key, 8),
+                              [("LongFast", key)])
+    assert abs(p.decoded["lat"] + 33.87) < 1e-6 and abs(p.decoded["lon"] - 151.21) < 1e-6 and p.decoded["alt"] == 42
+    user = mesh.pb_encode([(1, "!00000001"), (2, "Hill Node"), (3, "HN")])
+    p = mesh.parse_meshtastic(mesh.build_meshtastic(1, 3, mesh.pb_encode([(1, 4), (2, user)]), key, 8),
+                              [("LongFast", key)])
+    assert p.decoded["long_name"] == "Hill Node" and p.decoded["short_name"] == "HN"
+
+
+def test_meshtastic_private_channel_stays_encrypted_without_key():
+    secret = bytes(range(16))
+    frame = mesh.build_meshtastic(1, 9, mesh.pb_encode([(1, 1), (2, "private")]), secret, 0x55)
+    p = mesh.parse_meshtastic(frame, [("LongFast", mesh.DEFAULT_PSK)])
+    assert not p.decoded and "encrypted" in mesh.describe_meshtastic(p)
+    p = mesh.parse_meshtastic(frame, [("LongFast", mesh.DEFAULT_PSK), ("Club", secret)])
+    assert p.decoded["text"] == "private" and p.decoded["channel"] == "Club"
+
+
+def test_meshtastic_slot_frequencies():
+    from sdr_toolkit.modes.lora import meshtastic_freq
+    # The documented defaults (US slot 20, EU 868, EU 433), and the ANZ one they imply.
+    assert round(meshtastic_freq("US", "LongFast", 250000), 3) == 906.875
+    assert round(meshtastic_freq("EU_868", "LongFast", 250000), 3) == 869.525
+    assert round(meshtastic_freq("EU_433", "LongFast", 250000), 3) == 433.875
+    assert round(meshtastic_freq("ANZ", "LongFast", 250000), 3) == 919.875
+
+
+def test_meshcore_public_channel_and_advert():
+    key = mesh.meshcore_key("izOH6cXN6mrJ5e26oRXNcg==")
+    assert key == mesh.PUBLIC_KEY == mesh.meshcore_key("8b3387e9c5cdea6ac9e5edbaa115cd72")
+    frame = mesh.build_meshcore(5, mesh.build_group_text(key, 1794200000, "Alice", "hi all"), path=b"\x3a")
+    p = mesh.parse_meshcore(frame, [("Public", key)])
+    assert p.kind == "group text" and p.decoded["text"] == "Alice: hi all" and p.path == b"\x3a"
+    # A wrong key fails the MAC instead of printing garbage.
+    p = mesh.parse_meshcore(frame, [("Other", bytes(16))])
+    assert not p.decoded
+    adv = mesh.build_advert(bytes(range(32)), 1794200000, "Hilltop RPT", 2, -33.8, 151.2)
+    p = mesh.parse_meshcore(mesh.build_meshcore(4, adv), [])
+    assert p.decoded["name"] == "Hilltop RPT" and p.decoded["node_kind"] == "repeater"
+    assert abs(p.decoded["lat"] + 33.8) < 1e-6
+
+
+def _lora_mode(**values):
+    m = BY_ID["lora"]()
+    m.values.update(values)
+    m._mt_keys, m._mc_keys = m._keys()
+    m._frame, m._summary = None, ""
+    return m
+
+
+def _receiver_lines(frame, crc_ok=True):
+    return ["rx msg: " + ", ".join(f"0x{b:x}" for b in frame), "CRC valid!" if crc_ok else "\x1b[31mCRC invalid\x1b[0m"]
+
+
+def test_lora_mode_reads_receiver_output():
+    key = mesh.DEFAULT_PSK
+    frame = mesh.build_meshtastic(0xA1B2C3D4, 77, mesh.pb_encode([(1, 1), (2, "CQ mesh")]), key, 8)
+    m = _lora_mode()
+    ev = sum((m.parse(line) for line in _receiver_lines(frame)), [])
+    assert any('"CQ mesh"' in e.text and "!a1b2c3d4" in e.text for e in ev if e.kind == "line")
+    ev = sum((m.parse(line) for line in _receiver_lines(frame, crc_ok=False)), [])
+    assert not [e for e in ev if e.kind == "line"]          # bad CRC hidden by default
+    m = _lora_mode(preset="meshcore")
+    mc = mesh.build_meshcore(5, mesh.build_group_text(mesh.PUBLIC_KEY, 1, "Bob", "evening"))
+    ev = sum((m.parse(line) for line in _receiver_lines(mc)), [])
+    assert any("[Public] Bob: evening" in e.text for e in ev if e.kind == "line")
+
+
+def test_lora_without_gr_lora_sdr_says_how_to_build(monkeypatch):
+    import sdr_toolkit.modes.lora as lora
+    monkeypatch.setattr(lora, "lora_available", lambda: None)
+    m = BY_ID["lora"]()
+    with pytest.raises(RuntimeError, match="build-gr-lora-sdr.sh"):
+        m.start(dict(m.values))

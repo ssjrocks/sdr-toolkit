@@ -508,6 +508,7 @@ class MainWindow(QMainWindow):
         self.folder_btn.setVisible("folder" in self.mode.values)
         # Radio modes read the RTL-SDR or a recording, not the speakers.
         radio = self._is_radio()
+        self.level_label.setText("")
         self.source_combo.setEnabled(not radio)
         self.waterfall.setVisible(not radio)
         self.source_combo.setToolTip("RTL-SDR modes don't use this: see Settings → Input." if radio else
@@ -605,10 +606,11 @@ class MainWindow(QMainWindow):
     def _start_mode(self) -> bool:
         try:
             self.mode.start(dict(self.mode.values))
-        except RuntimeError as e:
+        except (RuntimeError, ValueError) as e:
+            # Shown above the output (a text, table or picture mode), not as a pop-up:
+            # modes start as soon as they're picked.
             self.status.setText(str(e))
-            self.text.appendHtml(f"<span style='color:#c33'>{html.escape(str(e))}</span>")
-            QMessageBox.warning(self, APP_NAME, str(e))
+            self.title.setText(f"<span style='color:#c33'>{html.escape(str(e))}</span>")
             return False
         self._mode_started = True
         log.info("mode %s started", self.mode.id)
@@ -682,6 +684,9 @@ class MainWindow(QMainWindow):
     def handle(self, events: list[Event]):
         for e in events:
             if e.kind == "line":
+                if e.style == "warn" and self.mode.output != "text":
+                    # Table and picture modes have no text pane: warnings go above the output.
+                    self.title.setText(f"<span style='color:#c33'>{html.escape(e.text)}</span>")
                 color = {"dim": "gray", "warn": "#c33"}.get(e.style)
                 text = html.escape(e.text).replace(" ", "&nbsp;") or "&nbsp;"
                 self.text.appendHtml(f"<span style='color:{color}'>{text}</span>" if color else text)

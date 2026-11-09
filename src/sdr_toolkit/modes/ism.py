@@ -54,7 +54,8 @@ class ISMMode(RadioMode):
 
     def command(self):
         v = self.values
-        cmd = ["rtl_433", "-F", "json", "-M", "time:iso", "-M", "level", "-s", v["rate"]]
+        # -F log: rtl_433's own messages (no device, errors), which -F json alone keeps quiet.
+        cmd = ["rtl_433", "-F", "json", "-F", "log", "-M", "time:iso", "-M", "level", "-s", v["rate"]]
         for p in v["protocols"].split():
             cmd += ["-R", p]
         if self.live():
@@ -72,7 +73,12 @@ class ISMMode(RadioMode):
     def parse(self, line):
         line = line.strip()
         if not line.startswith("{"):
-            if any(w in line for w in ("rror", "No supported devices", "usb_claim_interface", "Failed")):
+            problem = self.device_problem(line)
+            if problem is not None:
+                return problem
+            if self._problem:
+                return []
+            if any(w in line for w in ("rror", "Failed")):
                 return [Event("status", line), Event("line", line, style="warn")]
             return []
         try:

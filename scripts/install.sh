@@ -24,10 +24,14 @@ fi
 command -v pw-record >/dev/null || { echo "pw-record not found: sudo apt install pipewire-bin" >&2; exit 1; }
 # Outside decoders some modes use; the app says which is missing when you pick the mode.
 missing=""
-for p in jt9:wsjtx direwolf:direwolf multimon-ng:multimon-ng; do
+for p in jt9:wsjtx direwolf:direwolf multimon-ng:multimon-ng rtl_433:rtl-433 readsb:readsb rtl_fm:rtl-sdr; do
   command -v "${p%%:*}" >/dev/null || missing="$missing ${p##*:}"
 done
-[ -n "$missing" ] && echo "For FT8/FT4, APRS and pagers also install:  sudo apt install$missing"
+[ -n "$missing" ] && echo "For all modes also install:  sudo apt install$missing"
+if systemctl is-enabled readsb >/dev/null 2>&1; then
+  echo "Note: the readsb system service is enabled; it holds the RTL-SDR whenever it's plugged in."
+  echo "      The toolkit runs readsb itself. Turn the service off with: sudo systemctl disable --now readsb"
+fi
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if command -v uv >/dev/null; then
