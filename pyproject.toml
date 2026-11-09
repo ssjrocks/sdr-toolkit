@@ -9,6 +9,7 @@ dependencies = [
     "scipy>=1.13",
     "pyqt6>=6.7",
     "pillow>=10",
+    "cryptography>=41",
 ]
 
 [project.scripts]
