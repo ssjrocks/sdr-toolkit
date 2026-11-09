@@ -3,6 +3,7 @@
 from .adsb import ADSBMode
 from .ais import AISMode
 from .aprs import APRSMode
+from .digital_voice import DigitalVoiceMode
 from .morse import MorseMode
 from .ism import ISMMode
 from .lora import LoRaMode
@@ -19,6 +20,6 @@ MODES = [
     SSTVMode, WefaxMode,
     APRSMode, PagerMode,
     TonesMode,
-    ADSBMode, AISMode, ISMMode, LoRaMode,
+    ADSBMode, AISMode, ISMMode, LoRaMode, DigitalVoiceMode,
 ]
 GROUPS = ["Text", "Digital (weak signal)", "Pictures", "Packet & paging", "Tones", "RTL-SDR"]

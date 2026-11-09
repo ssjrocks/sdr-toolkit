@@ -85,6 +85,10 @@ for M in gui.MODES:
     if M.id == "lora" and lora_available() is None:
         assert not win.running and "build-gr-lora-sdr.sh" in win.title.text(), win.title.text()
         continue
+    if M.id == "dmr":
+        # No default frequency: it asks for one (or for DSD-FME to be built) instead of starting.
+        assert not win.running and ("frequency" in win.title.text() or "build-dsd-fme" in win.title.text())
+        continue
     assert win.mode.id == M.id and win.running, M.id
     pump(20)
     if M.id in ("adsb", "ais", "ism"):

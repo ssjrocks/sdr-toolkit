@@ -37,6 +37,7 @@ it), set under **Settings → Input**: handy without a dongle, or to decode some
 | ADS-B aircraft (1090 MHz) | readsb | your position (for distance and bearing), units, how long aircraft stay listed |
 | AIS ships (161.975 / 162.025 MHz) | rtl_fm + direwolf | channel, NMEA display |
 | LoRa / Meshtastic / MeshCore | gr-lora_sdr (built separately, see below) | network preset, region, frequency, SF/BW/CR/sync word, channel keys |
+| DMR, P25, NXDN, D-Star, YSF, dPMR, M17 | DSD-FME with mbelib (built separately, see below) | frequency, protocol, channel bandwidth, squelch, play voice, save each call as WAV |
 
 The LoRa decoder corrects the transmitter's and dongle's crystal error (tested to ±20 ppm, an 18 kHz
 offset at 920 MHz) as long as the frequency setting is the network's real centre frequency.
@@ -53,9 +54,19 @@ direct messages are end-to-end encrypted and show only as sender → receiver. T
 scripts/build-gr-lora-sdr.sh      # a few minutes; installs into ~/.local/share/sdr-toolkit
 ```
 
-**Not done yet:** DMR and P25 (Ubuntu's DSDcc gives false DMR frames on plain noise and has no P25;
-DSD-FME is the candidate, built from source like gr-lora_sdr), UAT 978 MHz (US only; dump978 isn't
-packaged), trunk tracking through SDRTrunk, and Mobitex (no open decoder known).
+**Digital voice** shows calls from DSD-FME's event log (talkgroups, radio IDs, callsigns) and plays
+the voice. Encrypted calls stay encrypted: the toolkit doesn't use DSD-FME's decryption-key options.
+DSD-FME and the mbelib voice codecs aren't packaged for Ubuntu either:
+
+```bash
+scripts/build-dsd-fme.sh          # installs into ~/.local/share/sdr-toolkit; read mbelib's patent notice first
+```
+
+mbelib's README: "Executable objects compiled or derived from this package may be covered by one or
+more patents." It's provided for educational purposes; check what applies where you are.
+
+**Not done yet:** UAT 978 MHz (US only; dump978 isn't packaged), trunk tracking through SDRTrunk, and
+Mobitex (no open decoder known).
 
 ## Install
 
@@ -106,6 +117,10 @@ What the tests check, and against what:
 | ADS-B | DF17 squitters (CRC-24, identification, CPR positions) encoded from the standard, decoded by readsb |
 | AIS | type 1 reports (HDLC, CRC-16, NRZI, GMSK) encoded from the standard, decoded by direwolf |
 | Meshtastic, MeshCore | packets built to the published formats (Meshtastic firmware and protobufs, MeshCore docs), sent as real LoRa IQ by gr-lora_sdr's transmitter (`tests/lora_tx.py`) with a 5 ppm crystal error and noise, and decoded through the mode; the LongFast channel hash (8), MeshCore Public hash (0x11) and Meshtastic's documented default frequencies come out right. MeshCore's sync word (0x12, RadioLib's default) is assumed on both sides, so that value isn't checked |
+
+DMR/P25 has no test signal here (nothing on this PC generates those protocols): the tests check that
+noise gives no calls (Ubuntu's DSDcc reported false DMR frames on the same test, so it isn't used),
+the command line, and the no-dongle message. Real decoding is untested.
 
 Also tested: noise must not print text in the text modes; a live run through PipeWire (FT8 on the
 real UTC clock, APRS and RTTY); each RTL-SDR mode with no dongle plugged in. Not yet tested: any

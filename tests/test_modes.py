@@ -3,6 +3,7 @@
     python3 -m pytest tests
 """
 
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -464,3 +465,55 @@ def test_lora_meshcore_anz(tmp_path):
     out = text(ev)
     assert "[Public] Alice: hi from the hill" in out, out
     assert "advert: Hilltop RPT (repeater) at -33.80000, 151.20000" in out, out
+
+
+# ---- DMR / P25 (DSD-FME). No test signal generator exists for these protocols here, so the
+# tests cover the plumbing; decoding real signals needs a dongle.
+
+from sdr_toolkit.modes.digital_voice import dsd_fme  # noqa: E402
+
+needs_dsd = pytest.mark.skipif(dsd_fme() is None, reason="DSD-FME isn't built (scripts/build-dsd-fme.sh)")
+
+
+@needs_dsd
+def test_dmr_recording_of_noise_shows_no_calls(tmp_path):
+    rng = np.random.default_rng(4)
+    n = 240000 * 4
+    path = tmp_path / "noise.cu8"
+    write_cu8(path, (rng.standard_normal(n) + 1j * rng.standard_normal(n)) * 0.2)
+    mode, ev = run_radio("dmr", path, wait=60, voice=False, file_rate=240000)
+    assert not [e for e in ev if e.kind == "line" and e.style != "dim"], [e.text for e in ev]
+    assert any(e.kind == "status" and "recording finished" in e.text for e in ev)
+
+
+@needs_dsd
+def test_dmr_command_line():
+    m = BY_ID["dmr"]()
+    m.values.update(freq_mhz="438.875", protocol="-f1", bw=12, squelch=5, voice=False, ppm=-3, gain="30")
+    cmd = m.command()
+    assert cmd[1:4] == ["-f1", "-i", "rtl:0:438.875M:30:-3:12:5:2"] and "-o" in cmd and cmd[cmd.index("-o") + 1] == "null"
+    assert "-H" not in cmd                       # no decryption keys, ever
+    shutil.rmtree(m._dir)
+
+
+@needs_dsd
+def test_dmr_needs_a_frequency():
+    m = BY_ID["dmr"]()
+    with pytest.raises(RuntimeError, match="frequency"):
+        m.start(dict(m.values))
+
+
+@needs_dsd
+@pytest.mark.skipif(_dongle_present(), reason="an RTL-SDR is plugged in; this test must not touch it")
+def test_dmr_live_without_dongle_says_so():
+    m = BY_ID["dmr"]()
+    v = dict(m.values)
+    v.update(freq_mhz="438.875", voice=False)
+    m.start(v)
+    events = []
+    deadline = time.time() + 15
+    while time.time() < deadline and not any("No RTL-SDR found" in e.text for e in events if e.kind == "line"):
+        time.sleep(0.2)
+        events += m.poll()
+    events += m.stop()
+    assert any("No RTL-SDR found" in e.text for e in events if e.kind == "line")
