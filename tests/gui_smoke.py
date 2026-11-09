@@ -180,6 +180,25 @@ app.processEvents()
 # After installing it starts again: here on an absent recording, so it asks for one.
 results["install"] = (installed == [(["readsb"], False)] and not win.install_bar.isVisible()
                       and "recording" in win.title.text())
+# Updates: a newer release shows the button; clicking it installs and restarts.
+from sdr_toolkit import updater  # noqa: E402
+
+fake = updater.Update("9.9.9", "https://api.github.com/repos/ssjrocks/sdr-toolkit/releases/assets/1",
+                      "sdr_toolkit-9.9.9-py3-none-any.whl", "0" * 64)
+calls = []
+updater.check = lambda: fake
+updater.install = lambda u: calls.append(("install", u.version))
+updater.restart = lambda: calls.append(("restart",))
+win.check_for_updates()
+for _ in range(50):
+    app.processEvents()
+    __import__("time").sleep(0.02)
+shown = win.update_btn.isVisible() and "9.9.9" in win.update_btn.text()
+win.update_btn.click()
+for _ in range(50):
+    app.processEvents()
+    __import__("time").sleep(0.02)
+results["update"] = shown and calls == [("install", "9.9.9"), ("restart",)]
 win.close()
 print(results, "errors:", len(errors))
 ok = all(results.values()) and not errors
