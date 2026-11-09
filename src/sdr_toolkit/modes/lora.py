@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from ..engines import mesh
-from .base import Event, Setting, Tuning
+from .base import Event, MissingParts, Setting, Tuning
 from .radio import RADIO_SETTINGS, RadioMode
 
 LORA_PREFIX = Path.home() / ".local/share/sdr-toolkit/gr-lora_sdr"
@@ -61,7 +61,7 @@ class LoRaMode(RadioMode):
     group = "RTL-SDR"
     summary = ("LoRa frames, decoded as Meshtastic (texts, positions, node names on the default channel) "
                "or MeshCore (adverts, Public channel). LoRa demodulation by gr-lora_sdr.")
-    requires = ("gr-lora_sdr",)
+    requires = ("gr-lora_sdr", "rtl-sdr")
     iq_rate = 1000000
     settings = RADIO_SETTINGS + (
         Setting("preset", "Network", "mt:LongFast", "choice", restart=True,
@@ -147,8 +147,7 @@ class LoRaMode(RadioMode):
     def command(self):
         env = lora_available()
         if env is None:
-            raise RuntimeError("LoRa needs gr-lora_sdr, which isn't built yet. Build it with "
-                               "scripts/build-gr-lora-sdr.sh in the SDR Toolkit folder (a few minutes).")
+            raise MissingParts(["gr-lora_sdr"])
         self._env = env
         freq, sf, bw, cr, sync, pre = self.params()
         live = self.live()

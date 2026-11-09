@@ -409,12 +409,54 @@ def test_lora_mode_reads_receiver_output():
     assert any("[Public] Bob: evening" in e.text for e in ev if e.kind == "line")
 
 
-def test_lora_without_gr_lora_sdr_says_how_to_build(monkeypatch):
+def test_lora_without_gr_lora_sdr_asks_for_it(monkeypatch):
     import sdr_toolkit.modes.lora as lora
+    from sdr_toolkit.modes.base import MissingParts
     monkeypatch.setattr(lora, "lora_available", lambda: None)
     m = BY_ID["lora"]()
-    with pytest.raises(RuntimeError, match="build-gr-lora-sdr.sh"):
+    with pytest.raises(MissingParts) as e:
         m.start(dict(m.values))
+    assert e.value.parts == ["gr-lora_sdr"]
+
+
+def test_every_requirement_is_a_known_part():
+    from sdr_toolkit import deps
+    for M in MODES:
+        for part in M.requires:
+            assert part in deps.PARTS, (M.id, part)
+
+
+def test_install_runs_setup_steps_in_order(tmp_path, monkeypatch):
+    """deps.install: system.sh through pkexec, then build.sh with the mbelib answer; output logged."""
+    from sdr_toolkit import deps
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls.txt"
+    (bin_dir / "pkexec").write_text(f'#!/bin/sh\necho "pkexec $*" >> {calls}\nexec "$@"\n')
+    (bin_dir / "pkexec").chmod(0o755)
+    setup = tmp_path / "setup"
+    setup.mkdir()
+    (setup / "system.sh").write_text(f'echo "system.sh" >> {calls}\necho "STEP packages done"\n')
+    (setup / "build.sh").write_text(f'echo "build.sh $*" >> {calls}\necho "STEP builds done"\n')
+    monkeypatch.setenv("PATH", f"{bin_dir}:{__import__('os').environ['PATH']}")
+    monkeypatch.setattr(deps, "setup_script", lambda name: str(setup / name))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    state = {"readsb": False, "dsd-fme": False}
+    monkeypatch.setitem(deps.PARTS, "readsb", ("readsb", lambda: state["readsb"], "system"))
+    monkeypatch.setitem(deps.PARTS, "dsd-fme", ("dsd", lambda: state["dsd-fme"], "mbelib"))
+    lines = []
+    still = deps.install(["readsb", "dsd-fme"], True, lines.append)
+    assert calls.read_text().splitlines() == [f"pkexec bash {setup}/system.sh", "system.sh",
+                                              "build.sh --accept-mbelib"]
+    assert "STEP packages done" in lines and "STEP builds done" in lines
+    assert still == ["readsb", "dsd-fme"]          # the fakes installed nothing
+    assert "STEP builds done" in deps.log_file().read_text()
+    # A cancelled password prompt (pkexec exits 126) stops before building.
+    (bin_dir / "pkexec").write_text("#!/bin/sh\nexit 126\n")
+    calls.write_text("")
+    lines = []
+    deps.install(["readsb", "dsd-fme"], False, lines.append)
+    assert calls.read_text() == "" and any("cancelled" in x for x in lines)
 
 
 from sdr_toolkit.modes.lora import lora_available  # noqa: E402

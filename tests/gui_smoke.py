@@ -61,6 +61,17 @@ class FakeCapture:
 gui.AudioCapture = FakeCapture
 ini = tempfile.mktemp(suffix=".ini")
 gui.QSettings = lambda *a: QSettings(ini, QSettings.Format.IniFormat)
+
+# Never open a real RTL-SDR: it may be plugged in and in use. If one is present, the
+# RTL-SDR modes are pointed at an (absent) recording instead, so none of them starts.
+DONGLE = any(i in __import__("subprocess").run(["lsusb"], capture_output=True, text=True).stdout
+             for i in ("0bda:2838", "0bda:2832"))
+if DONGLE:
+    pre = QSettings(ini, QSettings.Format.IniFormat)
+    for M in gui.MODES:
+        if getattr(M, "source", "audio") == "radio":
+            pre.setValue(f"{M.id}/input", "file")
+    pre.sync()
 shots = Path(sys.argv[1]) if len(sys.argv) > 1 else None
 
 app = QApplication([])
@@ -82,12 +93,15 @@ from sdr_toolkit.modes.lora import lora_available  # noqa: E402
 for M in gui.MODES:
     win.tree.setCurrentItem(win._items[M.id])
     app.processEvents()
+    if DONGLE and getattr(M, "source", "audio") == "radio":
+        assert not win.running and "recording" in win.title.text(), (M.id, win.title.text())
+        continue
     if M.id == "lora" and lora_available() is None:
-        assert not win.running and "build-gr-lora-sdr.sh" in win.title.text(), win.title.text()
+        assert not win.running and win.install_bar.isVisible() and "gr-lora_sdr" in win.install_label.text()
         continue
     if M.id == "dmr":
-        # No default frequency: it asks for one (or for DSD-FME to be built) instead of starting.
-        assert not win.running and ("frequency" in win.title.text() or "build-dsd-fme" in win.title.text())
+        # No default frequency: it asks for one (or offers to install DSD-FME) instead of starting.
+        assert not win.running and ("frequency" in win.title.text() or win.install_bar.isVisible())
         continue
     assert win.mode.id == M.id and win.running, M.id
     pump(20)
@@ -135,6 +149,37 @@ if shots:
 win.tree.setCurrentItem(win._items["psk"])
 win.on_waterfall_click(1234.0)
 results["click"] = win.form.widgets["freq"][1].value() == 1234 and win.mode.dec.freq == 1234
+# A mode whose decoder is missing offers an Install button (no commands), and installing
+# runs deps.install and starts the mode again.
+from sdr_toolkit import deps  # noqa: E402
+
+real = deps.PARTS["readsb"]
+deps.PARTS["readsb"] = ("readsb (ADS-B)", lambda: False, "system")
+installed = []
+
+
+class FakeInstall:
+    def __init__(self, parent, parts, accept):
+        installed.append((parts, accept))
+        deps.PARTS["readsb"] = real
+        self.still_missing = []
+
+    def exec(self):
+        return 0
+
+
+gui.InstallDialog = FakeInstall
+win.settings.setValue("adsb/input", "file")   # never the live dongle
+win.tree.setCurrentItem(win._items["adsb"])
+app.processEvents()
+label = win.install_label.text()
+results["offer"] = (win.install_bar.isVisible() and "readsb" in label and "sudo" not in label
+                    and "apt" not in label and not win.running)
+win.install_btn.click()
+app.processEvents()
+# After installing it starts again: here on an absent recording, so it asks for one.
+results["install"] = (installed == [(["readsb"], False)] and not win.install_bar.isVisible()
+                      and "recording" in win.title.text())
 win.close()
 print(results, "errors:", len(errors))
 ok = all(results.values()) and not errors

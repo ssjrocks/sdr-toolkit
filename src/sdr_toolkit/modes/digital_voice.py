@@ -12,7 +12,7 @@ import time
 import wave
 from pathlib import Path
 
-from .base import Event, Setting, Tuning
+from .base import Event, MissingParts, Setting, Tuning
 from .radio import RADIO_SETTINGS, RadioMode, fm_audio_chunks
 
 DSD_FME = Path.home() / ".local/share/sdr-toolkit/dsd-fme/bin/dsd-fme"
@@ -86,8 +86,7 @@ class DigitalVoiceMode(RadioMode):
     def command(self):
         exe = dsd_fme()
         if exe is None:
-            raise RuntimeError("DMR/P25 needs DSD-FME, which isn't built yet. Build it with "
-                               "scripts/build-dsd-fme.sh in the SDR Toolkit folder.")
+            raise MissingParts(["dsd-fme"])
         v = self.values
         self._dir = Path(tempfile.mkdtemp(prefix="sdr-toolkit-dmr-"))
         self._events = self._dir / "events.log"

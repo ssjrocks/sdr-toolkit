@@ -50,17 +50,13 @@ any private channel you add the key for), and MeshCore adverts and Public channe
 direct messages are end-to-end encrypted and show only as sender → receiver. The LoRa demodulator is
 [gr-lora_sdr](https://github.com/tapparelj/gr-lora_sdr) (EPFL), which isn't packaged for Ubuntu:
 
-```bash
-scripts/build-gr-lora-sdr.sh      # a few minutes; installs into ~/.local/share/sdr-toolkit
-```
+(The installer builds it.)
 
 **Digital voice** shows calls from DSD-FME's event log (talkgroups, radio IDs, callsigns) and plays
 the voice. Encrypted calls stay encrypted: the toolkit doesn't use DSD-FME's decryption-key options.
 DSD-FME and the mbelib voice codecs aren't packaged for Ubuntu either:
 
-```bash
-scripts/build-dsd-fme.sh          # installs into ~/.local/share/sdr-toolkit; read mbelib's patent notice first
-```
+(The installer builds them, after asking about mbelib's patent notice.)
 
 mbelib's README: "Executable objects compiled or derived from this package may be covered by one or
 more patents." It's provided for educational purposes; check what applies where you are.
@@ -70,17 +66,32 @@ Mobitex (no open decoder known).
 
 ## Install
 
-Needs Ubuntu with PipeWire and `python3-numpy python3-scipy python3-pyqt6 python3-pil
-python3-cryptography`. The modes that use outside decoders need them installed (the app tells you if
-one is missing).
-
 ```bash
-sudo apt install wsjtx direwolf multimon-ng rtl-433 readsb rtl-sdr
-sudo systemctl disable --now readsb     # its service would hold the RTL-SDR; the toolkit runs readsb itself
-scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/ssjrocks/sdr-toolkit/master/scripts/install.sh | bash
 ```
 
-Then open **SDR Toolkit** from the app menu. `scripts/install.sh --uninstall` removes it.
+(or `scripts/install.sh` from a checkout). It sets up everything the modes use, asking for your
+password once:
+
+- the Ubuntu packages: the app's libraries, WSJT-X, direwolf, multimon-ng, rtl_433, readsb, the
+  RTL-SDR tools and GNU Radio, plus compilers for the next step (readsb's own service is turned off:
+  it would hold the RTL-SDR, and the toolkit runs readsb itself);
+- gr-lora_sdr (LoRa), and mbelib + DSD-FME (DMR, P25), built from source into
+  `~/.local/share/sdr-toolkit`, which takes a few minutes. Before building mbelib it shows mbelib's
+  patent notice and asks (`--accept-mbelib` to say yes in advance, `--no-dmr` to leave it out);
+- the app and its app-menu entry.
+
+If a mode still lacks something (an older install, or DMR/P25 left out), the app says which part and
+offers an **Install** button, which does the same with the desktop's password prompt.
+
+`scripts/install.sh --uninstall` removes the app and everything it built; saved pictures and calls stay.
+
+## Updates
+
+The app looks for a new release on GitHub at most every 12 hours, and **Check for updates** looks now.
+**Update to …** downloads the release's wheel (only from this repository's GitHub releases, and only
+if it matches the release's SHA-256), installs it into the app's venv and restarts. A version that
+needs new outside parts offers to install them after the restart.
 
 ## Notes per mode
 

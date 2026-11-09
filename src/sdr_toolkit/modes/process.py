@@ -15,7 +15,7 @@ import threading
 
 import numpy as np
 
-from .base import Event, Mode
+from .base import Event, MissingParts, Mode
 
 log = logging.getLogger(__name__)
 UPSTREAM = "\x00upstream "      # marks an error line from the upstream program
@@ -54,8 +54,7 @@ class ProcessMode(Mode):
         up = self.upstream()
         for prog in [cmd[0]] + ([up[0]] if up else []):
             if not shutil.which(prog):
-                pkg = self.requires[0] if self.requires else prog
-                raise RuntimeError(f"{prog} is not installed. Install it with: sudo apt install {pkg}")
+                raise MissingParts(self.requires or [prog])
         self._name = cmd[0]
         feeder = self.feeder()
         stdin = subprocess.PIPE if (self.takes_audio or feeder is not None) else subprocess.DEVNULL

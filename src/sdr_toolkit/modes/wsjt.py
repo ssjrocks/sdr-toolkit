@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .base import Event, Mode, Setting, Tuning
+from .base import Event, MissingParts, Mode, Setting, Tuning
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ class WSJTMode(Mode):
     def start(self, values):
         super().start(values)
         if not shutil.which("jt9"):
-            raise RuntimeError("jt9 is not installed. Install it with: sudo apt install wsjtx")
+            raise MissingParts(["wsjtx"])
         self._dir = Path(tempfile.mkdtemp(prefix=f"sdr-toolkit-{self.id}-"))
         self._buf = np.zeros(0, np.float32)
         self._t0 = None          # wall time of self._buf[0]

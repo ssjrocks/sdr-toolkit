@@ -16,7 +16,7 @@ class AISMode(RadioMode):
     name = "AIS ships (VHF)"
     group = "RTL-SDR"
     summary = "Ship identities, positions, speed and course from their AIS transponders. Decoded by direwolf."
-    requires = ("direwolf",)
+    requires = ("direwolf", "rtl-sdr")
     iq_rate = 240000
     settings = RADIO_SETTINGS + (
         Setting("channel", "Channel", "161.975M", "choice", restart=True,

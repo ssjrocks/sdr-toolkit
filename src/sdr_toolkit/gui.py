@@ -2,19 +2,21 @@
 
 import html
 import logging
-import shutil
 import time
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import QSettings, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QSettings, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFont, QFontDatabase, QImage, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
+    QFrame,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -40,10 +42,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_ID, APP_NAME, appreports
+from . import APP_ID, APP_NAME, __version__, appreports, deps, updater
 from .capture import AudioCapture, list_outputs
 from .modes import GROUPS, MODES
-from .modes.base import Event, Mode, Setting
+from .modes.base import Event, MissingParts, Mode, Setting
 
 log = logging.getLogger(__name__)
 
@@ -263,17 +265,86 @@ def tuning_html(mode: Mode) -> str:
     rows = "".join(f"<tr><td><b>{html.escape(a)}</b></td><td>&nbsp;{html.escape(b)}</td></tr>"
                    for a, b in t.frequencies)
     needs = ""
-    for prog in mode.requires:
-        exe = {"wsjtx": "jt9"}.get(prog, prog)
-        ok = shutil.which(exe) is not None
-        needs += (f"<p>Uses <b>{html.escape(exe)}</b>: "
-                  + ("installed." if ok else f"<span style='color:#c33'>not installed</span> "
-                     f"(<code>sudo apt install {html.escape(prog)}</code>)") + "</p>")
+    for part in mode.requires:
+        name, installed, _ = deps.PARTS[part]
+        needs += (f"<p>Uses {html.escape(name)}: "
+                  + ("installed." if installed() else "<span style='color:#c33'>not installed yet</span>; "
+                     "use <b>Install</b> above the output.") + "</p>")
     return (f"<h3>{html.escape(mode.name)}</h3><p>{html.escape(mode.summary)}</p>"
             f"<p><b>Select on the SDR:</b> {html.escape(t.sdr_mode)}</p>"
             f"<p><b>Bandwidth / filter:</b> {html.escape(t.bandwidth)}</p>"
             + (f"<p><b>Where to listen:</b></p><table>{rows}</table>" if rows else "")
             + (f"<p>{html.escape(t.notes)}</p>" if t.notes else "") + needs)
+
+
+class BackgroundTask(QThread):
+    """Runs a function off the GUI thread; progress(str) may be called from it."""
+
+    succeeded = pyqtSignal(object)
+    failed = pyqtSignal(str)
+    progress = pyqtSignal(str)
+
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+
+    def run(self):
+        try:
+            self.succeeded.emit(self.fn(self.progress.emit))
+        except Exception as e:  # shown to the user by the caller
+            log.exception("background task failed")
+            self.failed.emit(str(e))
+
+
+class InstallDialog(QDialog):
+    """Installs missing parts and shows how it's going."""
+
+    def __init__(self, parent, parts, accept_mbelib):
+        super().__init__(parent)
+        self.setWindowTitle("Installing")
+        self.resize(640, 360)
+        self.parts = parts
+        lay = QVBoxLayout(self)
+        self.heading = QLabel(f"Installing {deps.describe(parts)}. You'll be asked for your password; "
+                              "building LoRa and DMR/P25 support takes a few minutes.")
+        self.heading.setWordWrap(True)
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        self.buttons.rejected.connect(self.reject)
+        self.buttons.setEnabled(False)
+        lay.addWidget(self.heading)
+        lay.addWidget(self.log, 1)
+        lay.addWidget(self.buttons)
+        self.still_missing = list(parts)
+        self.task = BackgroundTask(lambda emit: deps.install(parts, accept_mbelib, emit))
+        self.task.progress.connect(self._line)
+        self.task.succeeded.connect(self._done)
+        self.task.failed.connect(lambda msg: self._done(None, msg))
+        self.task.start()
+
+    def _line(self, line):
+        if line.startswith("STEP "):
+            self.log.appendHtml(f"<b>{html.escape(line[5:])}</b>")
+        else:
+            self.log.appendHtml(f"<span style='color:gray'>{html.escape(line)}</span>")
+
+    def _done(self, missing, error=None):
+        self.still_missing = list(self.parts) if missing is None else missing
+        if error:
+            self.heading.setText(f"Installing stopped: {error}")
+        elif self.still_missing:
+            self.heading.setText(f"Not installed: {deps.describe(self.still_missing)}. "
+                                 f"The details are in {deps.log_file()}.")
+        else:
+            self.heading.setText("Everything is installed.")
+        self.buttons.setEnabled(True)
+
+    def reject(self):
+        if self.task.isRunning():
+            return              # an install can't be stopped half way
+        super().reject()
 
 
 class MainWindow(QMainWindow):
@@ -323,11 +394,15 @@ class MainWindow(QMainWindow):
         self.start_btn = QPushButton("Start")
         self.start_btn.setCheckable(True)
         self.start_btn.toggled.connect(self.on_start_toggled)
+        self.update_btn = QPushButton()
+        self.update_btn.setVisible(False)
+        self.update_btn.clicked.connect(self.install_update)
         top = QHBoxLayout()
         top.addWidget(QLabel("Listen to"))
         top.addWidget(self.source_combo, 1)
         top.addWidget(refresh)
         top.addWidget(self.start_btn)
+        top.addWidget(self.update_btn)
 
         self.waterfall = Waterfall()
         self.waterfall.clicked.connect(self.on_waterfall_click)
@@ -382,12 +457,15 @@ class MainWindow(QMainWindow):
         save_btn.clicked.connect(self.save_output)
         self.folder_btn = QPushButton("Open folder")
         self.folder_btn.clicked.connect(self.open_folder)
+        updates_btn = QPushButton("Check for updates")
+        updates_btn.clicked.connect(self.check_for_updates)
         report_btn = QPushButton("Report a problem…")
         report_btn.clicked.connect(self.report_problem)
         btns = QHBoxLayout()
         for b in (clear_btn, copy_btn, save_btn, self.folder_btn):
             btns.addWidget(b)
         btns.addStretch(1)
+        btns.addWidget(updates_btn)
         btns.addWidget(report_btn)
 
         middle = QWidget()
@@ -398,6 +476,21 @@ class MainWindow(QMainWindow):
         out = QWidget()
         ol = QVBoxLayout(out)
         ol.setContentsMargins(0, 0, 0, 0)
+        self.install_bar = QFrame()
+        self.install_bar.setFrameShape(QFrame.Shape.StyledPanel)
+        ib = QHBoxLayout(self.install_bar)
+        self.install_label = QLabel("")
+        self.install_label.setWordWrap(True)
+        self.install_btn = QPushButton("Install")
+        self.install_btn.clicked.connect(self.install_missing)
+        ib.addWidget(self.install_label, 1)
+        ib.addWidget(self.install_btn)
+        self.install_bar.setVisible(False)
+        self._to_install: list[str] = []
+        self._mode_specific = False
+        self._tasks = set()
+        self._update = None
+        ol.addWidget(self.install_bar)
         ol.addWidget(self.title)
         ol.addWidget(self.output, 1)
         vsplit.addWidget(out)
@@ -436,6 +529,7 @@ class MainWindow(QMainWindow):
             self.resize(1280, 800)
         first = self.settings.value("mode", "morse")
         self.tree.setCurrentItem(self._items.get(first, self._items["morse"]))
+        QTimer.singleShot(0, self.startup_checks)
 
     # ---- sources -------------------------------------------------------
 
@@ -513,6 +607,8 @@ class MainWindow(QMainWindow):
         self.waterfall.setVisible(not radio)
         self.source_combo.setToolTip("RTL-SDR modes don't use this: see Settings → Input." if radio else
                                      "The output to listen to. Default follows your speaker setting.")
+        self._mode_specific = False
+        self.show_general_missing()
         # Listening starts with the mode: pick one and play the signal.
         self.start_btn.setChecked(True)
 
@@ -605,7 +701,14 @@ class MainWindow(QMainWindow):
 
     def _start_mode(self) -> bool:
         try:
+            missing = deps.missing(self.mode.requires)
+            if missing:
+                raise MissingParts(missing)
             self.mode.start(dict(self.mode.values))
+        except MissingParts as e:
+            self.offer_install(e.parts, f"{self.mode.name} needs {deps.describe(e.parts)}, which isn't installed yet.")
+            self.status.setText(f"{self.mode.name}: not installed yet")
+            return False
         except (RuntimeError, ValueError) as e:
             # Shown above the output (a text, table or picture mode), not as a pop-up:
             # modes start as soon as they're picked.
@@ -777,6 +880,105 @@ class MainWindow(QMainWindow):
         folder = Path(self.mode.values.get("folder", Path.home())).expanduser()
         folder.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    # ---- missing parts and updates -------------------------------------
+
+    def _run_task(self, fn, on_success, on_failure):
+        task = BackgroundTask(lambda emit: fn())
+        task.succeeded.connect(on_success)
+        task.failed.connect(on_failure)
+        task.finished.connect(lambda: self._tasks.discard(task))
+        self._tasks.add(task)         # dropping a running QThread aborts the process
+        task.start()
+
+    def startup_checks(self):
+        self.show_general_missing()
+        if updater.due():
+            updater.mark_checked()
+            self._run_task(updater.check, self._on_update_checked, lambda _msg: None)
+
+    def show_general_missing(self):
+        """Offer to install whatever any mode still lacks (unless the current mode's own offer is up)."""
+        if self.install_bar.isVisible() and self._to_install and self._mode_specific:
+            return
+        missing = deps.missing()
+        if missing:
+            self.offer_install(missing, f"Some modes need parts that aren't installed yet: {deps.describe(missing)}.",
+                               mode_specific=False)
+        else:
+            self.install_bar.setVisible(False)
+
+    def offer_install(self, parts, message, mode_specific=True):
+        self._to_install = list(parts)
+        self._mode_specific = mode_specific
+        self.install_label.setText(message)
+        self.install_bar.setVisible(True)
+
+    def install_missing(self):
+        parts = list(self._to_install)
+        accept = self.settings.value("mbelib_accepted", "false") in (True, "true")
+        if "dsd-fme" in parts and not accept:
+            box = QMessageBox(QMessageBox.Icon.Question, "DMR / P25 voice", deps.MBELIB_NOTICE, parent=self)
+            yes = box.addButton("Build it", QMessageBox.ButtonRole.AcceptRole)
+            skip = box.addButton("Skip DMR / P25", QMessageBox.ButtonRole.RejectRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.exec()
+            if box.clickedButton() is yes:
+                accept = True
+                self.settings.setValue("mbelib_accepted", True)
+            elif box.clickedButton() is skip:
+                parts.remove("dsd-fme")
+            else:
+                return
+        if not parts:
+            return
+        was_running = self.running
+        if was_running:
+            self._stop()
+        dlg = InstallDialog(self, parts, accept)
+        dlg.exec()
+        log.info("install finished; still missing: %s", dlg.still_missing)
+        self.install_bar.setVisible(False)
+        self._to_install = []
+        self.help_label.setText(tuning_html(self.mode))
+        self.show_general_missing()
+        self.start_btn.setChecked(True)
+
+    def check_for_updates(self):
+        def done(update):
+            self._on_update_checked(update)
+            if update is None:
+                QMessageBox.information(self, "Updates", f"{APP_NAME} {__version__} is up to date.")
+
+        def failed(msg):
+            QMessageBox.warning(self, "Updates", f"Could not check for updates:\n\n{msg}")
+
+        self._run_task(updater.check, done, failed)
+
+    def _on_update_checked(self, update):
+        if update is not None:
+            self._update = update
+            self.update_btn.setText(f"Update to {update.version}")
+            self.update_btn.setVisible(True)
+
+    def install_update(self):
+        update = self._update
+        if update is None:
+            return
+        self.update_btn.setEnabled(False)
+        self.status.setText(f"Installing {update.version}…")
+
+        def failed(msg):
+            self.update_btn.setEnabled(True)
+            self.status.setText("Update failed")
+            QMessageBox.warning(self, "Update failed", msg)
+
+        def installed(_):
+            self.settings.setValue("geometry", self.saveGeometry())
+            self._stop()
+            updater.restart()
+
+        self._run_task(lambda: updater.install(update), installed, failed)
 
     # ---- reports -------------------------------------------------------
 

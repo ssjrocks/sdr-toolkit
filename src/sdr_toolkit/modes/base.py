@@ -60,6 +60,14 @@ class Event:
     row: int | None = None
 
 
+class MissingParts(RuntimeError):
+    """A mode needs outside parts that aren't installed (keys of sdr_toolkit.deps.PARTS)."""
+
+    def __init__(self, parts):
+        self.parts = list(parts)
+        super().__init__("needs " + ", ".join(self.parts))
+
+
 class Mode:
     id = ""
     name = ""
