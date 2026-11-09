@@ -38,6 +38,9 @@ it), set under **Settings → Input**: handy without a dongle, or to decode some
 | AIS ships (161.975 / 162.025 MHz) | rtl_fm + direwolf | channel, NMEA display |
 | LoRa / Meshtastic / MeshCore | gr-lora_sdr (built separately, see below) | network preset, region, frequency, SF/BW/CR/sync word, channel keys |
 
+The LoRa decoder corrects the transmitter's and dongle's crystal error (tested to ±20 ppm, an 18 kHz
+offset at 920 MHz) as long as the frequency setting is the network's real centre frequency.
+
 Every RTL-SDR mode also has device, gain and ppm correction settings. With no dongle plugged in
 it says so instead of hanging.
 
@@ -102,12 +105,11 @@ What the tests check, and against what:
 | ISM | a Nexus-TH sensor synthesized from rtl_433's protocol description, decoded by rtl_433 |
 | ADS-B | DF17 squitters (CRC-24, identification, CPR positions) encoded from the standard, decoded by readsb |
 | AIS | type 1 reports (HDLC, CRC-16, NRZI, GMSK) encoded from the standard, decoded by direwolf |
-| Meshtastic, MeshCore | packets built to the published formats (Meshtastic firmware and protobufs, MeshCore docs); the LongFast channel hash (8), MeshCore Public hash (0x11) and Meshtastic's documented default frequencies come out right |
+| Meshtastic, MeshCore | packets built to the published formats (Meshtastic firmware and protobufs, MeshCore docs), sent as real LoRa IQ by gr-lora_sdr's transmitter (`tests/lora_tx.py`) with a 5 ppm crystal error and noise, and decoded through the mode; the LongFast channel hash (8), MeshCore Public hash (0x11) and Meshtastic's documented default frequencies come out right. MeshCore's sync word (0x12, RadioLib's default) is assumed on both sides, so that value isn't checked |
 
 Also tested: noise must not print text in the text modes; a live run through PipeWire (FT8 on the
 real UTC clock, APRS and RTTY); each RTL-SDR mode with no dongle plugged in. Not yet tested: any
-mode on real off-air signals, the RTL-SDR modes with a dongle, and LoRa demodulation (gr-lora_sdr
-not built here yet).
+mode on real off-air signals, and the RTL-SDR modes with a dongle.
 
 ## Problem reports
 

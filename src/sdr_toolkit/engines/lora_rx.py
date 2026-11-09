@@ -55,6 +55,10 @@ def build(args):
     dew = lora_sdr.dewhitening()
     crc = lora_sdr.crc_verif(2, False)          # 2: print frames as hex
     sink = blocks.null_sink(gr.sizeof_char)
+    # At SF11-12 frame_sync wants more samples at once than GNU Radio's default buffers hold.
+    big = 4 * (2**args.sf) * OVERSAMPLE
+    for blk in (last, fs, demod):
+        blk.set_min_output_buffer(big)
     tb.connect(last, fs, demod, gray, deint, ham, head, dew, crc, sink)
     tb.msg_connect((head, "frame_info"), (fs, "frame_info"))
     return tb

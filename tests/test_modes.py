@@ -414,3 +414,53 @@ def test_lora_without_gr_lora_sdr_says_how_to_build(monkeypatch):
     m = BY_ID["lora"]()
     with pytest.raises(RuntimeError, match="build-gr-lora-sdr.sh"):
         m.start(dict(m.values))
+
+
+from sdr_toolkit.modes.lora import lora_available  # noqa: E402
+from sdr_toolkit.modes.radio import write_cu8  # noqa: E402
+
+needs_lora = pytest.mark.skipif(lora_available() is None, reason="gr-lora_sdr isn't built (scripts/build-gr-lora-sdr.sh)")
+
+
+def lora_recording(path, frames, rate, bw, sf, cr, sync, preamble, centre_hz, ppm=5.0):
+    """LoRa IQ from gr-lora_sdr's transmitter, with a crystal error and noise, as a .cu8 file."""
+    import subprocess
+    env = lora_available()
+    c64 = str(path) + ".c64"
+    subprocess.run([sys.executable, str(Path(__file__).parent / "lora_tx.py"), c64, "--rate", str(rate),
+                    "--bw", str(bw), "--sf", str(sf), "--cr", str(cr), "--sync", sync, "--preamble",
+                    str(preamble)] + [f.hex() for f in frames], env=env, check=True, timeout=120)
+    x = np.fromfile(c64, dtype=np.complex64)
+    x = np.concatenate([np.zeros(rate // 5, np.complex64), x, np.zeros(rate // 5, np.complex64)])
+    e = ppm * 1e-6
+    n = np.arange(int(len(x) / (1 + e)))
+    t = n * (1 + e)
+    xr = np.interp(t, np.arange(len(x)), x.real) + 1j * np.interp(t, np.arange(len(x)), x.imag)
+    rng = np.random.default_rng(0)
+    y = 0.5 * xr * np.exp(2j * np.pi * e * centre_hz * n / rate) + (rng.standard_normal(len(n)) + 1j * rng.standard_normal(len(n))) * 0.05
+    write_cu8(path, y)
+    return path
+
+
+@needs_lora
+def test_lora_meshtastic_longfast(tmp_path):
+    key = mesh.DEFAULT_PSK
+    frames = [mesh.build_meshtastic(0xA1B2C3D4, 1001, mesh.pb_encode([(1, 1), (2, "Hello from the toolkit")]), key, 8),
+              mesh.build_meshtastic(0xA1B2C3D4, 1002, mesh.pb_encode(
+                  [(1, 3), (2, mesh.pb_encode([(1, ("f32", -338700000)), (2, ("f32", 1512100000))]))]), key, 8)]
+    path = lora_recording(tmp_path / "mt.cu8", frames, 1000000, 250000, 11, 1, "0x2B", 16, 919.875e6)
+    _, ev = run_radio("lora", path, wait=120, preset="mt:LongFast", region="ANZ", file_rate=1000000)
+    out = text(ev)
+    assert '!a1b2c3d4 → everyone [LongFast]: "Hello from the toolkit"' in out, out
+    assert "position -33.87000, 151.21000" in out, out
+
+
+@needs_lora
+def test_lora_meshcore_anz(tmp_path):
+    frames = [mesh.build_meshcore(5, mesh.build_group_text(mesh.PUBLIC_KEY, 1794200000, "Alice", "hi from the hill")),
+              mesh.build_meshcore(4, mesh.build_advert(bytes(range(32)), 1794200000, "Hilltop RPT", 2, -33.8, 151.2))]
+    path = lora_recording(tmp_path / "mc.cu8", frames, 250000, 62500, 7, 3, "0x12", 8, 916.575e6)
+    _, ev = run_radio("lora", path, wait=120, preset="meshcore", region="ANZ", file_rate=250000)
+    out = text(ev)
+    assert "[Public] Alice: hi from the hill" in out, out
+    assert "advert: Hilltop RPT (repeater) at -33.80000, 151.20000" in out, out
