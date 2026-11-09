@@ -8,6 +8,11 @@ Pick a mode on the left. **How to tune** says what to select on the SDR (USB, LS
 filter width and where to listen; **Settings** has every parameter that differs between stations
 and receivers. Click a signal on the waterfall to tune the decoder to it.
 
+**Decoded log** and **Raw data** open in their own windows: a rolling, timestamped history of
+everything decoded (also what the aircraft and ship tables update in place), and what the decoder
+itself outputs (rtl_433's JSON, NMEA sentences, LoRa frame bytes, direwolf, multimon-ng, jt9 and
+DSD-FME output). Both keep the last 5,000 lines while closed, and can be paused, cleared and saved.
+
 ## Modes (phase 1: speaker audio)
 
 | Mode | Decoder | Adjustable |
@@ -34,16 +39,27 @@ it), set under **Settings → Input**: handy without a dongle, or to decode some
 | Mode | Decoder | Adjustable |
 |---|---|---|
 | ISM sensors (433/868/915/315 MHz) | rtl_433 | frequency or several to hop between, sample rate, protocol filter |
-| ADS-B aircraft (1090 MHz) | readsb | your position (for distance and bearing), units, how long aircraft stay listed |
-| AIS ships (161.975 / 162.025 MHz) | rtl_fm + direwolf | channel, NMEA display |
+| ADS-B aircraft (1090 MHz) | readsb | units, how long aircraft stay listed |
+| AIS ships (161.975 / 162.025 MHz) | rtl_fm + direwolf, sentences decoded by the toolkit | channel, how long ships stay listed |
 | LoRa / Meshtastic / MeshCore | gr-lora_sdr (built separately, see below) | network preset, region, frequency, SF/BW/CR/sync word, channel keys |
 | DMR, P25, NXDN, D-Star, YSF, dPMR, M17 | DSD-FME with mbelib (built separately, see below) | frequency, protocol, channel bandwidth, squelch, play voice, save each call as WAV |
 
 The LoRa decoder corrects the transmitter's and dongle's crystal error (tested to ±20 ppm, an 18 kHz
 offset at 920 MHz) as long as the frequency setting is the network's real centre frequency.
 
-Every RTL-SDR mode also has device, gain and ppm correction settings. With no dongle plugged in
-it says so instead of hanging.
+Device, gain, frequency correction (ppm) and your location are set once for all RTL-SDR modes.
+Above the output, each mode shows what it's doing: the frequency, how long it's listened, the noise
+or signal level and what it has seen (for ISM, every transmission rtl_433 notices, decoded or not),
+so a quiet band looks quiet rather than broken. With no dongle plugged in it says so instead of
+hanging. ADS-B shows readsb's estimate of the dongle's clock error, a good starting value for the
+frequency correction.
+
+**ADS-B and AIS draw a map** (OpenStreetMap) above their tables: aircraft and ships with their
+heading, a label and a short trail, and your location if set. Drag to move, wheel to zoom, **Fit**
+to follow everything again. Tiles are cached in `~/.cache/sdr-toolkit/tiles` for 30 days and
+fetched at most two at a time, as OSM's tile usage policy asks. AIS decodes position reports
+(classes A and B) and static reports, so ships get their names, callsigns, types and
+destinations.
 
 **LoRa** decodes Meshtastic texts, positions and node names on the default channel (key `AQ==`, and
 any private channel you add the key for), and MeshCore adverts and Public channel texts. MeshCore
@@ -126,7 +142,7 @@ What the tests check, and against what:
 
 | ISM | a Nexus-TH sensor synthesized from rtl_433's protocol description, decoded by rtl_433 |
 | ADS-B | DF17 squitters (CRC-24, identification, CPR positions) encoded from the standard, decoded by readsb |
-| AIS | type 1 reports (HDLC, CRC-16, NRZI, GMSK) encoded from the standard, decoded by direwolf |
+| AIS | type 1 and 5 reports (HDLC, CRC-16, NRZI, GMSK) encoded from the standard, decoded by direwolf; the sentence decoder also against the AIVDM documentation's example (MMSI 366053209 in San Francisco Bay) |
 | Meshtastic, MeshCore | packets built to the published formats (Meshtastic firmware and protobufs, MeshCore docs), sent as real LoRa IQ by gr-lora_sdr's transmitter (`tests/lora_tx.py`) with a 5 ppm crystal error and noise, and decoded through the mode; the LongFast channel hash (8), MeshCore Public hash (0x11) and Meshtastic's documented default frequencies come out right. MeshCore's sync word (0x12, RadioLib's default) is assumed on both sides, so that value isn't checked |
 
 DMR/P25 has no test signal here (nothing on this PC generates those protocols): the tests check that

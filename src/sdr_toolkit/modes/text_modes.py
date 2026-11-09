@@ -195,6 +195,8 @@ class NavtexMode(Mode):
               "with NNNN. The decoder finds the bit order and polarity by itself.",
     )
 
+    raw_output = True
+
     def start(self, values):
         super().start(values)
         self.dec = NavtexDecoder(self.rate, float(self.values["center"]), float(self.values["shift"]))
@@ -207,7 +209,11 @@ class NavtexMode(Mode):
 
     def feed(self, audio, now):
         events = []
-        for ch in self.dec.feed(audio):
+        chars = self.dec.feed(audio)
+        if chars.strip():
+            # Everything the decoder produced, also between messages (noise, phasing).
+            events.append(Event("raw", repr(chars)[1:-1]))
+        for ch in chars:
             self._recent = (self._recent + ch)[-4:]
             if not self._in_msg:
                 if self._recent == "ZCZC":

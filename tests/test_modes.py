@@ -290,20 +290,57 @@ def test_adsb(tmp_path):
     assert a["dist"].split()[1] == "km" and 8 < float(a["dist"].split()[0]) < 12      # 9.3 km
 
 
+def _ships(ev):
+    tables = [e.data["rows"] for e in ev if e.kind == "table" and e.data["rows"]]
+    return {r["mmsi"]: r for r in tables[-1]} if tables else {}
+
+
 def test_ais(tmp_path):
-    path = radio_signals.save(tmp_path / "ais.cu8", radio_signals.ais_iq(repeats=5))
-    _, ev = run_radio("ais", path, file_rate=240000)
-    out = text(ev)
+    payloads = [radio_signals.ais_payload(mmsi=503123456 + k) for k in range(5)]
+    path = radio_signals.save(tmp_path / "ais.cu8", radio_signals.ais_iq(payloads=payloads))
+    _, ev = run_radio("ais", path, file_rate=240000, lat="-33.87", lon="151.21")
+    ships = _ships(ev)
     # Bursts start abruptly out of noise; direwolf misses about 1 in 20 of these at any level.
-    assert out.count("Position Report Class A") >= 4, out
-    assert '"503123456"' in out and "S 33 51.0000, E 151 12.6000" in out
+    assert len(ships) >= 4, ships
+    s = ships.get(503123456) or next(iter(ships.values()))
+    assert s["pos"] == "-33.85000, 151.21000" and s["speed"] == "12.3" and s["course"] == "87"
+    assert s["dist"] == "2.2 km"                    # from the location given
+    points = [e.data for e in ev if e.kind == "points"][-1]
+    assert points["home"] == (-33.87, 151.21) and len(points["points"]) == len(ships)
+    assert any("NMEA" in e.text or "!AIVDM" in e.text for e in ev if e.kind == "raw")
+    assert [e for e in ev if e.kind == "log"]
+
+
+def test_ais_names_from_static_reports(tmp_path):
+    payloads = [radio_signals.ais_static_payload(name="SPIRIT OF TEST"), radio_signals.ais_payload()]
+    path = radio_signals.save(tmp_path / "ais.cu8", radio_signals.ais_iq(payloads=payloads))
+    _, ev = run_radio("ais", path, file_rate=240000)
+    s = _ships(ev)[503123456]
+    assert s["name"] == "SPIRIT OF TEST" and s["type"] == "cargo" and s["pos"]
+    assert any(e.data["points"] and e.data["points"][0]["label"] == "SPIRIT OF TEST"
+               for e in ev if e.kind == "points")
 
 
 def test_ais_channel_offset(tmp_path):
     # The AIS channel 50 kHz off the recording's centre.
     path = radio_signals.save(tmp_path / "ais.cu8", radio_signals.ais_iq(repeats=2, offset_hz=50000))
     _, ev = run_radio("ais", path, file_rate=240000, file_offset=50000)
-    assert text(ev).count("Position Report Class A") >= 1
+    assert _ships(ev)
+
+
+def test_ais_decoder():
+    from sdr_toolkit.engines import ais
+    a = ais.Assembler()
+    # The example in the AIVDM documentation (gpsd): MMSI 366053209 in San Francisco Bay.
+    r = a.add("!AIVDM,1,1,,B,15M67FC000G?ufbE`FepT@3n00Sa,0*5C")
+    assert r.mmsi == 366053209 and abs(r.fields["lat"] - 37.80212) < 1e-4 and abs(r.fields["lon"] + 122.34162) < 1e-4
+    assert a.add("!AIVDM,1,1,,B,15M67FC000G?ufbE`FepT@3n00Sa,0*5D") is None      # bad checksum
+    # A two-sentence type 5 is joined before decoding.
+    bits = "".join(map(str, radio_signals.ais_static_payload(name="HARBOUR CAT", callsign="VK2XYZ")))
+    first, second = ais.encode_sentences(bits, seq="7")
+    assert a.add(first) is None
+    r = a.add(second)
+    assert r.kind == 5 and r.fields["name"] == "HARBOUR CAT" and r.fields["callsign"] == "VK2XYZ"
 
 
 def _dongle_present():
@@ -600,3 +637,39 @@ def test_updater_falls_back_to_the_plain_link(monkeypatch):
     data = updater._download("https://api.github.com/repos/ssjrocks/sdr-toolkit/releases/assets/1",
                              "https://github.com/ssjrocks/sdr-toolkit/releases/download/v1/x.json")
     assert data == b"data" and len(tried) == 2
+
+
+def test_ism_activity_line(tmp_path):
+    path = radio_signals.save(tmp_path / "nexus.cu8", radio_signals.nexus_iq())
+    mode, ev = run_radio("ism", path)
+    line = mode.activity()
+    assert line.startswith("Listening on the recording") and "1 decoded" in line, line
+
+
+def test_adsb_map_points(tmp_path):
+    path = radio_signals.save(tmp_path / "adsb.cu8", radio_signals.adsb_iq(0x7C1234, "QFA123", -33.95, 151.18, 12000))
+    _, ev = run_radio("adsb", path, lat="-33.87", lon="151.21")
+    pts = [e.data for e in ev if e.kind == "points" and e.data["points"]]
+    assert pts and pts[-1]["home"] == (-33.87, 151.21)
+    p = pts[-1]["points"][0]
+    assert p["kind"] == "aircraft" and p["label"].startswith("QFA123") and abs(p["lat"] + 33.95) < 0.001
+    assert any("QFA123" in e.text for e in ev if e.kind == "log")
+
+
+def test_map_projection_and_fit():
+    from PyQt6.QtWidgets import QApplication
+    from sdr_toolkit.mapview import MapView, from_world, to_world
+    for lat, lon in ((-33.87, 151.21), (51.5, -0.12), (0, 0)):
+        x, y = to_world(lat, lon, 10)
+        la, lo = from_world(x, y, 10)
+        assert abs(la - lat) < 1e-9 and abs(lo - lon) < 1e-9
+    app = QApplication.instance() or QApplication([])
+    m = MapView(online=False)
+    m.resize(800, 500)
+    m.set_points([{"id": 1, "lat": -33.95, "lon": 151.18}, {"id": 2, "lat": -33.70, "lon": 151.40}],
+                 home=(-33.87, 151.21))
+    for la, lo in ((-33.95, 151.18), (-33.70, 151.40), (-33.87, 151.21)):
+        pt = m._screen(la, lo)
+        assert 0 <= pt.x() <= 800 and 0 <= pt.y() <= 500
+    assert m.zoom >= 9                       # close in, not the whole world
+    assert app is not None

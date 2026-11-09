@@ -1,5 +1,6 @@
 """Main window: mode list, waterfall, decoded output, settings and tuning help."""
 
+import collections
 import html
 import logging
 import time
@@ -44,6 +45,7 @@ from PyQt6.QtWidgets import (
 
 from . import APP_ID, APP_NAME, __version__, appreports, deps, updater
 from .capture import AudioCapture, list_outputs
+from .mapview import MapView
 from .modes import GROUPS, MODES
 from .modes.base import Event, MissingParts, Mode, Setting
 
@@ -347,6 +349,83 @@ class InstallDialog(QDialog):
         super().reject()
 
 
+class LogWindow(QDialog):
+    """A rolling log in its own window: decoded data, or the decoder's raw output."""
+
+    KEEP = 5000
+
+    def __init__(self, parent, title, empty_note):
+        super().__init__(parent)
+        self.setWindowFlag(Qt.WindowType.Window)
+        self.setWindowTitle(title)
+        self.resize(820, 420)
+        self.lines = collections.deque(maxlen=self.KEEP)
+        self.empty_note = empty_note
+        self._held = []
+        self.view = QPlainTextEdit()
+        self.view.setReadOnly(True)
+        self.view.setMaximumBlockCount(self.KEEP)
+        self.view.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        self.view.setPlaceholderText(empty_note)
+        self.pause = QPushButton("Pause")
+        self.pause.setCheckable(True)
+        self.pause.toggled.connect(self._on_pause)
+        clear = QPushButton("Clear")
+        clear.clicked.connect(self.clear)
+        save = QPushButton("Save…")
+        save.clicked.connect(self.save)
+        row = QHBoxLayout()
+        row.addWidget(self.pause)
+        row.addWidget(clear)
+        row.addStretch(1)
+        row.addWidget(save)
+        lay = QVBoxLayout(self)
+        lay.addWidget(self.view, 1)
+        lay.addLayout(row)
+
+    def add(self, text):
+        # Some modes' lines start with their own time already.
+        stamped = len(text) >= 8 and text[2] == ":" and text[5] == ":" and text[:2].isdigit()
+        line = text if stamped else f"{time.strftime('%H:%M:%S')}  {text}"
+        self.lines.append(line)
+        if self.pause.isChecked():
+            self._held.append(line)
+            self.pause.setText(f"Resume ({len(self._held)} new)")
+        elif self.isVisible():
+            self._append(line)
+
+    def _append(self, line):
+        bar = self.view.verticalScrollBar()
+        follow = bar.value() >= bar.maximum() - 2
+        self.view.appendPlainText(line)
+        if follow:
+            bar.setValue(bar.maximum())
+
+    def _on_pause(self, on):
+        if not on:
+            for line in self._held:
+                self._append(line)
+            self._held = []
+            self.pause.setText("Pause")
+
+    def showEvent(self, ev):
+        # Fill in what arrived while the window was closed.
+        self.view.setPlainText("\n".join(self.lines))
+        self.view.verticalScrollBar().setValue(self.view.verticalScrollBar().maximum())
+        super().showEvent(ev)
+
+    def clear(self):
+        self.lines.clear()
+        self._held = []
+        self.view.clear()
+
+    def save(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save log", str(Path.home() / "sdr-toolkit-log.txt"),
+                                              "Text (*.txt)")
+        if path:
+            Path(path).write_text("\n".join(self.lines) + "\n", encoding="utf-8")
+
+
 class MainWindow(QMainWindow):
     report_finished = pyqtSignal(bool)
 
@@ -426,10 +505,17 @@ class MainWindow(QMainWindow):
         self.table.verticalHeader().setVisible(False)
         self.table.setFont(mono)
         self.picture = PictureView()
+        self.map = MapView()
+        self.table_page = QSplitter(Qt.Orientation.Vertical)
+        self.table_page.addWidget(self.map)
+        self.table_page.addWidget(self.table)
+        self.table_page.setSizes([420, 260])
         self.output = QStackedWidget()
         self.output.addWidget(text_page)
-        self.output.addWidget(self.table)
+        self.output.addWidget(self.table_page)
         self.output.addWidget(self.picture)
+        self.decoded_log = LogWindow(self, "Decoded log", "Everything decoded appears here, with the time.")
+        self.raw_log = LogWindow(self, "Raw data", "The decoder's raw output appears here.")
         self.title = QLabel("")
         self.title.setWordWrap(True)
 
@@ -462,7 +548,13 @@ class MainWindow(QMainWindow):
         report_btn = QPushButton("Report a problem…")
         report_btn.clicked.connect(self.report_problem)
         btns = QHBoxLayout()
-        for b in (clear_btn, copy_btn, save_btn, self.folder_btn):
+        decoded_btn = QPushButton("Decoded log")
+        decoded_btn.setToolTip("A rolling, timestamped log of everything decoded, in its own window")
+        decoded_btn.clicked.connect(lambda: self._show_log(self.decoded_log))
+        raw_btn = QPushButton("Raw data")
+        raw_btn.setToolTip("What the decoder outputs before the toolkit tidies it up, in its own window")
+        raw_btn.clicked.connect(lambda: self._show_log(self.raw_log))
+        for b in (clear_btn, copy_btn, save_btn, self.folder_btn, decoded_btn, raw_btn):
             btns.addWidget(b)
         btns.addStretch(1)
         btns.addWidget(updates_btn)
@@ -563,10 +655,16 @@ class MainWindow(QMainWindow):
             return
         self.select_mode(mode_id)
 
+    @staticmethod
+    def _key(M, key) -> str:
+        """Where a setting is stored: shared ones once for every mode, the rest per mode."""
+        s = next((s for s in M.settings if s.key == key), None)
+        return f"radio/{key}" if s is not None and s.shared else f"{M.id}/{key}"
+
     def _values(self, M) -> dict:
         values = {}
         for s in M.settings:
-            raw = self.settings.value(f"{M.id}/{s.key}", None)
+            raw = self.settings.value(self._key(M, s.key), None)
             values[s.key] = s.default if raw is None else self._convert(s, raw)
         return values
 
@@ -600,6 +698,13 @@ class MainWindow(QMainWindow):
         self.waterfall.set_range(0, hi)
         self.waterfall.markers = self.mode.markers()
         self.folder_btn.setVisible("folder" in self.mode.values)
+        self.map.setVisible(getattr(self.mode, "map", False))
+        self.map.set_points([], None)
+        self.map.follow = True
+        for w in (self.decoded_log, self.raw_log):
+            w.add(f"──── {self.mode.name} ────")
+        self.raw_log.setWindowTitle(f"Raw data: {self.mode.name}")
+        self.decoded_log.setWindowTitle(f"Decoded log: {self.mode.name}")
         # Radio modes read the RTL-SDR or a recording, not the speakers.
         radio = self._is_radio()
         self.level_label.setText("")
@@ -615,6 +720,7 @@ class MainWindow(QMainWindow):
     def _setup_output(self):
         m = self.mode
         self.title.setText("")
+        self._warned = False
         self.live.setText("")
         self.text.clear()
         self.picture.show_image(None)
@@ -628,7 +734,7 @@ class MainWindow(QMainWindow):
             for i in range(len(m.columns) - 1):
                 hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
             hh.setSectionResizeMode(len(m.columns) - 1, QHeaderView.ResizeMode.Stretch)
-            self.output.setCurrentWidget(self.table)
+            self.output.setCurrentWidget(self.table_page)
         elif m.output == "image":
             self.output.setCurrentWidget(self.picture)
         else:
@@ -637,7 +743,7 @@ class MainWindow(QMainWindow):
     def on_setting(self, key, value):
         if self.mode is None:
             return
-        self.settings.setValue(f"{self.mode.id}/{key}", value)
+        self.settings.setValue(self._key(self.mode, key), value)
         values = dict(self.mode.values)
         values[key] = value
         setting = next(s for s in self.mode.settings if s.key == key)
@@ -714,8 +820,11 @@ class MainWindow(QMainWindow):
             # modes start as soon as they're picked.
             self.status.setText(str(e))
             self.title.setText(f"<span style='color:#c33'>{html.escape(str(e))}</span>")
+            self._warned = True
             return False
         self._mode_started = True
+        self._warned = False
+        self.title.setText("")
         log.info("mode %s started", self.mode.id)
         return True
 
@@ -787,28 +896,48 @@ class MainWindow(QMainWindow):
     def handle(self, events: list[Event]):
         for e in events:
             if e.kind == "line":
-                if e.style == "warn" and self.mode.output != "text":
-                    # Table and picture modes have no text pane: warnings go above the output.
+                if e.style == "warn" and (self.mode.output != "text" or self._is_radio()):
+                    # Warnings go above the output (table and picture modes have no text pane,
+                    # and radio modes' activity line lives there).
                     self.title.setText(f"<span style='color:#c33'>{html.escape(e.text)}</span>")
+                    self._warned = True
                 color = {"dim": "gray", "warn": "#c33"}.get(e.style)
                 text = html.escape(e.text).replace(" ", "&nbsp;") or "&nbsp;"
                 self.text.appendHtml(f"<span style='color:{color}'>{text}</span>" if color else text)
+                if e.style != "warn" and e.text.strip():
+                    self.decoded_log.add(e.text.strip())
             elif e.kind == "live":
                 self.live.setText(e.text)
             elif e.kind == "row":
                 self._add_row(e.data)
+                self.decoded_log.add("  ".join(f"{h}: {e.data[k]}" for k, h in self.mode.columns
+                                               if str(e.data.get(k, "")) != ""))
+            elif e.kind == "log":
+                self.decoded_log.add(e.text)
+            elif e.kind == "raw":
+                self.raw_log.add(e.text)
+            elif e.kind == "points":
+                self.map.set_points(e.data["points"], e.data.get("home"))
             elif e.kind == "table":
                 self._set_rows(e.data["rows"])
+            elif e.kind == "image" and e.done:
+                self._last_image = e.image
+                self.picture.show_image(to_qimage(e.image), e.row, getattr(self.mode, "aspect", None))
+                self.title.setText(e.title)
+                self.decoded_log.add(e.title)
             elif e.kind == "image":
                 self._last_image = e.image
                 self.picture.show_image(to_qimage(e.image), e.row, getattr(self.mode, "aspect", None))
                 self.title.setText(e.title)
             elif e.kind == "status":
                 self.status.setText(e.text)
+            elif e.kind == "activity":
+                if not self._warned:
+                    self.title.setText(html.escape(e.text))
             elif e.kind == "setting":
                 for key, value in e.data.items():
                     self.form.set_value(key, value)
-                    self.settings.setValue(f"{self.mode.id}/{key}", value)
+                    self.settings.setValue(self._key(self.mode, key), value)
 
     def _set_rows(self, rows):
         """Replace the whole table (a list that updates in place, like aircraft)."""
@@ -880,6 +1009,11 @@ class MainWindow(QMainWindow):
         folder = Path(self.mode.values.get("folder", Path.home())).expanduser()
         folder.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _show_log(self, window):
+        window.show()
+        window.raise_()
+        window.activateWindow()
 
     # ---- missing parts and updates -------------------------------------
 

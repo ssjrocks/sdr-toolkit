@@ -1,45 +1,64 @@
-"""AIS ship positions on 161.975 / 162.025 MHz, decoded by direwolf."""
+"""AIS ship positions on 161.975 / 162.025 MHz: direwolf receives, the toolkit decodes the sentences."""
 
+import math
 import shutil
 import tempfile
 import time
 from pathlib import Path
 
+from ..engines.ais import Assembler
 from .base import Event, Setting, Tuning
-from .radio import RADIO_SETTINGS, RadioMode, fm_audio_chunks
+from .radio import LOCATION_SETTINGS, RADIO_SETTINGS, RadioMode, fm_audio_chunks, home
 
 AUDIO_RATE = 48000
+
+
+def distance_km(a, b) -> float:
+    (la1, lo1), (la2, lo2) = a, b
+    p1, p2 = math.radians(la1), math.radians(la2)
+    dp, dl = p2 - p1, math.radians(lo2 - lo1)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 6371.0 * 2 * math.asin(math.sqrt(h))
 
 
 class AISMode(RadioMode):
     id = "ais"
     name = "AIS ships (VHF)"
     group = "RTL-SDR"
-    summary = "Ship identities, positions, speed and course from their AIS transponders. Decoded by direwolf."
+    summary = "Ship names, positions, speed and course from their AIS transponders, on a map. Received by direwolf."
+    output = "table"
+    map = True
+    columns = (("mmsi", "MMSI"), ("name", "Name"), ("type", "Type"), ("status", "Status"), ("pos", "Position"),
+               ("speed", "Speed kn"), ("course", "Course°"), ("dist", "Distance"), ("seen", "Seen"))
     requires = ("direwolf", "rtl-sdr")
     iq_rate = 240000
-    settings = RADIO_SETTINGS + (
+    settings = RADIO_SETTINGS + LOCATION_SETTINGS + (
         Setting("channel", "Channel", "161.975M", "choice", restart=True,
                 choices=(("161.975M", "AIS 1 (87B), 161.975 MHz"), ("162.025M", "AIS 2 (88B), 162.025 MHz"),
                          ("custom", "Other (below)")),
                 help="Ships alternate between both channels: either one shows them all, more slowly."),
         Setting("custom_freq", "Other frequency", "161.975M", "text", restart=True),
+        Setting("ttl", "Drop ships after", 30, "int", 1, 240, suffix=" min",
+                help="Ships not heard for this long leave the list and the map."),
         Setting("file_rate", "Recording sample rate", 240000, "int", 48000, 3200000, 1000, suffix=" Hz",
                 restart=True),
         Setting("file_offset", "Channel offset in recording", 0, "int", -1600000, 1600000, 1000, suffix=" Hz",
                 restart=True, help="How far the AIS channel sits from the recording's centre frequency."),
-        Setting("raw", "Show NMEA sentences", False, "bool"),
     )
     tuning = Tuning(
         sdr_mode="Raw IQ from the RTL-SDR, FM-demodulated by rtl_fm (the toolkit tunes it)",
         bandwidth="25 kHz channel",
         frequencies=(("161.975 MHz", "AIS 1"), ("162.025 MHz", "AIS 2")),
         notes="Ships are heard to about 30-60 km from a high antenna near water; inland you may only "
-              "hear ships on rivers. A VHF marine or 2 m antenna works well.",
+              "hear ships on rivers. A VHF marine or 2 m antenna works well. Set the dongle's frequency "
+              "correction (ppm): a 25 kHz channel doesn't leave much room.",
     )
 
     def freq(self):
         return self.values["custom_freq"] if self.values["channel"] == "custom" else self.values["channel"]
+
+    def listening_on(self):
+        return self.freq().rstrip("M") + " MHz"
 
     def upstream(self):
         if not self.live():
@@ -62,6 +81,11 @@ class AISMode(RadioMode):
         (self._dir / "direwolf.conf").write_text(
             f"ADEVICE stdin null\nARATE {AUDIO_RATE}\nACHANNELS 1\nMODEM AIS\nAGWPORT 0\nKISSPORT 0\n")
         self._ready = False
+        self._asm = Assembler()
+        self._ships: dict[int, dict] = {}
+        self._messages = 0
+        self._last_table = 0.0
+        self._dirty = False
         return ["direwolf", "-c", "direwolf.conf", "-r", str(AUDIO_RATE), "-n", "1", "-b", "16", "-t", "0",
                 "-B", "AIS", "-"]
 
@@ -73,25 +97,75 @@ class AISMode(RadioMode):
         if not self._ready:
             if line.startswith("Disabled AGW") or line.startswith("Disabled KISS"):
                 self._ready = True
-                return [Event("status", "listening for AIS")]
             return [Event("line", line, style="warn")] if "rror" in line else []
-        if not line or "audio level" in line or "input level" in line or line.startswith(("Solution", "Setting audio")):
+        if "!AIVDM" not in line:
             return []
-        if line.startswith("["):
-            if not self.values["raw"]:
-                return []
-            nmea = line[line.find("!AIVDM"):] if "!AIVDM" in line else line
-            return [Event("line", f"          {nmea}", style="dim")]
-        if line.startswith("AIS "):
-            return [Event("line", f"{time.strftime('%H:%M:%S')}  {line}")]
-        return [Event("line", f"          {line}")]
+        report = self._asm.add(line[line.index("!AIVDM"):])
+        if report is None or not report.fields:
+            return []
+        self._messages += 1
+        now = time.time()
+        ship = self._ships.setdefault(report.mmsi, {"mmsi": report.mmsi, "track": []})
+        ship.update(report.fields)
+        ship["last"] = now
+        if "lat" in report.fields:
+            ship["track"] = (ship["track"] + [(report.fields["lat"], report.fields["lon"])])[-30:]
+        self._dirty = True
+        return [Event("log", self._describe(report))]
+
+    def _describe(self, report) -> str:
+        s = self._ships[report.mmsi]
+        f = report.fields
+        name = s.get("name") or str(report.mmsi)
+        if "lat" in f:
+            text = f"{name}: {f['lat']:.5f}, {f['lon']:.5f}"
+            if "speed" in f:
+                text += f", {f['speed']:.1f} kn"
+            if "course" in f:
+                text += f", course {f['course']:.0f}°"
+            return text
+        bits = [f"{k} {f[k]}" for k in ("callsign", "type", "destination") if k in f]
+        return f"{report.mmsi} is {f.get('name', name)}" + (f" ({', '.join(bits)})" if bits else "")
+
+    def poll(self):
+        events = super().poll()
+        if self._dirty and time.time() - self._last_table >= 1.0:
+            self._dirty = False
+            self._last_table = time.time()
+            events += self._tables()
+        return events
+
+    def _tables(self):
+        now = time.time()
+        ttl = self.values["ttl"] * 60
+        self._ships = {k: s for k, s in self._ships.items() if now - s["last"] < ttl}
+        here = home(self.values)
+        rows, points = [], []
+        for s in sorted(self._ships.values(), key=lambda s: -s["last"]):
+            pos = (s["lat"], s["lon"]) if "lat" in s else None
+            dist = f"{distance_km(here, pos):.1f} km" if here and pos else ""
+            rows.append({"mmsi": s["mmsi"], "name": s.get("name", ""), "type": s.get("type", ""),
+                         "status": s.get("status", ""),
+                         "pos": f"{pos[0]:.5f}, {pos[1]:.5f}" if pos else "",
+                         "speed": f"{s['speed']:.1f}" if "speed" in s else "",
+                         "course": f"{s['course']:.0f}" if "course" in s else "", "dist": dist,
+                         "seen": f"{int(now - s['last'])} s"})
+            if pos:
+                points.append({"id": s["mmsi"], "lat": pos[0], "lon": pos[1], "kind": "ship",
+                               "label": s.get("name") or str(s["mmsi"]),
+                               "heading": s.get("heading", s.get("course")), "track": s["track"]})
+        return [Event("table", data={"rows": rows}),
+                Event("points", data={"points": points, "home": here})]
+
+    def activity(self):
+        return f"{super().activity()} · {len(self._ships)} ships, {self._messages} messages"
 
     def stop(self):
-        events = super().stop()
+        events = super().stop() + (self._tables() if hasattr(self, "_ships") else [])
         shutil.rmtree(getattr(self, "_dir", ""), ignore_errors=True)
         return events
 
     def finished(self, code):
         if not self.live():
-            return [Event("status", "recording finished")]
+            return self._tables() + [Event("status", "recording finished")]
         return super().finished(code)

@@ -6,6 +6,7 @@ RTL-SDR itself (rtl_433, readsb, rtl_fm), or reads a recording: unsigned
 "How to tune" gives.
 """
 
+import time
 from pathlib import Path
 
 import numpy as np
@@ -19,13 +20,30 @@ RADIO_SETTINGS = (
             choices=(("rtl", "RTL-SDR"), ("file", "IQ recording (.cu8)")),
             help="A recording is unsigned 8-bit IQ, as rtl_sdr writes it, at the sample rate below."),
     Setting("file", "Recording", "", "text", restart=True, help="Path of the .cu8 recording."),
-    Setting("device", "Device", "0", "text", restart=True,
-            help="RTL-SDR index (0 is the first) or :serial (e.g. :00000001)."),
-    Setting("gain", "Gain", "auto", "text", restart=True,
-            help="'auto', or dB (e.g. 40.2). Lower it if strong local signals overload the dongle."),
-    Setting("ppm", "Frequency correction", 0, "int", -200, 200, restart=True, suffix=" ppm",
-            help="The dongle's crystal error. Cheap dongles are often 30-80 ppm off; TCXO ones about 1."),
+    Setting("device", "Device", "0", "text", restart=True, shared=True,
+            help="RTL-SDR index (0 is the first) or :serial (e.g. :00000001). Shared by all RTL-SDR modes."),
+    Setting("gain", "Gain", "auto", "text", restart=True, shared=True,
+            help="'auto', or dB (e.g. 40.2). Lower it if strong local signals overload the dongle. "
+                 "Shared by all RTL-SDR modes."),
+    Setting("ppm", "Frequency correction", 0, "int", -200, 200, restart=True, suffix=" ppm", shared=True,
+            help="The dongle's crystal error, shared by all RTL-SDR modes. Cheap dongles are often "
+                 "30-80 ppm off, TCXO ones about 1; ADS-B shows readsb's estimate. Narrow modes (AIS, "
+                 "DMR, LoRa) need it."),
 )
+# Where you are: distances, and the map's home marker.
+LOCATION_SETTINGS = (
+    Setting("lat", "Your latitude", "", "text", restart=True, shared=True,
+            help="Optional, decimal degrees (e.g. -33.87). Gives distances, the map's home marker, and "
+                 "aircraft positions from single messages. Shared by all RTL-SDR modes."),
+    Setting("lon", "Your longitude", "", "text", restart=True, shared=True),
+)
+
+
+def home(values) -> tuple[float, float] | None:
+    try:
+        return float(values["lat"]), float(values["lon"])
+    except (KeyError, ValueError):
+        return None
 
 
 def read_cu8(path, start=0, count=None) -> np.ndarray:
@@ -121,7 +139,28 @@ class RadioMode(ProcessMode):
 
     def start(self, values):
         self._problem = None
+        self._t0 = time.time()
+        self._last_activity = 0.0
         super().start(values)
+
+    def poll(self):
+        events = super().poll()
+        if not self._problem and time.time() - self._last_activity >= 1.0:
+            self._last_activity = time.time()
+            events.append(Event("activity", self.activity()))
+        return events
+
+    def elapsed(self) -> str:
+        secs = int(time.time() - self._t0)
+        return f"{secs // 3600}:{secs // 60 % 60:02d}:{secs % 60:02d}" if secs >= 3600 else f"{secs // 60}:{secs % 60:02d}"
+
+    def listening_on(self) -> str:
+        """Where it listens, for the activity line ("161.975 MHz")."""
+        return "the RTL-SDR"
+
+    def activity(self) -> str:
+        where = self.listening_on() if self.live() else "the recording"
+        return f"Listening on {where} · {self.elapsed()}"
 
     def upstream_error(self, line):
         return self.device_problem(line) or super().upstream_error(line)

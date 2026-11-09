@@ -75,6 +75,9 @@ if DONGLE:
 shots = Path(sys.argv[1]) if len(sys.argv) > 1 else None
 
 app = QApplication([])
+gui.MapView.online = False     # no tile downloads from tests
+_real_init = gui.MapView.__init__
+gui.MapView.__init__ = lambda self, *a, **k: _real_init(self, *a, **{**k, "online": False})
 win = gui.MainWindow(Path(tempfile.mkdtemp()))
 win.resize(1280, 800)
 win.show()
@@ -199,6 +202,33 @@ for _ in range(50):
     app.processEvents()
     __import__("time").sleep(0.02)
 results["update"] = shown and calls == [("install", "9.9.9"), ("restart",)]
+# The map shows only in map modes; the log windows collect lines while closed.
+win.tree.setCurrentItem(win._items["morse"])
+app.processEvents()
+no_map = win.map.isHidden()
+win.handle([gui.Event("log", "test decoded line"), gui.Event("raw", "test raw line")])
+dl, rl = win.decoded_log, win.raw_log
+win._show_log(dl)
+app.processEvents()
+shown_text = dl.view.toPlainText()
+dl.pause.setChecked(True)
+win.handle([gui.Event("log", "while paused")])
+held = "while paused" not in dl.view.toPlainText() and "1 new" in dl.pause.text()
+dl.pause.setChecked(False)
+results["logs"] = (no_map and "test decoded line" in shown_text and "test raw line" in "\n".join(rl.lines)
+                   and held and "while paused" in dl.view.toPlainText())
+win.settings.setValue("ais/input", "file")       # never the live dongle
+win.tree.setCurrentItem(win._items["ais"])
+app.processEvents()
+win.handle([gui.Event("points", data={"points": [{"id": 1, "lat": -33.85, "lon": 151.21, "kind": "ship",
+                                                   "label": "TEST SHIP", "heading": 87,
+                                                   "track": [(-33.86, 151.20), (-33.85, 151.21)]}],
+                                      "home": (-33.87, 151.21)})])
+app.processEvents()
+results["map"] = win.map.isVisible() and len(win.map.points) == 1 and win.map.zoom >= 10
+if shots:
+    win.grab().save(str(shots / "ais_map.png"))
+    dl.grab().save(str(shots / "decoded_log.png"))
 win.close()
 print(results, "errors:", len(errors))
 ok = all(results.values()) and not errors

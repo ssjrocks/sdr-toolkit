@@ -138,6 +138,8 @@ class WSJTMode(Mode):
             count = 0
             hl = self.values["highlight"].strip().upper()
             for line in out.splitlines():
+                if line.strip():
+                    events.append(Event("raw", line))
                 m = DECODE.match(line)
                 if not m:
                     continue

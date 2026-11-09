@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from .base import Event, Setting, Tuning
-from .radio import RADIO_SETTINGS, RadioMode
+from .radio import LOCATION_SETTINGS, RADIO_SETTINGS, RadioMode
 
 
 class ADSBMode(RadioMode):
@@ -16,16 +16,13 @@ class ADSBMode(RadioMode):
     group = "RTL-SDR"
     summary = "Aircraft positions, callsigns, altitude and speed from their 1090 MHz transponders. Decoded by readsb."
     output = "table"
+    map = True
     columns = (("hex", "ICAO"), ("flight", "Callsign"), ("squawk", "Squawk"), ("alt", "Altitude ft"),
                ("gs", "Speed kt"), ("track", "Track°"), ("pos", "Position"), ("dist", "Distance"),
                ("rssi", "dBFS"), ("msgs", "Msgs"), ("seen", "Seen"))
     requires = ("readsb",)
     iq_rate = 2400000
-    settings = RADIO_SETTINGS + (
-        Setting("lat", "Your latitude", "", "text", restart=True,
-                help="Optional, decimal degrees (e.g. -33.87). Gives distances, and positions from "
-                     "single messages."),
-        Setting("lon", "Your longitude", "", "text", restart=True),
+    settings = RADIO_SETTINGS + LOCATION_SETTINGS + (
         Setting("units", "Distance in", "km", "choice", choices=(("km", "km"), ("nm", "nautical miles"))),
         Setting("ttl", "Drop aircraft after", 60, "int", 10, 600, 10, suffix=" s",
                 help="Aircraft not heard for this long leave the list."),
@@ -58,6 +55,8 @@ class ADSBMode(RadioMode):
             pass
         self._last_read = 0.0
         self._known = {}
+        self._tracks: dict[str, list] = {}
+        self._logged: dict[str, tuple] = {}
         return cmd
 
     def parse(self, line):
@@ -103,8 +102,53 @@ class ADSBMode(RadioMode):
                          "track": round(track) if track is not None else "", "pos": pos, "dist": dist,
                          "rssi": a.get("rssi", ""), "msgs": a.get("messages", ""),
                          "seen": f"{now - last:.0f} s"})
+        self._count = (len(rows), data.get("messages", 0))
+        points, log = [], []
+        for hexid, (last, a) in self._known.items():
+            if "lat" not in a:
+                continue
+            track = self._tracks.setdefault(hexid, [])
+            if not track or track[-1] != (a["lat"], a["lon"]):
+                track.append((a["lat"], a["lon"]))
+                del track[:-60]
+            flight = a.get("flight", "").strip()
+            alt = a.get("alt_baro", a.get("alt_geom", ""))
+            points.append({"id": hexid, "lat": a["lat"], "lon": a["lon"], "kind": "aircraft",
+                           "label": f"{flight or hexid.upper()} {alt}" if alt != "" else (flight or hexid.upper()),
+                           "heading": a.get("track", a.get("calc_track")), "track": list(track)})
+            # The decoded log gets a line when an aircraft appears or its callsign arrives.
+            key = (flight,)
+            if self._logged.get(hexid) != key:
+                self._logged[hexid] = key
+                log.append(Event("log", f"{hexid.upper()} {flight or '(no callsign yet)'}: {alt} ft, "
+                                        f"{a['lat']:.4f}, {a['lon']:.4f}"))
+        self._tracks = {k: v for k, v in self._tracks.items() if k in self._known}
+        here = None
+        try:
+            here = (float(self.values["lat"]), float(self.values["lon"]))
+        except (KeyError, ValueError):
+            pass
         return [Event("table", data={"rows": rows}),
-                Event("status", f"{len(rows)} aircraft, {data.get('messages', 0)} messages")]
+                Event("points", data={"points": points, "home": here})] + log
+
+    def listening_on(self):
+        return "1090 MHz"
+
+    def activity(self):
+        parts = [super().activity()]
+        n, msgs = getattr(self, "_count", (0, 0))
+        parts.append(f"{n} aircraft, {msgs} messages")
+        try:
+            st = json.loads((self._dir / "stats.json").read_text())
+            loc = st.get("last1min", {}).get("local", {})
+            if "signal" in loc and "noise" in loc:
+                parts.append(f"signal {loc['signal']:.0f} dB, noise {loc['noise']:.0f} dB")
+            ppm = st.get("estimated_ppm")
+            if ppm is not None and n:
+                parts.append(f"dongle clock about {ppm:+.0f} ppm (readsb's estimate)")
+        except (OSError, ValueError, AttributeError):
+            pass
+        return " · ".join(parts)
 
     def stop(self):
         events = super().stop()

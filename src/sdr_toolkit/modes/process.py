@@ -127,6 +127,7 @@ class ProcessMode(Mode):
             if line.startswith(UPSTREAM):
                 events += self.upstream_error(line[len(UPSTREAM):])
                 continue
+            events.append(Event("raw", line))
             events += self.parse(line)
         return events
 
@@ -168,7 +169,8 @@ class ProcessMode(Mode):
                 line = self._lines.get_nowait()
             except queue.Empty:
                 break
-            if line is not None:
+            if line is not None and not line.startswith(UPSTREAM):
+                events.append(Event("raw", line))
                 events += self.parse(line)
         self._proc = None
         return events

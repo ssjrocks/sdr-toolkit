@@ -91,6 +91,7 @@ class DigitalVoiceMode(RadioMode):
         self._dir = Path(tempfile.mkdtemp(prefix="sdr-toolkit-dmr-"))
         self._events = self._dir / "events.log"
         self._seen = 0
+        self._calls = 0
         if self.live():
             try:
                 freq = float(v["freq_mhz"])
@@ -149,10 +150,17 @@ class DigitalVoiceMode(RadioMode):
                 continue
             text = line.rstrip("; ")
             if text:
+                self._calls += 1
                 events.append(Event("line", text))
         if events:
             events.append(Event("status", f"last activity {time.strftime('%H:%M:%S')}"))
         return events
+
+    def listening_on(self):
+        return f"{self.values['freq_mhz']} MHz"
+
+    def activity(self):
+        return f"{super().activity()} · {self._calls} call events"
 
     def stop(self):
         events = super().stop() + self._read_events()

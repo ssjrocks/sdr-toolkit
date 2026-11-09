@@ -63,6 +63,7 @@ class LoRaMode(RadioMode):
                "or MeshCore (adverts, Public channel). LoRa demodulation by gr-lora_sdr.")
     requires = ("gr-lora_sdr", "rtl-sdr")
     iq_rate = 1000000
+    _good = _bad = 0          # frames with good / bad CRC since the start
     settings = RADIO_SETTINGS + (
         Setting("preset", "Network", "mt:LongFast", "choice", restart=True,
                 choices=tuple((f"mt:{n}", f"Meshtastic {n}") for n in MESHTASTIC)
@@ -158,6 +159,8 @@ class LoRaMode(RadioMode):
         if not live and self.values["file_offset"]:
             cmd += ["--offset", str(self.values["file_offset"])]
         self._frame = None
+        self._good = self._bad = 0
+        self._freq = freq
         self._summary = f"{freq / 1e6:.3f} MHz, SF{sf}, {bw / 1000:g} kHz, CR 4/{cr + 4}, sync {sync}"
         self._mt_keys, self._mc_keys = self._keys()
         return cmd
@@ -200,7 +203,17 @@ class LoRaMode(RadioMode):
             return self._show(frame, "valid" in line and "invalid" not in line)
         return []
 
+    def listening_on(self):
+        return self._summary
+
+    def activity(self):
+        return f"{super().activity()} · {self._good} frames, {self._bad} with bad CRC"
+
     def _show(self, frame, crc_ok):
+        if crc_ok:
+            self._good += 1
+        else:
+            self._bad += 1
         stamp = time.strftime("%H:%M:%S")
         if not crc_ok and not self.values["bad_crc"]:
             return [Event("status", f"{stamp}: a frame with a bad CRC (weak or colliding)")]

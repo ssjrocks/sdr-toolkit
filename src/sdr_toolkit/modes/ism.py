@@ -1,6 +1,7 @@
 """ISM-band devices (weather sensors, tyre sensors, doorbells, remotes...), decoded by rtl_433."""
 
 import json
+import re
 import time
 
 from .base import Event, Setting, Tuning
@@ -55,7 +56,12 @@ class ISMMode(RadioMode):
     def command(self):
         v = self.values
         # -F log: rtl_433's own messages (no device, errors), which -F json alone keeps quiet.
-        cmd = ["rtl_433", "-F", "json", "-F", "log", "-M", "time:iso", "-M", "level", "-s", v["rate"]]
+        # noise:5 and stats:1:10 report the noise floor and how many transmissions were seen,
+        # so the window can show it's listening even when nothing decodes.
+        cmd = ["rtl_433", "-F", "json", "-F", "log", "-M", "time:iso", "-M", "level", "-M", "noise:5",
+               "-M", "stats:1:10", "-s", v["rate"]]
+        self._decoded = self._seen = 0
+        self._noise = None
         for p in v["protocols"].split():
             cmd += ["-R", p]
         if self.live():
@@ -78,6 +84,10 @@ class ISMMode(RadioMode):
                 return problem
             if self._problem:
                 return []
+            m = re.search(r"estimated noise (-?[\d.]+) dB", line)
+            if m:
+                self._noise = float(m.group(1))
+                return []
             if any(w in line for w in ("rror", "Failed")):
                 return [Event("status", line), Event("line", line, style="warn")]
             return []
@@ -85,6 +95,11 @@ class ISMMode(RadioMode):
             d = json.loads(line)
         except ValueError:
             return []
+        if "model" not in d:
+            if isinstance(d.get("frames"), dict):           # a stats report
+                self._seen += int(d["frames"].get("count", 0))
+            return []
+        self._decoded += 1
         t = str(d.get("time", ""))
         stamp = t[11:19] if len(t) >= 19 and t[4] == "-" else time.strftime("%H:%M:%S")
         readings = ", ".join(f"{k}={v}" for k, v in d.items() if k not in SHOWN)
@@ -98,6 +113,20 @@ class ISMMode(RadioMode):
         row = {"time": stamp, "model": d.get("model", ""), "id": d.get("id", ""),
                "channel": d.get("channel", ""), "data": readings, "signal": signal}
         return [Event("row", data=row)]
+
+    def listening_on(self):
+        return " + ".join(f.rstrip("M") for f in self.freqs()) + " MHz"
+
+    def activity(self) -> str:
+        secs = int(time.time() - self._t0)
+        parts = [super().activity()]
+        if self._noise is not None:
+            parts.append(f"noise {self._noise:.0f} dB")
+        parts.append(f"{self._seen} transmission{'s' if self._seen != 1 else ''} seen, {self._decoded} decoded")
+        text = " · ".join(parts)
+        if self.live() and secs > 120 and self._seen == 0 and self.freqs() != ["433.92M"]:
+            text += ". Nothing is transmitting here; most sensors use 433.92 MHz"
+        return text
 
     def finished(self, code):
         if not self.live():

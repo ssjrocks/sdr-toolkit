@@ -164,15 +164,16 @@ def ais_frame_bits(payload_bits):
     return out
 
 
-def ais_iq(repeats=4, rate=240000, baud=9600, deviation=2400.0, offset_hz=0.0, gap_s=0.2):
+def ais_iq(repeats=4, rate=240000, baud=9600, deviation=2400.0, offset_hz=0.0, gap_s=0.2, payloads=None):
     sps = rate // baud
     t = np.arange(-2 * sps, 2 * sps + 1) / sps
     bt = 0.4
     g = np.exp(-(2 * np.pi**2 * bt**2 / np.log(2)) * t**2)
     g /= g.sum()
     chunks = []
-    for r in range(repeats):
-        bits = ais_frame_bits(ais_payload(mmsi=503123456 + r))
+    payloads = payloads or [ais_payload(mmsi=503123456 + r) for r in range(repeats)]
+    for p in payloads:
+        bits = ais_frame_bits(p)
         nrz = np.repeat(np.array(bits) * 2.0 - 1, sps)
         f = np.convolve(nrz, g, mode="same") * deviation + offset_hz
         ph = 2 * np.pi * np.cumsum(f) / rate
@@ -188,3 +189,21 @@ def save(path, iq):
 
 def lowpass(iq, rate, cutoff):
     return sosfilt(butter(4, cutoff, fs=rate, output="sos"), iq)
+
+
+def _text6(s, n_chars):
+    from sdr_toolkit.engines.ais import SIXBIT
+    s = s.upper().ljust(n_chars, "@")[:n_chars]
+    return sum((_bits(SIXBIT.index(c), 6) for c in s), [])
+
+
+def ais_static_payload(mmsi=503123456, callsign="VJN1234", name="SPIRIT OF TEST", ship_type=70,
+                       destination="SYDNEY"):
+    """Type 5, static and voyage data (424 bits)."""
+    bits = (_bits(5, 6) + _bits(0, 2) + _bits(mmsi, 30) + _bits(0, 2) + _bits(9123456, 30)
+            + _text6(callsign, 7) + _text6(name, 20) + _bits(ship_type, 8)
+            + _bits(100, 9) + _bits(50, 9) + _bits(10, 6) + _bits(10, 6) + _bits(1, 4)
+            + _bits(11, 4) + _bits(9, 5) + _bits(14, 5) + _bits(6, 6) + _bits(85, 8)
+            + _text6(destination, 20) + [0] + [0])
+    assert len(bits) == 424, len(bits)
+    return bits

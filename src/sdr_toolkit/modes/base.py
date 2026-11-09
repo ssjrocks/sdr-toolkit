@@ -25,6 +25,7 @@ class Setting:
     choices: tuple = ()            # (value, label) pairs for "choice"
     help: str = ""
     restart: bool = False          # the decoder must restart to apply it
+    shared: bool = False           # one value for every mode that has it (the RTL-SDR's ppm...)
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,11 @@ class Event:
       "image"   picture update (``image``: pixels HxWx3, ``title``, ``done``,
                 ``row``: the row being drawn, or None)
       "status"  a short note for the status line (``text``)
+      "activity" what a radio mode is doing now, shown above its output (``text``)
+      "log"     a line for the decoded-data log only (modes whose table updates in place)
+      "raw"     the decoder's raw output (an outside program's line, NMEA, frame bytes...)
+      "points"  map markers (``data["points"]``: list of dicts with id, lat, lon,
+                label, heading, kind), for modes with ``map = True``
     """
 
     kind: str

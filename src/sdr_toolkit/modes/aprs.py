@@ -88,7 +88,7 @@ class APRSMode(ProcessMode):
             if "rror" in line or "ERROR" in line:
                 return [Event("line", line, style="warn")]
             return []
-        if not line.strip():
+        if not line.strip() or line.startswith("End of file on stdin"):
             return []
         m = PACKET.match(line)
         if m:
