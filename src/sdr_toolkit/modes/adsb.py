@@ -6,7 +6,9 @@ import tempfile
 import time
 from pathlib import Path
 
+from .. import aircraftdb
 from .base import Event, Setting, Tuning
+from .process import looks_like_error
 from .radio import LOCATION_SETTINGS, RADIO_SETTINGS, RadioMode
 
 
@@ -21,6 +23,7 @@ class ADSBMode(RadioMode):
                ("gs", "Speed kt"), ("track", "Track°"), ("pos", "Position"), ("dist", "Distance"),
                ("rssi", "dBFS"), ("msgs", "Msgs"), ("seen", "Seen"))
     requires = ("readsb",)
+    key_column = "hex"
     iq_rate = 2400000
     settings = RADIO_SETTINGS + LOCATION_SETTINGS + (
         Setting("units", "Distance in", "km", "choice", choices=(("km", "km"), ("nm", "nautical miles"))),
@@ -48,6 +51,8 @@ class ADSBMode(RadioMode):
             cmd = ["readsb", "--device-type", "ifile", f"--ifile={self.file_path()}", "--iformat", "UC8",
                    "--throttle"]
         cmd += ["--quiet", f"--write-json={self._dir}", "--write-json-every=1"]
+        if aircraftdb.present():          # registrations, types and operators in aircraft.json
+            cmd += [f"--db-file={aircraftdb.path()}", "--db-file-lt"]
         try:
             lat, lon = float(v["lat"]), float(v["lon"])
             cmd += [f"--lat={lat}", f"--lon={lon}"]
@@ -67,7 +72,7 @@ class ADSBMode(RadioMode):
             return problem
         if self._problem:
             return []          # readsb's follow-up lines ("sdrOpen() failed, exiting!")
-        if any(w in line for w in ("rror", "FATAL", "Failed", "failed")):
+        if looks_like_error(line):
             return [Event("line", line, style="warn"), Event("status", line)]
         return []
 
@@ -117,7 +122,10 @@ class ADSBMode(RadioMode):
             alt = a.get("alt_baro", a.get("alt_geom", ""))
             points.append({"id": hexid, "lat": a["lat"], "lon": a["lon"], "kind": "aircraft",
                            "label": f"{flight or hexid.upper()} {alt}" if alt != "" else (flight or hexid.upper()),
-                           "heading": a.get("track", a.get("calc_track")), "track": list(track)})
+                           "heading": a.get("track", a.get("calc_track")), "track": list(track),
+                           "name": flight or a.get("r", ""), "alt": alt if isinstance(alt, (int, float)) else None,
+                           "info": {k: a[k] for k in ("flight", "r", "t", "desc", "ownOp", "year", "squawk",
+                                                      "category") if a.get(k) not in (None, "")}})
             # The decoded log gets a line when an aircraft appears or its callsign arrives.
             key = (flight,)
             if self._logged.get(hexid) != key:
@@ -135,6 +143,52 @@ class ADSBMode(RadioMode):
 
     def listening_on(self):
         return "1090 MHz"
+
+    def details(self, key):
+        key = key.lower()
+        if key not in getattr(self, "_known", {}):
+            return None
+        last, a = self._known[key]
+        flight, reg = a.get("flight", "").strip(), a.get("r", "")
+        units = self.values["units"]
+        f = []
+
+        def add(label, value):
+            if value not in (None, ""):
+                f.append((label, str(value)))
+
+        add("ICAO address", key.upper())
+        add("Callsign", flight)
+        add("Registration", reg)
+        add("Type", " · ".join(x for x in (a.get("desc", ""), a.get("t", "")) if x))
+        add("Operator / owner", a.get("ownOp"))
+        add("Built", a.get("year"))
+        add("Squawk", a.get("squawk"))
+        if a.get("emergency") not in (None, "", "none"):
+            add("Emergency", a["emergency"])
+        alt = a.get("alt_baro", a.get("alt_geom"))
+        add("Altitude", f"{alt:,} ft" if isinstance(alt, (int, float)) else alt)
+        rate = a.get("baro_rate", a.get("geom_rate"))
+        add("Climb / descent", f"{rate:+,} ft/min" if isinstance(rate, (int, float)) else None)
+        add("Ground speed", f"{a['gs']:.0f} kt" if "gs" in a else None)
+        track = a.get("track", a.get("calc_track"))
+        add("Track", f"{track:.0f}°" if track is not None else None)
+        add("Position", f"{a['lat']:.5f}, {a['lon']:.5f}" if "lat" in a else None)
+        if "r_dst" in a:
+            d = a["r_dst"] * (1.852 if units == "km" else 1)
+            add("Distance", f"{d:.1f} {units}" + (f" at {a['r_dir']:.0f}°" if "r_dir" in a else ""))
+        add("Signal", f"{a['rssi']} dBFS" if "rssi" in a else None)
+        add("Messages", a.get("messages"))
+        add("Category", a.get("category"))
+        add("Last heard", f"{time.time() - last:.0f} s ago" if self.live() else None)
+        links = [("ADS-B Exchange", f"https://globe.adsbexchange.com/?icao={key}")]
+        if flight:
+            links.append(("FlightAware", f"https://www.flightaware.com/live/flight/{flight}"))
+        return {"title": flight or reg or key.upper(),
+                "subtitle": " · ".join(x for x in (reg if flight else "", a.get("desc") or a.get("t", "")) if x),
+                "fields": f,
+                "photo": {"kind": "aircraft", "hex": key, "type": a.get("desc") or a.get("t", "")},
+                "links": links}
 
     def activity(self):
         parts = [super().activity()]

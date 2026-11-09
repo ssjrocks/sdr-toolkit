@@ -1,6 +1,6 @@
 [project]
 name = "sdr-toolkit"
-version = "0.4.0"
+version = "0.5.0"
 description = "Decoders for amateur and utility radio data modes, fed by any audio playing on an Ubuntu desktop"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -10,7 +10,6 @@ dependencies = [
     "pyqt6>=6.7",
     "pillow>=10",
     "cryptography>=41",
-    "pyserial>=3.5",
 ]
 
 [project.scripts]

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from ..engines import mesh
 from .base import Event, MissingParts, Setting, Tuning
-from .radio import RADIO_SETTINGS, RadioMode
+from .radio import RADIO_SETTINGS, RadioMode, rtl_rate
 
 LORA_PREFIX = Path.home() / ".local/share/sdr-toolkit/gr-lora_sdr"
 OVERSAMPLE = 4
@@ -140,7 +140,7 @@ class LoRaMode(RadioMode):
         v = self.values
         freq, sf, bw, *_ = self.params()
         cmd = ["rtl_sdr", "-d", self.device_index().lstrip(":"), "-f", str(int(freq)),
-               "-s", str(bw * OVERSAMPLE), "-p", str(v["ppm"])]
+               "-s", str(rtl_rate(bw * OVERSAMPLE)), "-p", str(v["ppm"])]
         if self.gain_db():
             cmd += ["-g", self.gain_db()]
         return cmd + ["-"]
@@ -152,7 +152,9 @@ class LoRaMode(RadioMode):
         self._env = env
         freq, sf, bw, cr, sync, pre = self.params()
         live = self.live()
-        rate = bw * OVERSAMPLE if live else self.values["file_rate"]
+        # Live: the dongle can't sample at 300-900 kHz (125 kHz LoRa x 4), so it may run faster;
+        # lora_rx resamples to 4x the bandwidth either way.
+        rate = rtl_rate(bw * OVERSAMPLE) if live else self.values["file_rate"]
         cmd = [sys.executable, "-u", "-m", "sdr_toolkit.engines.lora_rx", "--input", "-" if live else self.file_path(),
                "--rate", str(rate), "--bw", str(bw), "--sf", str(sf), "--cr", str(cr), "--sync", sync,
                "--preamble", str(pre), "--centre", str(int(freq))]

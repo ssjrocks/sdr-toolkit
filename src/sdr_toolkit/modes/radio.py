@@ -39,6 +39,21 @@ LOCATION_SETTINGS = (
 )
 
 
+def rtl_rate_ok(rate) -> bool:
+    """Sample rates the RTL2832U can deliver: 225-300 kHz, and 900 kHz to 3.2 MHz."""
+    return 225001 <= rate <= 300000 or 900001 <= rate <= 3200000
+
+
+def rtl_rate(wanted: int) -> int:
+    """*wanted*, or the smallest whole multiple of it the dongle can deliver (500 kHz -> 1 MHz)."""
+    k = 1
+    while not rtl_rate_ok(wanted * k):
+        k += 1
+        if wanted * k > 3200000:
+            raise ValueError(f"no RTL-SDR sample rate fits {wanted} Hz")
+    return wanted * k
+
+
 def home(values) -> tuple[float, float] | None:
     try:
         return float(values["lat"]), float(values["lon"])

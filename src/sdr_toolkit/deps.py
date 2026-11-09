@@ -39,6 +39,7 @@ PARTS = {
     "multimon-ng": ("multimon-ng (pagers)", lambda: shutil.which("multimon-ng") is not None, "system"),
     "rtl-433": ("rtl_433 (ISM sensors)", lambda: shutil.which("rtl_433") is not None, "system"),
     "readsb": ("readsb (ADS-B)", lambda: shutil.which("readsb") is not None, "system"),
+    "gnss-sdr": ("GNSS-SDR (GPS position fix)", lambda: shutil.which("gnss-sdr") is not None, "system"),
     "rtl-sdr": ("the RTL-SDR tools", lambda: shutil.which("rtl_fm") is not None, "system"),
     "gr-lora_sdr": ("gr-lora_sdr (LoRa)", _lora, "build"),
     "dsd-fme": ("DSD-FME and mbelib (DMR, P25)", _dsd, "mbelib"),

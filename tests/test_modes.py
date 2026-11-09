@@ -3,6 +3,7 @@
     python3 -m pytest tests
 """
 
+import os
 import shutil
 import sys
 import time
@@ -696,102 +697,201 @@ def test_adsb_ppm_from_readsb_measurements():
     assert m.actions() == []                                             # recordings can't measure it
 
 
-# ---- GPS
 
-from sdr_toolkit import gps  # noqa: E402
+# ---- GPS position fix
 
-
-def nmea(body):
-    x = 0
-    for c in body:
-        x ^= ord(c)
-    return f"${body}*{x:02X}\r\n"
+import gps_signal  # noqa: E402
+from sdr_toolkit.engines import gnss  # noqa: E402
 
 
-GPS_LINES = [nmea("GPGSA,A,3,04,05,09,12,,,,,,,,,2.5,1.3,2.1"),
-             nmea("GPGGA,123519,3352.200,S,15112.600,E,1,08,0.9,45.4,M,22.0,M,,"),
-             nmea("GNRMC,123520,A,3352.200,S,15112.600,E,0.5,054.7,091126,,,A")]
+def test_gnss_corrections_and_output_lines():
+    # A crystal 54 ppm fast samples fast and tunes high, so the signal lands below the centre.
+    assert gnss.corrections(54) == (2048111, -85073)
+    assert gnss.corrections(-51, 2000000) == (1999898, 80346)      # GNSS-SDR's RTL-SDR example: 80558
+    rx = gnss.Receiver()
+    assert rx.feed("Tracking of GPS L1 C/A signal started on channel 4 for satellite GPS PRN 12 (Block IIR-M)") == "track"
+    assert rx.feed("New GPS NAV message received in channel 4: subframe 3 from satellite GPS PRN 12 "
+                   "(Block IIR-M) with CN0=43 dB-Hz") == "nav"
+    assert rx.sats[12].cn0 == 43 and rx.sats[12].subframes == 1 and rx.sats[12].tracking
+    assert rx.feed("Loss of lock in channel 4!") == "lost" and not rx.tracking()
+    assert rx.feed("New GPS NAV message received in channel 4: New GPS NAV message received in channel") is None
+    assert rx.feed("Tracking of GPS L1 C/A signal started on channel 2 for satellite GPS PRN 00 (Block") is None
+    rx.feed("Tracking of GPS L1 C/A signal started on channel 2 for satellite GPS PRN 11 (Block III)")
+    assert rx.feed("\x1b[31mSatellite GPS PRN 11 (Block III) reports an unhealthy status, not used") == "unhealthy"
+    assert not rx.sats[11].healthy
 
 
-def test_nmea_parsing():
-    p = gps.NMEA()
-    for line in GPS_LINES:
-        p.feed(line)
-    f = p.fix
-    assert abs(f.lat + 33.87) < 1e-9 and abs(f.lon - 151.21) < 1e-9 and f.alt == 45.4 and f.sats == 8 and f.mode == "3D"
-    q = gps.NMEA()
-    assert q.feed(nmea("GPGGA,1,4807.038,N,01131.000,W,1,05,0.9,545.4,M,46.9,M,,")).lon < 0
-    assert q.feed(GPS_LINES[1][:-4] + "00\r\n") is None                       # bad checksum
-    assert gps.NMEA().feed(nmea("GPGGA,123519,,,,,0,00,,,M,,M,,")) is None     # no fix yet
-    assert gps.NMEA().feed(nmea("GPRMC,123520,V,,,,,,,091126,,,N")) is None     # receiver says invalid
+@pytest.mark.skipif(not shutil.which("gnss-sdr") or not gps_signal.simulator()[0],
+                    reason="needs gnss-sdr and gps-sdr-sim (build/gps-sdr-sim)")
+def test_gps_fix_from_a_dongle_54_ppm_off(tmp_path):
+    # From cold: about 50 s to the first fix (the satellites' order varies run to run), then 5 to average.
+    path = gps_signal.recording(tmp_path / "gps.cu8", -33.8688, 151.2093, seconds=120, ppm=54)
+    mode, ev = run_radio("gps", path, wait=120, ppm=54)
+    settings = [e.data for e in ev if e.kind == "setting"]
+    raw = [e.text for e in ev if e.kind == "raw" and "receiver time" not in e.text]
+    if not settings and os.environ.get("GPS_DEBUG"):
+        Path(os.environ["GPS_DEBUG"]).write_text("\n".join(e.text for e in ev if e.kind == "raw"))
+    assert settings, ([e.text for e in ev if e.kind == "line"], len(raw), raw[:12], raw[-6:])
+    lat, lon = float(settings[-1]["lat"]), float(settings[-1]["lon"])
+    assert abs(lat + 33.8688) < 0.0002 and abs(lon - 151.2093) < 0.0002          # within about 20 m
+    assert mode.values["lat"] == settings[-1]["lat"]
+    rows = [e.data["rows"] for e in ev if e.kind == "table" and e.data["rows"]][-1]
+    assert sum(r["nav"] == "complete" for r in rows) >= 4
+    assert [e for e in ev if e.kind == "points"][-1].data["home"]
+    assert any("End of the recording" in e.text for e in ev if e.kind == "line")
 
 
-def _fake_serial_gps():
-    import os
-    import threading
-    master, slave = os.openpty()
-    stop = threading.Event()
+# ---- logbook and coverage
 
-    def feed():
-        while not stop.is_set():
-            for line in GPS_LINES:
-                os.write(master, line.encode())
-                time.sleep(0.1)
-
-    threading.Thread(target=feed, daemon=True).start()
-    return os.ttyname(slave), stop
+from sdr_toolkit import coverage  # noqa: E402
+from sdr_toolkit.logbook import Logbook  # noqa: E402
 
 
-def test_gps_serial_reader_finds_the_speed_and_a_fix():
-    path, stop = _fake_serial_gps()
-    r = gps.GpsReader(path, "auto")
-    r.start()
-    deadline = time.time() + 15
-    while time.time() < deadline and not r.fix:
-        time.sleep(0.1)
-    stop.set()
-    r.stop()
-    r.join(3)
-    assert r.fix and abs(r.fix.lat + 33.87) < 1e-9 and not r.is_alive()
+def test_logbook_entries_craft_and_positions(tmp_path):
+    lb = Logbook(tmp_path / "log.sqlite")
+    lb.add("ft8", "CQ VK2ABC QF56", t=1000)
+    lb.add("aprs", "VK2XYZ-9 position", t=1001)
+    for i in range(30):                     # one second apart, moving 20 m each: stored every 10 s
+        lb.see("adsb", "7c1234", "QFA1", {"type": "B738", "alt": 1000 + i}, -33.9 + i * 0.00018, 151.2,
+               alt=1000 + i, label="QFA1", t=2000 + i)
+    lb.see("adsb", "7c1234", "QFA1", {}, -33.0, 151.2, t=2000 + 31 * 60)      # back after 31 min
+    lb.flush()
+    assert [e[2] for e in lb.entries()] == ["VK2XYZ-9 position", "CQ VK2ABC QF56"]
+    assert lb.entries(mode="ft8", search="VK2") == [(1000, "ft8", "CQ VK2ABC QF56")]
+    c = lb.craft("adsb")[0]
+    assert c["key"] == "7c1234" and c["name"] == "QFA1" and c["sightings"] == 2 and c["first"] == 2000
+    assert c["info"]["type"] == "B738"                     # kept when a later update leaves it out
+    pos = lb.positions("adsb", 0, 1e9)
+    assert [p[1] for p in pos] == [2000, 2010, 2020, 2000 + 31 * 60]
+    assert lb.time_range("adsb") == (2000, 2000 + 31 * 60) and lb.time_range("ais") is None
+    for i in range(5):                      # a fast mover: 100 m a second is stored every 300 m
+        lb.see("adsb", "fast", lat=-33.9 + i * 0.0009, lon=151.2, t=5000 + i)
+    assert [p[1] for p in lb.positions("adsb", 5000, 6000)] == [5000, 5003]
+    lb.clear("adsb")
+    assert not lb.craft("adsb") and lb.entries()
+    lb.close()
+    assert Logbook(tmp_path / "log.sqlite").entries()      # it's on disk
 
 
-def test_gps_from_gpsd(monkeypatch):
-    import json
-    import socket
-    import threading
-    srv = socket.socket()
-    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(("127.0.0.1", 0))
-    srv.listen(1)
-    port = srv.getsockname()[1]
-    real = socket.create_connection
-    monkeypatch.setattr(gps.socket, "create_connection",
-                        lambda addr, timeout=None: real(("127.0.0.1", port), timeout=timeout))
-
-    def serve():
-        c, _ = srv.accept()
-        c.recv(100)                                   # ?WATCH
-        for msg in ({"class": "SKY", "satellites": [{"used": True}] * 7},
-                    {"class": "TPV", "mode": 3, "lat": -33.87, "lon": 151.21, "altMSL": 40.0}):
-            c.sendall((json.dumps(msg) + "\n").encode())
-        time.sleep(2)
-        c.close()
-
-    threading.Thread(target=serve, daemon=True).start()
-    r = gps.GpsReader("gpsd")
-    r.start()
-    deadline = time.time() + 5
-    while time.time() < deadline and not r.fix:
-        time.sleep(0.05)
-    r.stop()
-    assert r.fix.lat == -33.87 and r.fix.sats == 7 and r.fix.mode == "3D" and r.fix.alt == 40.0
+def test_coverage_rings():
+    home = (-33.87, 151.21)
+    cov = coverage.Coverage(home)
+    # Aircraft flying north out to 200 km: every 2 s out to 120 km, then every 20 s (patchy).
+    t = 0.0
+    for n in range(3):
+        for km in range(5, 201):
+            t += 2 if km <= 120 else 20
+            if km > 120 and km % 2:
+                continue
+            lat, lon = coverage.destination(home, 2.0, km)
+            cov.add(f"a{n}", t, lat, lon)
+    mx, rel = cov.outlines()
+    north = 0
+    assert 199 < mx[north][1] < 201 and rel[north][1] == 120
+    assert mx[18][1] == 0 and rel[18][1] == 0                         # nothing heard to the south
+    b, km = coverage.bearing_km(home, coverage.destination(home, 123.0, 77.0))
+    assert abs(b - 123) < 0.01 and abs(km - 77) < 0.01
+    again = coverage.Coverage(home, cov.data())
+    assert again.outlines() == cov.outlines()
+    assert "furthest 200 km" in cov.summary()
 
 
-def test_gps_automatic_never_picks_a_device_not_named_as_gps(tmp_path, monkeypatch):
-    monkeypatch.setattr(gps, "BY_ID", tmp_path)
-    monkeypatch.setattr(gps, "gpsd_running", lambda: False)
-    (tmp_path / "usb-HYTE_HYTE_THICC_Y70_LCD_206239A94D32-if00").symlink_to("/dev/null")
-    (tmp_path / "usb-Prolific_Technology_Inc._USB-Serial_Controller-if00-port0").symlink_to("/dev/null")
-    assert gps.auto_source() is None
-    (tmp_path / "usb-u-blox_AG_-_www.u-blox.com_u-blox_7_-_GPS_GNSS_Receiver-if00").symlink_to("/dev/null")
-    assert "u-blox" in gps.auto_source()
+# ---- Details: photos and the aircraft database
+
+from sdr_toolkit import aircraftdb, photos  # noqa: E402
+
+ACDB = Path(__file__).resolve().parent.parent / "build" / "acdb" / "aircraft.csv.gz"
+
+
+def test_photo_answers():
+    # Shapes of real answers (2026-11): Planespotters by hex, Wikipedia search and summary.
+    ps = {"photos": [{"id": "2003915", "thumbnail": {"src": "https://t.plnspttrs.net/x_t.jpg"},
+                      "thumbnail_large": {"src": "https://t.plnspttrs.net/x_280.jpg"},
+                      "link": "https://www.planespotters.net/photo/2003915/vh-vgf", "photographer": "TommyNG"}]}
+    got = photos.planespotters(ps)
+    assert got["image"].endswith("_280.jpg") and "TommyNG" in got["credit"] and got["link"].endswith("vh-vgf")
+    assert photos.planespotters({"photos": []}) is None
+    search = {"pages": [{"key": "Cessna", "thumbnail": {"mimetype": "image/svg+xml"}},
+                        {"key": "Cessna_182_Skylane", "thumbnail": {"mimetype": "image/jpeg"}}]}
+    assert photos.search_title(search) == "Cessna_182_Skylane"
+    summ = {"title": "Cessna 182 Skylane", "thumbnail": {"source": "https://upload/x.jpg"},
+            "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Cessna_182_Skylane"}}}
+    assert photos.summary(summ)["link"].endswith("Cessna_182_Skylane") and not photos.summary(summ)["own"]
+    assert photos.first_request({"kind": "aircraft", "hex": "7C1234", "type": "C182"})[1].endswith("/hex/7c1234")
+    assert photos.type_request({"kind": "aircraft", "type": "CESSNA 182 Skylane"})[1].endswith(
+        "CESSNA%20182%20Skylane%20aircraft&limit=5")
+    assert photos.first_request({"kind": "ship", "type": "tug"})[1].endswith("/Tugboat")
+    assert photos.first_request({"kind": "ship", "type": ""})[1].endswith("/Ship")
+
+
+@pytest.mark.skipif(not ACDB.is_file(), reason="needs build/acdb/aircraft.csv.gz (tar1090-db)")
+def test_adsb_details_with_the_aircraft_database(tmp_path, monkeypatch):
+    (tmp_path / "sdr-toolkit").mkdir()
+    shutil.copy(ACDB, tmp_path / "sdr-toolkit" / "aircraft.csv.gz")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    assert aircraftdb.present() and not aircraftdb.due()
+    path = radio_signals.save(tmp_path / "adsb.cu8", radio_signals.adsb_iq(0x7C1234, "QFA123", -33.95, 151.18, 12000))
+    mode, ev = run_radio("adsb", path, lat="-33.87", lon="151.21")
+    d = mode.details("7C1234")
+    fields = dict(d["fields"])
+    assert d["title"] == "QFA123" and fields["Registration"] == "VH-DVQ" and "C182" in fields["Type"]
+    assert fields["Altitude"] == "12,000 ft" and d["photo"] == {"kind": "aircraft", "hex": "7c1234",
+                                                                "type": "CESSNA 182 Skylane"}
+    point = [e.data for e in ev if e.kind == "points" and e.data["points"]][-1]["points"][0]
+    assert point["name"] == "QFA123" and point["info"]["r"] == "VH-DVQ" and point["alt"] == 12000
+    assert mode.details("7c9999") is None
+
+
+def test_ais_details(tmp_path):
+    payloads = [radio_signals.ais_static_payload(name="SPIRIT OF TEST"), radio_signals.ais_payload()]
+    path = radio_signals.save(tmp_path / "ais.cu8", radio_signals.ais_iq(payloads=payloads))
+    mode, ev = run_radio("ais", path, file_rate=240000, lat="-33.87", lon="151.21")
+    fields = dict(mode.details("503123456")["fields"])
+    assert fields["IMO number"] == "9123456" and fields["Size"] == "150 × 20 m" and fields["Draught"] == "8.5 m"
+    assert fields["ETA"] == "09/11 14:06 UTC" and fields["Distance"] == "2.2 km"
+    assert all(e.style == "pos" for e in ev if e.kind == "log" and "SPIRIT OF TEST:" in e.text)
+
+
+def test_rtl_sample_rates_for_every_lora_preset():
+    from sdr_toolkit.modes.radio import rtl_rate, rtl_rate_ok
+    assert rtl_rate(500000) == 1000000 and rtl_rate(1000000) == 1000000 and rtl_rate(250000) == 250000
+    assert rtl_rate(2400000) == 2400000 and not rtl_rate_ok(500000)
+    mode = BY_ID["lora"]()
+    presets = [c for c, _ in next(s for s in mode.settings if s.key == "preset").choices]
+    cases = [dict(preset=p) for p in presets] + [dict(preset="custom", bw=bw) for bw in (62500, 125000, 250000, 500000)]
+    for case in cases:
+        mode.values = dict(mode.values, input="rtl", **case)
+        bw = mode.params()[2]
+        up = mode.upstream()
+        rate = int(up[up.index("-s") + 1])
+        assert rtl_rate_ok(rate) and rate % (bw * 4) == 0, (case, rate)
+
+
+@needs_lora
+def test_lora_125_khz_from_1_mhz_samples(tmp_path):
+    # LongModerate is 125 kHz wide: 4x is 500 kHz, which the dongle can't do, so it's
+    # captured at 1 MHz and resampled. A recording at 1 MHz takes the same path.
+    mode = BY_ID["lora"]()
+    mode.values = dict(mode.values, preset="mt:LongModerate", region="ANZ")
+    freq, sf, bw, cr, sync, pre = mode.params()
+    assert (sf, bw, cr) == (11, 125000, 4)
+    key = mesh.DEFAULT_PSK
+    frames = [mesh.build_meshtastic(0xA1B2C3D4, 1003, mesh.pb_encode([(1, 1), (2, "Moderate hello")]), key,
+                                    mesh.channel_hash("LongModerate", key))]
+    path = lora_recording(tmp_path / "mod.cu8", frames, 1000000, bw, sf, cr, sync, pre, freq)
+    _, ev = run_radio("lora", path, wait=120, preset="mt:LongModerate", region="ANZ", file_rate=1000000)
+    assert '"Moderate hello"' in text(ev), text(ev)
+
+
+def test_ppm_confirmation_is_not_an_error():
+    # librtlsdr prints this when a frequency correction is set; it used to show as a failure.
+    from sdr_toolkit.modes.process import looks_like_error
+    line = "Tuner error set to 57 ppm."
+    assert not looks_like_error(line) and looks_like_error("rtlsdr_demod_write_reg failed with -9")
+    for mode_id in ("ism", "adsb", "ais", "aprs"):
+        mode = BY_ID[mode_id]()
+        mode.values = dict(mode.values)
+        for attr, value in (("_ready", False), ("_problem", None), ("_noise", None), ("_decoded", 0), ("_seen", 0),
+                            ("_banner", [])):
+            setattr(mode, attr, value)
+        assert not [e for e in mode.parse(line) if e.style == "warn"], mode_id

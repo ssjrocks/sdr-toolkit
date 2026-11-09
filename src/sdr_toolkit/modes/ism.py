@@ -5,6 +5,7 @@ import re
 import time
 
 from .base import Event, Setting, Tuning
+from .process import looks_like_error
 from .radio import RADIO_SETTINGS, RadioMode
 
 SHOWN = ("time", "model", "id", "channel", "battery_ok", "mic", "mod", "freq", "rssi", "snr", "noise")
@@ -88,7 +89,7 @@ class ISMMode(RadioMode):
             if m:
                 self._noise = float(m.group(1))
                 return []
-            if any(w in line for w in ("rror", "Failed")):
+            if looks_like_error(line):
                 return [Event("status", line), Event("line", line, style="warn")]
             return []
         try:

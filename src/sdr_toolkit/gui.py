@@ -43,11 +43,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_ID, APP_NAME, __version__, appreports, deps, gps, updater
+from . import APP_ID, APP_NAME, __version__, aircraftdb, appreports, coverage, deps, updater
 from .capture import AudioCapture, list_outputs
+from .logbook import Logbook
 from .mapview import MapView
 from .modes import GROUPS, MODES
 from .modes.base import Event, MissingParts, Mode, Setting
+from .panels import DetailsPanel, LogbookWindow, Photos
 
 log = logging.getLogger(__name__)
 
@@ -426,79 +428,6 @@ class LogWindow(QDialog):
             Path(path).write_text("\n".join(self.lines) + "\n", encoding="utf-8")
 
 
-class GpsDialog(QDialog):
-    """Turn the GPS on, choose the receiver, see what it reports."""
-
-    def __init__(self, win):
-        super().__init__(win)
-        self.win = win
-        self.setWindowTitle("GPS")
-        self.resize(560, 260)
-        lay = QVBoxLayout(self)
-        self.enable = QCheckBox("Use a GPS receiver for my location")
-        self.enable.setChecked(win.settings.value("gps/enabled", "false") in (True, "true"))
-        self.source = QComboBox()
-        self.baud = QComboBox()
-        for b in ("auto",) + tuple(str(x) for x in gps.BAUDS):
-            self.baud.addItem("Find it automatically" if b == "auto" else f"{b} baud", b)
-        i = self.baud.findData(str(win.settings.value("gps/baud", "auto")))
-        self.baud.setCurrentIndex(max(i, 0))
-        refresh = QPushButton("Refresh")
-        refresh.clicked.connect(self.fill)
-        form = QFormLayout()
-        row = QHBoxLayout()
-        row.addWidget(self.source, 1)
-        row.addWidget(refresh)
-        form.addRow("Receiver", row)
-        form.addRow("Speed", self.baud)
-        note = QLabel("Automatic uses gpsd if it's running, or a USB device whose name says it's a GPS. "
-                      "Other serial devices are only opened if you choose them: on some (a radio's "
-                      "programming cable) opening the port can key the transmitter.")
-        note.setWordWrap(True)
-        note.setStyleSheet("color: palette(placeholder-text)")
-        self.state = QLabel("")
-        self.state.setWordWrap(True)
-        lay.addWidget(self.enable)
-        lay.addLayout(form)
-        lay.addWidget(note)
-        lay.addWidget(self.state)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        lay.addWidget(buttons)
-        self.fill()
-        self.enable.toggled.connect(self.changed)
-        self.source.currentIndexChanged.connect(self.changed)
-        self.baud.currentIndexChanged.connect(self.changed)
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.show_state)
-        self.timer.start(500)
-        self.show_state()
-
-    def fill(self):
-        current = str(self.win.settings.value("gps/source", "auto"))
-        self.source.blockSignals(True)
-        self.source.clear()
-        self.source.addItem("Automatic", "auto")
-        self.source.addItem("gpsd" + (" (running)" if gps.gpsd_running() else " (not running)"), "gpsd")
-        for path, name, likely in gps.devices():
-            self.source.addItem(f"{name}" + ("" if likely else "   (not named as a GPS)"), path)
-        i = self.source.findData(current)
-        if i < 0 and current not in ("auto", "gpsd"):
-            self.source.addItem(f"{current} (not connected)", current)
-            i = self.source.count() - 1
-        self.source.setCurrentIndex(max(i, 0))
-        self.source.blockSignals(False)
-
-    def changed(self, *_):
-        self.win.settings.setValue("gps/enabled", self.enable.isChecked())
-        self.win.settings.setValue("gps/source", self.source.currentData())
-        self.win.settings.setValue("gps/baud", self.baud.currentData())
-        self.win.restart_gps()
-
-    def show_state(self):
-        self.state.setText(self.win.gps_text(long=True))
-
-
 class MainWindow(QMainWindow):
     report_finished = pyqtSignal(bool)
 
@@ -511,6 +440,15 @@ class MainWindow(QMainWindow):
         self.running = False
         self._tail = np.zeros(0, np.float32)
         self._last_image = None
+        self.logbook = Logbook()
+        self.logbook.prune()
+        self.photos = Photos(self)
+        self._selected = None
+        self._last_details = 0.0
+        self._last_flush = 0.0
+        self.coverage = None
+        self._coverage_saved = 0.0
+        self._coverage_drawn = 0.0
 
         mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
 
@@ -579,6 +517,8 @@ class MainWindow(QMainWindow):
         self.table.setFont(mono)
         self.picture = PictureView()
         self.map = MapView()
+        self.map.picked.connect(self.select_craft)
+        self.table.itemSelectionChanged.connect(self._on_table_pick)
         self.table_page = QSplitter(Qt.Orientation.Vertical)
         self.table_page.addWidget(self.map)
         self.table_page.addWidget(self.table)
@@ -606,6 +546,8 @@ class MainWindow(QMainWindow):
         help_area.setWidget(self.help_label)
         self.side.addTab(help_area, "How to tune")
         self.side.addTab(self.settings_area, "Settings")
+        self.details = DetailsPanel(self.photos)
+        self.side.addTab(self.details, "Details")
         self.side.setMinimumWidth(300)
 
         clear_btn = QPushButton("Clear")
@@ -627,7 +569,10 @@ class MainWindow(QMainWindow):
         raw_btn = QPushButton("Raw data")
         raw_btn.setToolTip("What the decoder outputs before the toolkit tidies it up, in its own window")
         raw_btn.clicked.connect(lambda: self._show_log(self.raw_log))
-        for b in (clear_btn, copy_btn, save_btn, self.folder_btn, decoded_btn, raw_btn):
+        logbook_btn = QPushButton("Logbook")
+        logbook_btn.setToolTip("Everything received, the aircraft and ships seen, and replays of their movements")
+        logbook_btn.clicked.connect(self.show_logbook)
+        for b in (clear_btn, copy_btn, save_btn, self.folder_btn, decoded_btn, raw_btn, logbook_btn):
             btns.addWidget(b)
         btns.addStretch(1)
         btns.addWidget(updates_btn)
@@ -687,17 +632,6 @@ class MainWindow(QMainWindow):
         self.statusBar().addWidget(self.status, 1)
         self.level_label = QLabel("")
         self.statusBar().addPermanentWidget(self.level_label)
-        self.gps_btn = QToolButton()
-        self.gps_btn.setAutoRaise(True)
-        self.gps_btn.setToolTip("GPS receiver for your location")
-        self.gps_btn.clicked.connect(lambda: GpsDialog(self).exec())
-        self.statusBar().addPermanentWidget(self.gps_btn)
-        self.gps_reader = None
-        self._gps_next_try = 0.0
-        self._mode_home = None
-        self.gps_timer = QTimer(self)
-        self.gps_timer.timeout.connect(self.gps_tick)
-        self.gps_timer.start(1000)
 
         self.report_finished.connect(self._on_report_finished)
         self.timer = QTimer(self)
@@ -790,8 +724,17 @@ class MainWindow(QMainWindow):
         self.waterfall.markers = self.mode.markers()
         self.folder_btn.setVisible("folder" in self.mode.values)
         self.map.setVisible(getattr(self.mode, "map", False))
+        self.map.clear_session()
         self.map.set_points([], None)
         self.map.follow = True
+        self._selected = None
+        self.coverage = None
+        self.details.clear()
+        self.side.setTabVisible(self.side.indexOf(self.details), bool(self.mode.key_column))
+        if self.side.currentWidget() is self.details and not self.mode.key_column:
+            self.side.setCurrentIndex(0)
+        if self.mode.id == "adsb" and aircraftdb.due():
+            self.fetch_aircraft_db()
         for w in (self.decoded_log, self.raw_log):
             w.add(f"──── {self.mode.name} ────")
         self.raw_log.setWindowTitle(f"Raw data: {self.mode.name}")
@@ -915,12 +858,9 @@ class MainWindow(QMainWindow):
             self._warned = True
             return False
         self._mode_started = True
-        try:
-            self._mode_home = (float(self.mode.values["lat"]), float(self.mode.values["lon"]))
-        except (KeyError, ValueError):
-            self._mode_home = None
         self._warned = False
         self.title.setText("")
+        self._setup_coverage()
         log.info("mode %s started", self.mode.id)
         return True
 
@@ -928,6 +868,8 @@ class MainWindow(QMainWindow):
         if self.mode is not None and getattr(self, "_mode_started", False):
             try:
                 self.handle(self.mode.stop())
+                self._save_coverage()
+                self.logbook.flush()
             except Exception as e:  # a decoder failing to stop shouldn't take the window down
                 log.exception("stopping %s", self.mode.id)
                 appreports.report_error(e, f"stopping {self.mode.id}")
@@ -1034,25 +976,34 @@ class MainWindow(QMainWindow):
                 self.text.appendHtml(f"<span style='color:{color}'>{text}</span>" if color else text)
                 if e.style != "warn" and e.text.strip():
                     self.decoded_log.add(e.text.strip())
+                    if e.style != "dim":
+                        self.logbook.add(self.mode.id, e.text.strip())
             elif e.kind == "live":
                 self.live.setText(e.text)
             elif e.kind == "row":
                 self._add_row(e.data)
-                self.decoded_log.add("  ".join(f"{h}: {e.data[k]}" for k, h in self.mode.columns
-                                               if str(e.data.get(k, "")) != ""))
+                text = "  ".join(f"{h}: {e.data[k]}" for k, h in self.mode.columns if str(e.data.get(k, "")) != "")
+                self.decoded_log.add(text)
+                self.logbook.add(self.mode.id, text)
             elif e.kind == "log":
                 self.decoded_log.add(e.text)
+                if e.style != "pos":
+                    self.logbook.add(self.mode.id, e.text)
             elif e.kind == "raw":
                 self.raw_log.add(e.text)
             elif e.kind == "points":
                 self.map.set_points(e.data["points"], e.data.get("home"))
+                self._log_points(e.data["points"])
             elif e.kind == "table":
                 self._set_rows(e.data["rows"])
+                if self._selected is not None and time.time() - self._last_details >= 1.0:
+                    self.refresh_details()
             elif e.kind == "image" and e.done:
                 self._last_image = e.image
                 self.picture.show_image(to_qimage(e.image), e.row, getattr(self.mode, "aspect", None))
                 self.title.setText(e.title)
                 self.decoded_log.add(e.title)
+                self.logbook.add(self.mode.id, e.title)
             elif e.kind == "image":
                 self._last_image = e.image
                 self.picture.show_image(to_qimage(e.image), e.row, getattr(self.mode, "aspect", None))
@@ -1138,81 +1089,104 @@ class MainWindow(QMainWindow):
         folder.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
-    # ---- GPS -----------------------------------------------------------
+    # ---- details, logbook, coverage -------------------------------------
 
-    def gps_enabled(self) -> bool:
-        return self.settings.value("gps/enabled", "false") in (True, "true")
-
-    def restart_gps(self):
-        if self.gps_reader is not None:
-            self.gps_reader.stop()
-            self.gps_reader = None
-        self._gps_next_try = 0.0
-        self.gps_tick()
-
-    def gps_tick(self):
-        if self.gps_enabled() and self.gps_reader is None and time.time() >= self._gps_next_try:
-            src = str(self.settings.value("gps/source", "auto"))
-            if src == "auto":
-                src = gps.auto_source()
-            if src is None:
-                self._gps_next_try = time.time() + 10          # look again: it may be plugged in later
-            else:
-                self.gps_reader = gps.GpsReader(src, str(self.settings.value("gps/baud", "auto")))
-                self.gps_reader.start()
-        elif not self.gps_enabled() and self.gps_reader is not None:
-            self.gps_reader.stop()
-            self.gps_reader = None
-        self.gps_btn.setText(self.gps_text())
-        fix = self.gps_reader.fix if self.gps_reader is not None else None
-        if fix is not None and time.time() - fix.when < 10:
-            self.apply_location(fix.lat, fix.lon)
-
-    def gps_text(self, long=False) -> str:
-        if not self.gps_enabled():
-            return "GPS: off" if not long else "Off. Tick the box to use a GPS receiver."
-        r = self.gps_reader
-        if r is None:
-            return "GPS: none found" if not long else ("No GPS found: plug one in (it's looked for every "
-                                                       "10 s), start gpsd, or choose its port.")
-        fix = r.fix
-        if fix is not None and time.time() - fix.when < 10:
-            sats = f" · {fix.sats} satellites" if fix.sats else ""
-            short = f"GPS: {fix.mode if fix.mode != 'fix' else ''} fix{sats}".replace("  ", " ")
-            if not long:
-                return short
-            alt = f", {fix.alt:.0f} m" if fix.alt is not None else ""
-            return f"{short[5:]}: {fix.lat:.5f}, {fix.lon:.5f}{alt}. Your location follows it."
-        return f"GPS: {r.state}" if not long else f"{r.source}: {r.state}"
-
-    def apply_location(self, lat, lon):
-        """A GPS fix: fill in "Your location" (shared by the RTL-SDR modes) when it has moved."""
-        from .modes.ais import distance_km
-
-        try:
-            cur = (float(self.settings.value("radio/lat", "")), float(self.settings.value("radio/lon", "")))
-        except (TypeError, ValueError):
-            cur = None
-        if cur is not None and distance_km(cur, (lat, lon)) < 0.05:
+    def _on_table_pick(self):
+        col = self.mode.key_column if self.mode is not None else ""
+        rows = self.table.selectionModel().selectedRows() if col else []
+        if not rows:
             return
-        lat_s, lon_s = f"{lat:.5f}", f"{lon:.5f}"
-        self.settings.setValue("radio/lat", lat_s)
-        self.settings.setValue("radio/lon", lon_s)
-        log.info("location from GPS: %s, %s", lat_s, lon_s)
-        m = self.mode
-        if m is None or "lat" not in m.values:
+        c = next((i for i, (k, _) in enumerate(self.mode.columns) if k == col), None)
+        item = self.table.item(rows[0].row(), c) if c is not None else None
+        if item is not None and item.text():
+            self.select_craft(item.text())
+
+    def _craft_key(self, key) -> str:
+        """The map / logbook id for a table key (ADS-B shows hex in capitals, readsb uses lower case)."""
+        return str(key).lower() if self.mode.id == "adsb" else str(key)
+
+    def select_craft(self, key):
+        key = self._craft_key(key)
+        self._selected = key
+        self.map.select(key if self.mode.id != "ais" else int(key) if key.isdigit() else key)
+        self.side.setCurrentWidget(self.details)
+        self.refresh_details()
+
+    def refresh_details(self):
+        if self._selected is None or self.mode is None:
             return
-        for key, value in (("lat", lat_s), ("lon", lon_s)):
-            self.form.set_value(key, value)
-        m.values.update(lat=lat_s, lon=lon_s)
-        self.map.home = (lat, lon)
-        self.map.update()
-        # Restart a running mode (readsb takes its position at start) only for a real move.
-        if self.running and getattr(self, "_mode_started", False):
-            started_at = self._mode_home
-            if started_at is None or distance_km(started_at, (lat, lon)) > 1.0:
+        self._last_details = time.time()
+        details = self.mode.details(self._selected)
+        logged = self.logbook.craft_info(self.mode.id, self._selected)
+        self.details.show_details(self._selected, details, logged, heard=details is not None)
+
+    def _log_points(self, points):
+        now = time.time()
+        for p in points:
+            self.logbook.see(self.mode.id, str(p["id"]), p.get("name", ""), p.get("info"), p["lat"], p["lon"],
+                             alt=p.get("alt"), heading=p.get("heading"), label=p.get("label", ""), t=now)
+            if self.coverage is not None:
+                self.coverage.add(str(p["id"]), now, p["lat"], p["lon"])
+        if now - self._last_flush >= 2.0:
+            self._last_flush = now
+            self.logbook.flush()
+        if self.coverage is not None and now - self._coverage_drawn >= 5.0:
+            self._coverage_drawn = now
+            self.map.set_rings(self.coverage.outlines())
+            self.map.rings_btn.setToolTip("Range rings: " + (self.coverage.summary() or "nothing yet") +
+                                          ". Red dashed: furthest heard; green: reliable reception.")
+            if now - self._coverage_saved >= 60.0:
+                self._save_coverage()
+        if self._selected is not None and now - self._last_details >= 1.0:
+            self.refresh_details()
+
+    def _setup_coverage(self):
+        """ADS-B range rings: only from the live dongle, around your location."""
+        from .modes.radio import home
+        self.coverage = None
+        here = home(self.mode.values) if self.mode.id == "adsb" else None
+        if here is None or not self.mode.live():
+            self.map.set_rings(None)
+            return
+        data = self.logbook.load_coverage("adsb", coverage.site_key(here))
+        self.coverage = coverage.Coverage(here, data)
+        self._coverage_saved = time.time()
+        self.map.set_rings(self.coverage.outlines())
+
+    def _save_coverage(self):
+        if self.coverage is not None:
+            self._coverage_saved = time.time()
+            self.logbook.save_coverage("adsb", coverage.site_key(self.coverage.home), self.coverage.data())
+
+    def show_logbook(self):
+        if getattr(self, "_logbook_window", None) is None:
+            self._logbook_window = LogbookWindow(self, self.logbook, {M.id: M.name for M in MODES})
+        w = self._logbook_window
+        w.show_mode(self.mode.id if self.mode is not None else "")
+        w.show()
+        w.raise_()
+        w.activateWindow()
+
+    def fetch_aircraft_db(self):
+        """Download the aircraft database (registrations, types) in the background, then restart ADS-B."""
+        if getattr(self, "_fetching_db", False):
+            return
+        self._fetching_db = True
+        self.status.setText("Downloading the aircraft database (9 MB) for registrations and types…")
+
+        def done(_result):
+            self._fetching_db = False
+            self.status.setText("Aircraft database ready: registrations, types and operators")
+            if self.mode is not None and self.mode.id == "adsb" and self.running:
                 self._stop_mode()
                 self._start_mode()
+
+        def failed(msg):
+            self._fetching_db = False
+            log.warning("aircraft database download failed: %s", msg)
+            self.status.setText("Couldn't download the aircraft database; ADS-B works without it")
+
+        self._run_task(aircraftdb.download, done, failed)
 
     def _show_log(self, window):
         window.show()
@@ -1342,9 +1316,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, ev):
         self.settings.setValue("geometry", self.saveGeometry())
-        if self.gps_reader is not None:
-            self.gps_reader.stop()
         self._stop()
+        self.logbook.close()
         super().closeEvent(ev)
 
 

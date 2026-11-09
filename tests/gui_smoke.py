@@ -3,10 +3,14 @@
     QT_QPA_PLATFORM=offscreen python3 tests/gui_smoke.py [screenshot-folder]
 """
 
+import os
 import sys
 import tempfile
+import time
 import traceback
 from pathlib import Path
+
+os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp()      # its own logbook and aircraft database
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -25,12 +29,14 @@ from PyQt6.QtCore import QSettings  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 import signals  # noqa: E402
-from sdr_toolkit import appreports, gui  # noqa: E402
+from sdr_toolkit import aircraftdb, appreports, gui  # noqa: E402
 from sdr_toolkit.engines.morse.synth import transmission  # noqa: E402
 from sdr_toolkit.engines.sstv.modes import BY_NAME  # noqa: E402
 from sdr_toolkit.engines.sstv.synth import color_bars, encode  # noqa: E402
 
 appreports.init = lambda *a, **k: None  # never send test failures as real reports
+db_downloads = []
+aircraftdb.download = lambda: db_downloads.append(1)  # no 9 MB download from the test
 appreports.send_report = lambda *a, **k: None
 appreports.report_error = lambda e, note=None: errors.append((type(e), e, None))
 
@@ -79,6 +85,7 @@ gui.MapView.online = False     # no tile downloads from tests
 _real_init = gui.MapView.__init__
 gui.MapView.__init__ = lambda self, *a, **k: _real_init(self, *a, **{**k, "online": False})
 win = gui.MainWindow(Path(tempfile.mkdtemp()))
+win.photos.online = False                               # no photo lookups from the test
 win.resize(1280, 800)
 win.show()
 
@@ -238,41 +245,67 @@ del win.mode.live
 results["ppm"] = ("+57 ppm" in label and int(win.settings.value("radio/ppm")) == 57
                   and win.form.widgets["ppm"][1].value() == 57 and win.mode.values["ppm"] == 57)
 win.settings.setValue("radio/ppm", 0)
-# GPS: a fix fills in "Your location" for the RTL-SDR modes and the map's home.
-import os  # noqa: E402
-import threading  # noqa: E402
-
-_m, _s = os.openpty()
-_gps_stop = threading.Event()
-
-
-def _gps_feed():
-    while not _gps_stop.is_set():
-        for body in ("GPGGA,123519,3352.200,S,15112.600,E,1,08,0.9,45.4,M,22.0,M,,",):
-            x = 0
-            for c in body:
-                x ^= ord(c)
-            os.write(_m, f"${body}*{x:02X}\r\n".encode())
-            __import__("time").sleep(0.1)
-
-
-threading.Thread(target=_gps_feed, daemon=True).start()
-win.settings.setValue("gps/enabled", True)
-win.settings.setValue("gps/source", os.ttyname(_s))
-win.settings.setValue("gps/baud", "9600")
-win.restart_gps()
-for _ in range(100):
-    win.gps_tick()
-    app.processEvents()
-    if win.settings.value("radio/lat"):
-        break
-    __import__("time").sleep(0.1)
-results["gps"] = (win.settings.value("radio/lat") == "-33.87000" and win.mode.values.get("lat") == "-33.87000"
-                  and win.form.widgets["lat"][1].text() == "-33.87000" and win.map.home == (-33.87, 151.21)
-                  and "fix" in win.gps_btn.text())
-_gps_stop.set()
-win.settings.setValue("gps/enabled", False)
-win.gps_tick()
+results["aircraft_db"] = len(db_downloads) >= 1        # ADS-B fetched the database by itself
+# Details: picking a ship in the table shows it; the logbook has it and its positions.
+win.tree.setCurrentItem(win._items["ais"])
+app.processEvents()
+win.logbook.clear()
+ship = {"mmsi": 503123456, "name": "TEST SHIP", "type": "cargo", "callsign": "VJN1234", "imo": 9123456,
+        "length": 150, "beam": 20, "lat": -33.85, "lon": 151.21, "speed": 12.3, "course": 87.0,
+        "last": time.time(), "track": [(-33.86, 151.20), (-33.85, 151.21)]}
+win.mode._ships = {503123456: ship}
+win.mode._messages = 1
+win.handle(win.mode._tables())
+app.processEvents()
+win.table.selectRow(0)
+app.processEvents()
+d = win.details
+results["details"] = (win.side.currentWidget() is d and d.title.text() == "TEST SHIP"
+                      and "9123456" in d.fields.text() and "150 × 20 m" in d.fields.text()
+                      and "marinetraffic" in d.links.text() and win.map.selected == 503123456
+                      and win.side.isTabVisible(win.side.indexOf(d)))
+win.logbook.flush()
+crafted = win.logbook.craft("ais")
+results["logbook"] = bool(crafted and crafted[0]["key"] == "503123456" and crafted[0]["name"] == "TEST SHIP"
+                      and crafted[0]["info"]["imo"] == 9123456 and win.logbook.positions("ais", 0, 1e10))
+win.show_logbook()
+app.processEvents()
+lw = win._logbook_window
+results["logbook_window"] = lw.spotted.rowCount() == 1 and lw.spotted.item(0, 2).text() == "TEST SHIP"
+lw.close()
+# The ship leaves: "All tracks" keeps it on the map where it was last heard, and it can still be picked.
+win.handle([gui.Event("points", data={"points": [], "home": None})])
+win.map.tracks_btn.setChecked(True)
+app.processEvents()
+spot = win.map._screen(-33.85, 151.21)
+results["session_tracks"] = (503123456 in win.map.session and len(win.map.session[503123456]["track"]) == 2
+                             and win.map.point_at(spot) == 503123456)
+win.map.tracks_btn.setChecked(False)
+win.mode._ships = {}
+win.refresh_details()
+results["details_gone"] = "not heard now" in d.subtitle.text() and d.title.text() == "TEST SHIP"
+# Replay from the logbook.
+from sdr_toolkit.panels import ReplayWindow  # noqa: E402
+rw = ReplayWindow(win, win.logbook, "ais", online=False)
+rng = win.logbook.time_range("ais")
+results["replay"] = (bool(rw.tracks) and len(rw.points_at(rng[1])) == 1
+                     and rw.points_at(rng[1] + 3600) == [])
+rw.close()
+# ADS-B range rings from aircraft flying out to 100 km north.
+from sdr_toolkit import coverage  # noqa: E402
+win.tree.setCurrentItem(win._items["adsb"])
+app.processEvents()
+here = (-33.87, 151.21)
+win.coverage = coverage.Coverage(here)
+for km in range(5, 101):
+    lat, lon = coverage.destination(here, 0.0, km)
+    win.coverage.add("7c1234", km * 2.0, lat, lon)
+win._coverage_drawn = 0
+win.handle([gui.Event("points", data={"points": [], "home": here})])
+results["rings"] = (win.map.rings is not None and win.map.rings_btn.isVisible() is not None
+                    and not win.map.rings_btn.isHidden() and "furthest 100 km" in win.map.rings_btn.toolTip())
+win._save_coverage()
+results["rings_saved"] = bool(win.logbook.load_coverage("adsb", coverage.site_key(here)))
 if shots:
     win.grab().save(str(shots / "ais_map.png"))
     dl.grab().save(str(shots / "decoded_log.png"))

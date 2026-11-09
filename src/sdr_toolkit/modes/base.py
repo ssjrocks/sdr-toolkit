@@ -53,12 +53,16 @@ class Event:
       "log"     a line for the decoded-data log only (modes whose table updates in place)
       "raw"     the decoder's raw output (an outside program's line, NMEA, frame bytes...)
       "points"  map markers (``data["points"]``: list of dicts with id, lat, lon,
-                label, heading, kind), for modes with ``map = True``
+                label, heading, kind; and name, info for the logbook), for modes with ``map = True``
+
+    The logbook keeps every "line", "row", "log" and finished picture, except lines
+    styled "warn" or "dim" and "log" lines styled "pos" (position updates, which it
+    keeps from the map points instead).
     """
 
     kind: str
     text: str = ""
-    style: str = ""                 # "", "dim", "warn"
+    style: str = ""                 # "", "dim", "warn" ("pos" for a log line that's only a position)
     data: dict = field(default_factory=dict)
     image: np.ndarray | None = None
     title: str = ""
@@ -85,6 +89,7 @@ class Mode:
     settings: tuple[Setting, ...] = ()
     tuning: Tuning = Tuning("", "")
     requires: tuple = ()            # outside programs needed, e.g. ("jt9",)
+    key_column = ""                 # table column naming one craft (map modes): shown in Details
 
     def __init__(self):
         self.values = {s.key: s.default for s in self.settings}
@@ -118,6 +123,11 @@ class Mode:
     def run_action(self, action_id: str) -> dict:
         """A button was pressed. Returns settings to change: {key: value} (applied as if typed)."""
         return {}
+
+    def details(self, key: str) -> dict | None:
+        """What's known about one aircraft or ship, for the Details tab:
+        {"title", "subtitle", "fields": [(label, value)], "photo": {...}, "links": [(text, url)]}."""
+        return None
 
     def markers(self) -> list[tuple[float, str]]:
         """Audio frequencies to mark on the spectrum: (Hz, label)."""

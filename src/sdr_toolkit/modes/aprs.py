@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from .base import Event, Setting, Tuning
-from .process import ProcessMode
+from .process import ProcessMode, looks_like_error
 
 PACKET = re.compile(r"^\[[\d.]+\]\s+(.*)$")
 
@@ -85,7 +85,7 @@ class APRSMode(ProcessMode):
             if line.startswith("Disabled AGW") or line.startswith("Disabled KISS"):
                 self._ready = True
                 return [Event("status", "direwolf listening")]
-            if "rror" in line or "ERROR" in line:
+            if looks_like_error(line):
                 return [Event("line", line, style="warn")]
             return []
         if not line.strip() or line.startswith("End of file on stdin"):

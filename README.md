@@ -13,6 +13,13 @@ everything decoded (also what the aircraft and ship tables update in place), and
 itself outputs (rtl_433's JSON, NMEA sentences, LoRa frame bytes, direwolf, multimon-ng, jt9 and
 DSD-FME output). Both keep the last 5,000 lines while closed, and can be paused, cleared and saved.
 
+**Logbook** keeps everything received in every mode, for good, in
+`~/.local/share/sdr-toolkit/logbook.sqlite`: each decoded line, row, message and picture title,
+and every aircraft and ship seen (first and last seen, how many times, its details). Search it,
+filter by mode, export to CSV, or clear it. ADS-B and AIS positions are kept too (one per craft
+every 10 s or 300 m, for 30 days), for **Replay**: pick a time range and play the traffic back on
+a map at up to 1000× speed.
+
 ## Modes (phase 1: speaker audio)
 
 | Mode | Decoder | Adjustable |
@@ -43,6 +50,7 @@ it), set under **Settings → Input**: handy without a dongle, or to decode some
 | AIS ships (161.975 / 162.025 MHz) | rtl_fm + direwolf, sentences decoded by the toolkit | channel, how long ships stay listed |
 | LoRa / Meshtastic / MeshCore | gr-lora_sdr (built separately, see below) | network preset, region, frequency, SF/BW/CR/sync word, channel keys |
 | DMR, P25, NXDN, D-Star, YSF, dPMR, M17 | DSD-FME with mbelib (built separately, see below) | frequency, protocol, channel bandwidth, squelch, play voice, save each call as WAV |
+| GPS position fix (1575.42 MHz) | GNSS-SDR | search range, satellites tracked at once, fill in my location |
 
 The LoRa decoder corrects the transmitter's and dongle's crystal error (tested to ±20 ppm, an 18 kHz
 offset at 920 MHz) as long as the frequency setting is the network's real centre frequency.
@@ -61,21 +69,37 @@ restarts ADS-B with it. The readings are what's left after the current correctio
 the value you have, and a second round shows whether it's right. It only works on a live dongle,
 not on a recording.
 
-**GPS:** the **GPS** button in the status bar reads a USB GPS receiver (NMEA over serial, any speed
-from 4800 to 115200, found by itself) or [gpsd](https://gpsd.io). With a fix, "Your location" is
-filled in for the RTL-SDR modes and the maps, and kept up to date as you move (saved when it moves
-50 m; a running mode restarts when it has moved more than 1 km). The port is only read, never
-written. **Automatic** uses gpsd if it's running, or a USB serial device whose name says it's a GPS
-(u-blox, SiRF, GlobalSat, "GPS", "GNSS"...); anything else, such as a radio's programming cable or a
-microcontroller, has to be picked by hand, because opening a serial port briefly raises its DTR and
-RTS lines, which on some cables keys a transmitter or resets a board.
 
 **ADS-B and AIS draw a map** (OpenStreetMap) above their tables: aircraft and ships with their
 heading, a label and a short trail, and your location if set. Drag to move, wheel to zoom, **Fit**
 to follow everything again. Tiles are cached in `~/.cache/sdr-toolkit/tiles` for 30 days and
 fetched at most two at a time, as OSM's tile usage policy asks. AIS decodes position reports
-(classes A and B) and static reports, so ships get their names, callsigns, types and
-destinations.
+(classes A and B) and static reports, so ships get their names, callsigns, IMO numbers, types,
+size, draught, destinations and ETAs. **All tracks** shows every track heard this session; craft
+no longer heard stay, dimmed, where they were last heard.
+
+**Details** (next to Settings) shows everything known about the aircraft or ship you click in the
+table or on the map, with a photo. For aircraft the registration, type, operator and year come from
+[tar1090-db](https://github.com/wiedehopf/tar1090-db) (built from public registers; the app
+downloads it, 9 MB, and refreshes it monthly). The photo is that aircraft's own from
+[Planespotters.net](https://www.planespotters.net), with the photographer's credit and a link,
+or else a Wikipedia photo of its type. No free service has photos of individual ships, so ships
+get a photo of their type. Looking up a photo sends the aircraft's ICAO address or the type to
+those sites.
+
+**ADS-B range rings** show how far your station hears in each direction: the furthest position
+heard (red, dashed) and how far reception is reliable (green: at least 80% of an aircraft's
+position updates still arrive within 10 s of the one before). They build up over days, from the
+live dongle only, and are kept per location in the logbook. **Range** turns them off.
+
+**GPS position fix** works out where you are from the GPS satellites' own signals, with the
+RTL-SDR on 1575.42 MHz, and fills in "Your location" for the other modes (averaged over the
+latest fixes, and updated when you move 30 m). The signals are far below the noise, so it needs an
+active GPS antenna (with an LNA, powered by a bias tee or its own supply) with a clear view of the
+sky; a passive antenna may manage outdoors. From cold a fix takes 1-5 minutes. Set the frequency
+correction first (ADS-B's button): a cheap dongle 57 ppm off puts the satellites 90 kHz away,
+outside the normal search. The correction is applied as GNSS-SDR's RTL-SDR example does it: the
+real sample rate and the signal's offset.
 
 **LoRa** decodes Meshtastic texts, positions and node names on the default channel (key `AQ==`, and
 any private channel you add the key for), and MeshCore adverts and Public channel texts. MeshCore
@@ -157,17 +181,23 @@ What the tests check, and against what:
 | Morse, PSK, NAVTEX, WEFAX, DTMF, CTCSS, DCS | encoders in this project (so they show the decoders agree with my reading of each format, not with other software) |
 | ISM | a Nexus-TH sensor synthesized from rtl_433's protocol description, decoded by rtl_433 |
 | ADS-B | DF17 squitters (CRC-24, identification, CPR positions) encoded from the standard, decoded by readsb |
+| GPS | [gps-sdr-sim](https://github.com/osqzss/gps-sdr-sim) signals for a position in Sydney from a real broadcast ephemeris (1 Jan 2022), made to look like a dongle 54 ppm fast (sample clock and tuning) with noise above the satellites; the fix comes out within 20 m (3 m in practice). The test runs when gps-sdr-sim is built in `build/gps-sdr-sim` |
 | AIS | type 1 and 5 reports (HDLC, CRC-16, NRZI, GMSK) encoded from the standard, decoded by direwolf; the sentence decoder also against the AIVDM documentation's example (MMSI 366053209 in San Francisco Bay) |
 | Meshtastic, MeshCore | packets built to the published formats (Meshtastic firmware and protobufs, MeshCore docs), sent as real LoRa IQ by gr-lora_sdr's transmitter (`tests/lora_tx.py`) with a 5 ppm crystal error and noise, and decoded through the mode; the LongFast channel hash (8), MeshCore Public hash (0x11) and Meshtastic's documented default frequencies come out right. MeshCore's sync word (0x12, RadioLib's default) is assumed on both sides, so that value isn't checked |
 
-GPS is tested with NMEA sentences from a fake serial port (finding the speed, bad checksums, no
-fix yet) and a fake gpsd; the window test checks that a fix fills in the location. No real GPS
-receiver has been tried. The ADS-B frequency correction is tested on readsb's figures fed in by
+The ADS-B frequency correction is tested on readsb's figures fed in by
 hand, not yet with a dongle.
 
 DMR/P25 has no test signal here (nothing on this PC generates those protocols): the tests check that
 noise gives no calls (Ubuntu's DSDcc reported false DMR frames on the same test, so it isn't used),
 the command line, and the no-dongle message. Real decoding is untested.
+
+Also tested: the logbook, range rings, replay, Details (aircraft from readsb with the aircraft
+database, ships from their static reports) and the window's picking, session tracks and rings;
+photo answers are tested on their real shapes, and the photo lookup was tried once for real.
+LoRa at 125 kHz is tested through the resampling the live dongle needs (it can't sample at
+500 kHz, so it runs at 1 MHz). Not yet tested with a dongle: the GPS fix, range rings and
+LoRa's new sample rates.
 
 Also tested: noise must not print text in the text modes; a live run through PipeWire (FT8 on the
 real UTC clock, APRS and RTTY); each RTL-SDR mode with no dongle plugged in. Not yet tested: any
@@ -177,4 +207,4 @@ mode on real off-air signals, and the RTL-SDR modes with a dongle.
 
 **Report a problem…** sends your note, the app's log (`~/.local/state/sdr-toolkit/app.log`) and the
 current mode's settings to the developer's server. Crashes and decoder errors are sent the same
-way. Decoded messages and pictures are never sent.
+way. Decoded messages, pictures and the logbook are never sent.

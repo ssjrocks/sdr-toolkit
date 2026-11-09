@@ -19,6 +19,15 @@ from .base import Event, MissingParts, Mode
 
 log = logging.getLogger(__name__)
 UPSTREAM = "\x00upstream "      # marks an error line from the upstream program
+# Lines that contain an error word but aren't errors: librtlsdr confirming the frequency
+# correction ("Tuner error set to 57 ppm.").
+HARMLESS = ("tuner error set to",)
+
+
+def looks_like_error(line: str) -> bool:
+    low = line.lower()
+    return (any(w in low for w in ("error", "no supported", "failed", "fatal"))
+            and not any(h in low for h in HARMLESS))
 
 
 class ProcessMode(Mode):
@@ -84,7 +93,7 @@ class ProcessMode(Mode):
             line = raw.decode(errors="replace").rstrip()
             if line:
                 log.info("%s: %s", name, line)
-                if any(w in line.lower() for w in ("error", "no supported", "failed", "fatal")):
+                if looks_like_error(line):
                     self._lines.put(UPSTREAM + f"{name}: {line}")
 
     def _feed_from(self, feeder):
@@ -128,6 +137,8 @@ class ProcessMode(Mode):
                 events += self.upstream_error(line[len(UPSTREAM):])
                 continue
             events.append(Event("raw", line))
+            if looks_like_error(line):
+                log.info("%s: %s", self._name, line)          # for the app log (problem reports)
             events += self.parse(line)
         return events
 

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..engines.ais import Assembler
 from .base import Event, Setting, Tuning
+from .process import looks_like_error
 from .radio import LOCATION_SETTINGS, RADIO_SETTINGS, RadioMode, fm_audio_chunks, home
 
 AUDIO_RATE = 48000
@@ -31,6 +32,7 @@ class AISMode(RadioMode):
     columns = (("mmsi", "MMSI"), ("name", "Name"), ("type", "Type"), ("status", "Status"), ("pos", "Position"),
                ("speed", "Speed kn"), ("course", "Course°"), ("dist", "Distance"), ("seen", "Seen"))
     requires = ("direwolf", "rtl-sdr")
+    key_column = "mmsi"
     iq_rate = 240000
     settings = RADIO_SETTINGS + LOCATION_SETTINGS + (
         Setting("channel", "Channel", "161.975M", "choice", restart=True,
@@ -97,7 +99,7 @@ class AISMode(RadioMode):
         if not self._ready:
             if line.startswith("Disabled AGW") or line.startswith("Disabled KISS"):
                 self._ready = True
-            return [Event("line", line, style="warn")] if "rror" in line else []
+            return [Event("line", line, style="warn")] if looks_like_error(line) else []
         if "!AIVDM" not in line:
             return []
         report = self._asm.add(line[line.index("!AIVDM"):])
@@ -111,7 +113,7 @@ class AISMode(RadioMode):
         if "lat" in report.fields:
             ship["track"] = (ship["track"] + [(report.fields["lat"], report.fields["lon"])])[-30:]
         self._dirty = True
-        return [Event("log", self._describe(report))]
+        return [Event("log", self._describe(report), style="pos" if "lat" in report.fields else "")]
 
     def _describe(self, report) -> str:
         s = self._ships[report.mmsi]
@@ -153,12 +155,55 @@ class AISMode(RadioMode):
             if pos:
                 points.append({"id": s["mmsi"], "lat": pos[0], "lon": pos[1], "kind": "ship",
                                "label": s.get("name") or str(s["mmsi"]),
-                               "heading": s.get("heading", s.get("course")), "track": s["track"]})
+                               "heading": s.get("heading", s.get("course")), "track": s["track"],
+                               "name": s.get("name", ""),
+                               "info": {k: s[k] for k in ("name", "callsign", "imo", "type", "destination",
+                                                          "length", "beam", "class") if k in s}})
         return [Event("table", data={"rows": rows}),
                 Event("points", data={"points": points, "home": here})]
 
     def activity(self):
         return f"{super().activity()} · {len(self._ships)} ships, {self._messages} messages"
+
+    def details(self, key):
+        try:
+            s = self._ships.get(int(key))
+        except (ValueError, AttributeError):
+            return None
+        if s is None:
+            return None
+        f = []
+
+        def add(label, value):
+            if value not in (None, ""):
+                f.append((label, str(value)))
+
+        add("MMSI", s["mmsi"])
+        add("Name", s.get("name"))
+        add("Callsign", s.get("callsign"))
+        add("IMO number", s.get("imo"))
+        add("Type", s.get("type"))
+        add("AIS class", s.get("class"))
+        add("Status", s.get("status"))
+        add("Destination", s.get("destination"))
+        add("ETA", s.get("eta"))
+        if "length" in s:
+            add("Size", f"{s['length']} × {s['beam']} m")
+        add("Draught", f"{s['draught']:.1f} m" if "draught" in s else None)
+        add("Speed", f"{s['speed']:.1f} kn" if "speed" in s else None)
+        add("Course", f"{s['course']:.0f}°" if "course" in s else None)
+        add("Heading", f"{s['heading']}°" if "heading" in s else None)
+        if "lat" in s:
+            add("Position", f"{s['lat']:.5f}, {s['lon']:.5f}")
+            here = home(self.values)
+            if here:
+                add("Distance", f"{distance_km(here, (s['lat'], s['lon'])):.1f} km")
+        add("Last heard", f"{time.time() - s['last']:.0f} s ago")
+        links = [("MarineTraffic", f"https://www.marinetraffic.com/en/ais/details/ships/mmsi:{s['mmsi']}"),
+                 ("VesselFinder", f"https://www.vesselfinder.com/vessels/details/{s['mmsi']}")]
+        return {"title": s.get("name") or str(s["mmsi"]),
+                "subtitle": " · ".join(x for x in (s.get("type", ""), s.get("callsign", "")) if x),
+                "fields": f, "photo": {"kind": "ship", "type": s.get("type", "")}, "links": links}
 
     def stop(self):
         events = super().stop() + (self._tables() if hasattr(self, "_ships") else [])

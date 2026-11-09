@@ -96,6 +96,14 @@ def _position(b: Bits, lon_at, lat_at, sog_at, cog_at, hdg_at) -> dict:
     return d
 
 
+def _size(b, at) -> dict:
+    """Length and beam (m) from the distances of the GPS antenna to bow, stern, port and starboard."""
+    bow, stern, port, starboard = b.u(at, 9), b.u(at + 9, 9), b.u(at + 18, 6), b.u(at + 24, 6)
+    if None in (bow, stern, port, starboard) or not (bow + stern) or not (port + starboard):
+        return {}
+    return {"length": bow + stern, "beam": port + starboard}
+
+
 def decode_payload(bits: str) -> Report | None:
     b = Bits(bits)
     kind, mmsi = b.u(0, 6), b.u(8, 30)
@@ -114,15 +122,27 @@ def decode_payload(bits: str) -> Report | None:
     elif kind == 19:
         d = _position(b, 57, 85, 46, 112, 124)
         d.update({"name": b.text(143, 120), "type": ship_type(b.u(263, 8) or 0), "class": "B"})
+        d.update(_size(b, 271))
     elif kind == 5:
         d = {"callsign": b.text(70, 42), "name": b.text(112, 120), "type": ship_type(b.u(232, 8) or 0),
              "destination": b.text(302, 120), "class": "A"}
+        imo = b.u(40, 30)
+        if imo:
+            d["imo"] = imo
+        d.update(_size(b, 240))
+        month, day, hour, minute = b.u(274, 4), b.u(278, 5), b.u(283, 5), b.u(288, 6)
+        if month and day and hour is not None and hour < 24 and minute is not None and minute < 60:
+            d["eta"] = f"{day:02d}/{month:02d} {hour:02d}:{minute:02d} UTC"
+        draught = b.u(294, 8)
+        if draught:
+            d["draught"] = draught / 10
     elif kind == 24:
         part = b.u(38, 2)
         if part == 0:
             d = {"name": b.text(40, 120)}
         elif part == 1:
             d = {"type": ship_type(b.u(40, 8) or 0), "callsign": b.text(90, 42)}
+            d.update(_size(b, 132))
         d["class"] = "B"
     else:
         return Report(kind, mmsi, {})
