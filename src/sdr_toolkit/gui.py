@@ -506,6 +506,12 @@ class MainWindow(QMainWindow):
         self.waterfall.set_range(0, hi)
         self.waterfall.markers = self.mode.markers()
         self.folder_btn.setVisible("folder" in self.mode.values)
+        # Radio modes read the RTL-SDR or a recording, not the speakers.
+        radio = self._is_radio()
+        self.source_combo.setEnabled(not radio)
+        self.waterfall.setVisible(not radio)
+        self.source_combo.setToolTip("RTL-SDR modes don't use this: see Settings → Input." if radio else
+                                     "The output to listen to. Default follows your speaker setting.")
         # Listening starts with the mode: pick one and play the signal.
         self.start_btn.setChecked(True)
 
@@ -573,7 +579,10 @@ class MainWindow(QMainWindow):
             self.start_btn.setChecked(False)
             self.start_btn.blockSignals(False)
             return
-        if not self._start_capture():
+        if self._is_radio():
+            src = "the RTL-SDR" if self.mode.values.get("input") == "rtl" else "the recording"
+            self.status.setText(f"{self.mode.name}: reading {src}")
+        elif not self._start_capture():
             self._stop_mode()
             return
         self.running = True
@@ -631,19 +640,24 @@ class MainWindow(QMainWindow):
             self.capture.stop()
         self._start_capture()
 
+    def _is_radio(self) -> bool:
+        return getattr(self.mode, "source", "audio") == "radio"
+
     def tick(self):
-        if self.capture is None:
-            return
-        if self.capture.rate != self.mode.rate:
-            self._restart_capture()
-            return
-        try:
-            audio = self.capture.read()
-        except RuntimeError as e:
-            log.warning("capture stopped: %s", e)
-            self._stop()
-            QMessageBox.warning(self, APP_NAME, f"Listening stopped.\n\n{e}")
-            return
+        audio = np.zeros(0, np.float32)
+        if not self._is_radio():
+            if self.capture is None:
+                return
+            if self.capture.rate != self.mode.rate:
+                self._restart_capture()
+                return
+            try:
+                audio = self.capture.read()
+            except RuntimeError as e:
+                log.warning("capture stopped: %s", e)
+                self._stop()
+                QMessageBox.warning(self, APP_NAME, f"Listening stopped.\n\n{e}")
+                return
         events = []
         try:
             if len(audio):
@@ -675,6 +689,8 @@ class MainWindow(QMainWindow):
                 self.live.setText(e.text)
             elif e.kind == "row":
                 self._add_row(e.data)
+            elif e.kind == "table":
+                self._set_rows(e.data["rows"])
             elif e.kind == "image":
                 self._last_image = e.image
                 self.picture.show_image(to_qimage(e.image), e.row, getattr(self.mode, "aspect", None))
@@ -685,6 +701,19 @@ class MainWindow(QMainWindow):
                 for key, value in e.data.items():
                     self.form.set_value(key, value)
                     self.settings.setValue(f"{self.mode.id}/{key}", value)
+
+    def _set_rows(self, rows):
+        """Replace the whole table (a list that updates in place, like aircraft)."""
+        t = self.table
+        t.setRowCount(len(rows))
+        for r, data in enumerate(rows):
+            for c, (key, _) in enumerate(self.mode.columns):
+                item = t.item(r, c)
+                text = str(data.get(key, ""))
+                if item is None:
+                    t.setItem(r, c, QTableWidgetItem(text))
+                elif item.text() != text:
+                    item.setText(text)
 
     def _add_row(self, data):
         t = self.table

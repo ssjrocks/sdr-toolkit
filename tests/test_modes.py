@@ -238,3 +238,68 @@ def test_quiet_on_noise(mode_id):
     _, ev = run(mode_id, signals.noise(rate * 20, 0.1, seed=3))
     printed = "".join(e.text for e in ev if e.kind in ("line", "live")).strip()
     assert len(printed) <= 2, printed
+
+
+# ---- RTL-SDR modes, from IQ recordings
+
+import radio_signals  # noqa: E402
+
+
+def run_radio(mode_id, path, wait=30.0, **values):
+    mode = BY_ID[mode_id]()
+    v = dict(mode.values)
+    v.update(values, input="file", file=str(path))
+    mode.start(v)
+    events = []
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        time.sleep(0.2)
+        events += mode.poll()
+        if mode._proc.poll() is not None and mode._lines.empty():
+            break
+    time.sleep(0.3)
+    events += mode.poll()
+    events += mode.stop()
+    return mode, events
+
+
+def test_ism_nexus_sensor(tmp_path):
+    path = radio_signals.save(tmp_path / "nexus.cu8", radio_signals.nexus_iq(0xA5, 2, 21.7, 58))
+    _, ev = run_radio("ism", path)
+    rows = [e.data for e in ev if e.kind == "row"]
+    assert rows and rows[0]["model"] == "Nexus-TH" and rows[0]["id"] == 165 and rows[0]["channel"] == 2
+    assert "temperature_C=21.7" in rows[0]["data"] and "humidity=58" in rows[0]["data"]
+
+
+def test_ism_protocol_filter(tmp_path):
+    path = radio_signals.save(tmp_path / "nexus.cu8", radio_signals.nexus_iq())
+    _, ev = run_radio("ism", path, protocols="73")          # LaCrosse only: the Nexus is ignored
+    assert not [e for e in ev if e.kind == "row"]
+
+
+def test_adsb(tmp_path):
+    path = radio_signals.save(tmp_path / "adsb.cu8", radio_signals.adsb_iq(0x7C1234, "QFA123", -33.95, 151.18, 12000))
+    _, ev = run_radio("adsb", path, lat="-33.87", lon="151.21")
+    tables = [e.data["rows"] for e in ev if e.kind == "table" and e.data["rows"]]
+    assert tables, "no aircraft"
+    a = tables[-1][0]
+    assert a["hex"] == "7C1234" and a["flight"] == "QFA123" and a["alt"] == 12000
+    lat, lon = (float(x) for x in a["pos"].split(","))
+    assert abs(lat + 33.95) < 0.001 and abs(lon - 151.18) < 0.001
+    assert a["dist"].split()[1] == "km" and 8 < float(a["dist"].split()[0]) < 12      # 9.3 km
+
+
+def test_ais(tmp_path):
+    path = radio_signals.save(tmp_path / "ais.cu8", radio_signals.ais_iq(repeats=5))
+    _, ev = run_radio("ais", path, file_rate=240000)
+    out = text(ev)
+    # Bursts start abruptly out of noise; direwolf misses about 1 in 20 of these at any level.
+    assert out.count("Position Report Class A") >= 4, out
+    assert '"503123456"' in out and "S 33 51.0000, E 151 12.6000" in out
+
+
+def test_ais_channel_offset(tmp_path):
+    # The AIS channel 50 kHz off the recording's centre.
+    path = radio_signals.save(tmp_path / "ais.cu8", radio_signals.ais_iq(repeats=2, offset_hz=50000))
+    _, ev = run_radio("ais", path, file_rate=240000, file_offset=50000)
+    assert text(ev).count("Position Report Class A") >= 1

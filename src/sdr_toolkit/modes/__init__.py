@@ -1,7 +1,10 @@
 """All the modes, in the order the window lists them."""
 
+from .adsb import ADSBMode
+from .ais import AISMode
 from .aprs import APRSMode
 from .morse import MorseMode
+from .ism import ISMMode
 from .pager import PagerMode
 from .sstv import SSTVMode
 from .text_modes import NavtexMode, PSKMode, RTTYMode
@@ -15,5 +18,6 @@ MODES = [
     SSTVMode, WefaxMode,
     APRSMode, PagerMode,
     TonesMode,
+    ADSBMode, AISMode, ISMMode,
 ]
-GROUPS = ["Text", "Digital (weak signal)", "Pictures", "Packet & paging", "Tones"]
+GROUPS = ["Text", "Digital (weak signal)", "Pictures", "Packet & paging", "Tones", "RTL-SDR"]
