@@ -30,9 +30,10 @@ USER_AGENT = f"sdr-toolkit/{__version__}"
 @dataclass
 class Update:
     version: str
-    wheel_url: str
+    wheel_url: str          # the wheel's API address (see _download)
     wheel_name: str
     sha256: str
+    wheel_link: str = ""    # its plain download link, the fallback
 
 
 def parse_version(version: str) -> tuple[int, ...]:
@@ -43,30 +44,54 @@ def parse_version(version: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
-def _get(url: str) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=20) as response:
+def _get(url: str, accept: str | None = None, timeout=20) -> bytes:
+    headers = {"User-Agent": USER_AGENT}
+    if accept:
+        headers["Accept"] = accept
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as response:
         return response.read()
 
 
 def _trusted(url: str) -> bool:
-    return url.startswith(f"https://github.com/{REPO}/releases/download/")
+    return url.startswith((f"https://api.github.com/repos/{REPO}/releases/assets/",
+                           f"https://github.com/{REPO}/releases/download/"))
+
+
+def _download(api_url: str, link: str) -> bytes:
+    """A release file: through the API first, then the plain link.
+
+    GitHub's plain release links time out for anonymous users at busy times (an incident
+    on 2026-11-09 had every one of them failing for minutes) while the API still served the
+    same files.
+    """
+    errors = []
+    for url, accept in ((api_url, "application/octet-stream"), (link, None)):
+        if not url or not _trusted(url):
+            continue
+        try:
+            return _get(url, accept, timeout=60)
+        except OSError as e:
+            errors.append(f"{url}: {e}")
+            LOG.info("download failed, %s", errors[-1])
+    raise OSError("; ".join(errors) or "no trusted download address")
 
 
 def check() -> Update | None:
     """The latest release if it's newer than this version, else None."""
-    release = json.loads(_get(API))
-    assets = {a["name"]: a["browser_download_url"] for a in release.get("assets", [])}
-    info_url = assets.get(INFO_ASSET)
-    if not info_url or not _trusted(info_url):
+    release = json.loads(_get(API, "application/vnd.github+json"))
+    assets = {a["name"]: (a["url"], a["browser_download_url"]) for a in release.get("assets", [])}
+    if INFO_ASSET not in assets:
         return None
-    info = json.loads(_get(info_url))
+    info = json.loads(_download(*assets[INFO_ASSET]))
     if parse_version(info["version"]) <= parse_version(__version__):
         return None
-    wheel_url = assets.get(info["wheel"])
-    if not wheel_url or not _trusted(wheel_url):
+    if info["wheel"] not in assets:
         return None
-    return Update(info["version"], wheel_url, info["wheel"], info["sha256"].lower())
+    api_url, link = assets[info["wheel"]]
+    if not (_trusted(api_url) or _trusted(link)):
+        return None
+    return Update(info["version"], api_url, info["wheel"], info["sha256"].lower(), link)
 
 
 def _state_dir() -> Path:
@@ -106,7 +131,7 @@ def install(update: Update) -> None:
     folder = _state_dir() / "updates"
     folder.mkdir(exist_ok=True)
     path = folder / update.wheel_name
-    data = _get(update.wheel_url)
+    data = _download(update.wheel_url, update.wheel_link)
     if hashlib.sha256(data).hexdigest() != update.sha256:
         raise RuntimeError("The download didn't match its checksum; nothing was installed.")
     path.write_bytes(data)

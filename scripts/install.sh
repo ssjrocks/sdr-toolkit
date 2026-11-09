@@ -50,17 +50,21 @@ if [[ -n "$src" ]]; then
   target="$src"
 else
   step "Downloading the latest release"
-  read -r wheel_url sha < <(python3 - "$REPO" <<'EOF'
+  # Release files come through GitHub's API (its plain download links time out at busy times).
+  read -r wheel_api wheel_name sha < <(python3 - "$REPO" <<'EOF'
 import json, sys, urllib.request
 repo = sys.argv[1]
-rel = json.load(urllib.request.urlopen(f"https://api.github.com/repos/{repo}/releases/latest"))
-assets = {a["name"]: a["browser_download_url"] for a in rel["assets"]}
-info = json.load(urllib.request.urlopen(assets["sdr-toolkit.json"]))
-print(assets[info["wheel"]], info["sha256"])
+def get(url, accept):
+    req = urllib.request.Request(url, headers={"Accept": accept, "User-Agent": "sdr-toolkit-installer"})
+    return urllib.request.urlopen(req, timeout=60).read()
+rel = json.loads(get(f"https://api.github.com/repos/{repo}/releases/latest", "application/vnd.github+json"))
+assets = {a["name"]: a["url"] for a in rel["assets"]}
+info = json.loads(get(assets["sdr-toolkit.json"], "application/octet-stream"))
+print(assets[info["wheel"]], info["wheel"], info["sha256"])
 EOF
 )
-  wheel="$tmp/$(basename "$wheel_url")"
-  curl -fsSL -o "$wheel" "$wheel_url"
+  wheel="$tmp/$wheel_name"
+  curl -fsSL -H "Accept: application/octet-stream" -o "$wheel" "$wheel_api"
   echo "$sha  $wheel" | sha256sum -c --quiet
   python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2], [n for n in zipfile.ZipFile(sys.argv[1]).namelist() if '/setup/' in n])" "$wheel" "$tmp/x"
   setup="$tmp/x/sdr_toolkit/setup"
