@@ -673,3 +673,125 @@ def test_map_projection_and_fit():
         assert 0 <= pt.x() <= 800 and 0 <= pt.y() <= 500
     assert m.zoom >= 9                       # close in, not the whole world
     assert app is not None
+
+
+def test_adsb_ppm_from_readsb_measurements():
+    """readsb's estimated_ppm is what's left after the correction already set; the button adds it on."""
+    m = BY_ID["adsb"]()
+    m.values.update(input="rtl", ppm=50)
+    m._ppm_readings = []
+    assert m.ppm_suggestion() is None and not m.actions()[0][2]          # measuring, button off
+    m._ppm_readings = [7.2]
+    assert m.ppm_suggestion() is None                                    # one reading isn't enough
+    m._ppm_readings = [7.2, 6.8]
+    assert m.ppm_suggestion() == (57, 2)
+    aid, label, enabled, _ = m.actions()[0]
+    assert enabled and "+57 ppm" in label and m.run_action(aid) == {"ppm": 57}
+    m._ppm_readings = [7.2, 15.0]                                        # readings disagree: wait
+    assert m.ppm_suggestion() is None
+    m.values["ppm"] = 57
+    m._ppm_readings = [0.3, -0.2]
+    assert m.ppm_suggestion() == (57, 2) and not m.actions()[0][2]       # already right
+    m.values["input"] = "file"
+    assert m.actions() == []                                             # recordings can't measure it
+
+
+# ---- GPS
+
+from sdr_toolkit import gps  # noqa: E402
+
+
+def nmea(body):
+    x = 0
+    for c in body:
+        x ^= ord(c)
+    return f"${body}*{x:02X}\r\n"
+
+
+GPS_LINES = [nmea("GPGSA,A,3,04,05,09,12,,,,,,,,,2.5,1.3,2.1"),
+             nmea("GPGGA,123519,3352.200,S,15112.600,E,1,08,0.9,45.4,M,22.0,M,,"),
+             nmea("GNRMC,123520,A,3352.200,S,15112.600,E,0.5,054.7,091126,,,A")]
+
+
+def test_nmea_parsing():
+    p = gps.NMEA()
+    for line in GPS_LINES:
+        p.feed(line)
+    f = p.fix
+    assert abs(f.lat + 33.87) < 1e-9 and abs(f.lon - 151.21) < 1e-9 and f.alt == 45.4 and f.sats == 8 and f.mode == "3D"
+    q = gps.NMEA()
+    assert q.feed(nmea("GPGGA,1,4807.038,N,01131.000,W,1,05,0.9,545.4,M,46.9,M,,")).lon < 0
+    assert q.feed(GPS_LINES[1][:-4] + "00\r\n") is None                       # bad checksum
+    assert gps.NMEA().feed(nmea("GPGGA,123519,,,,,0,00,,,M,,M,,")) is None     # no fix yet
+    assert gps.NMEA().feed(nmea("GPRMC,123520,V,,,,,,,091126,,,N")) is None     # receiver says invalid
+
+
+def _fake_serial_gps():
+    import os
+    import threading
+    master, slave = os.openpty()
+    stop = threading.Event()
+
+    def feed():
+        while not stop.is_set():
+            for line in GPS_LINES:
+                os.write(master, line.encode())
+                time.sleep(0.1)
+
+    threading.Thread(target=feed, daemon=True).start()
+    return os.ttyname(slave), stop
+
+
+def test_gps_serial_reader_finds_the_speed_and_a_fix():
+    path, stop = _fake_serial_gps()
+    r = gps.GpsReader(path, "auto")
+    r.start()
+    deadline = time.time() + 15
+    while time.time() < deadline and not r.fix:
+        time.sleep(0.1)
+    stop.set()
+    r.stop()
+    r.join(3)
+    assert r.fix and abs(r.fix.lat + 33.87) < 1e-9 and not r.is_alive()
+
+
+def test_gps_from_gpsd(monkeypatch):
+    import json
+    import socket
+    import threading
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    real = socket.create_connection
+    monkeypatch.setattr(gps.socket, "create_connection",
+                        lambda addr, timeout=None: real(("127.0.0.1", port), timeout=timeout))
+
+    def serve():
+        c, _ = srv.accept()
+        c.recv(100)                                   # ?WATCH
+        for msg in ({"class": "SKY", "satellites": [{"used": True}] * 7},
+                    {"class": "TPV", "mode": 3, "lat": -33.87, "lon": 151.21, "altMSL": 40.0}):
+            c.sendall((json.dumps(msg) + "\n").encode())
+        time.sleep(2)
+        c.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    r = gps.GpsReader("gpsd")
+    r.start()
+    deadline = time.time() + 5
+    while time.time() < deadline and not r.fix:
+        time.sleep(0.05)
+    r.stop()
+    assert r.fix.lat == -33.87 and r.fix.sats == 7 and r.fix.mode == "3D" and r.fix.alt == 40.0
+
+
+def test_gps_automatic_never_picks_a_device_not_named_as_gps(tmp_path, monkeypatch):
+    monkeypatch.setattr(gps, "BY_ID", tmp_path)
+    monkeypatch.setattr(gps, "gpsd_running", lambda: False)
+    (tmp_path / "usb-HYTE_HYTE_THICC_Y70_LCD_206239A94D32-if00").symlink_to("/dev/null")
+    (tmp_path / "usb-Prolific_Technology_Inc._USB-Serial_Controller-if00-port0").symlink_to("/dev/null")
+    assert gps.auto_source() is None
+    (tmp_path / "usb-u-blox_AG_-_www.u-blox.com_u-blox_7_-_GPS_GNSS_Receiver-if00").symlink_to("/dev/null")
+    assert "u-blox" in gps.auto_source()

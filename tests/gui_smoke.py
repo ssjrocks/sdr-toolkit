@@ -226,6 +226,53 @@ win.handle([gui.Event("points", data={"points": [{"id": 1, "lat": -33.85, "lon":
                                       "home": (-33.87, 151.21)})])
 app.processEvents()
 results["map"] = win.map.isVisible() and len(win.map.points) == 1 and win.map.zoom >= 10
+# ADS-B's frequency-correction button: the suggested value goes to the shared setting and the form.
+win.tree.setCurrentItem(win._items["adsb"])
+app.processEvents()
+win.mode.values["ppm"] = 0
+win.mode._ppm_readings = [57.2, 56.8]
+win.mode.live = lambda: True
+label = win.mode.actions()[0][1]
+win.run_action("ppm")
+del win.mode.live
+results["ppm"] = ("+57 ppm" in label and int(win.settings.value("radio/ppm")) == 57
+                  and win.form.widgets["ppm"][1].value() == 57 and win.mode.values["ppm"] == 57)
+win.settings.setValue("radio/ppm", 0)
+# GPS: a fix fills in "Your location" for the RTL-SDR modes and the map's home.
+import os  # noqa: E402
+import threading  # noqa: E402
+
+_m, _s = os.openpty()
+_gps_stop = threading.Event()
+
+
+def _gps_feed():
+    while not _gps_stop.is_set():
+        for body in ("GPGGA,123519,3352.200,S,15112.600,E,1,08,0.9,45.4,M,22.0,M,,",):
+            x = 0
+            for c in body:
+                x ^= ord(c)
+            os.write(_m, f"${body}*{x:02X}\r\n".encode())
+            __import__("time").sleep(0.1)
+
+
+threading.Thread(target=_gps_feed, daemon=True).start()
+win.settings.setValue("gps/enabled", True)
+win.settings.setValue("gps/source", os.ttyname(_s))
+win.settings.setValue("gps/baud", "9600")
+win.restart_gps()
+for _ in range(100):
+    win.gps_tick()
+    app.processEvents()
+    if win.settings.value("radio/lat"):
+        break
+    __import__("time").sleep(0.1)
+results["gps"] = (win.settings.value("radio/lat") == "-33.87000" and win.mode.values.get("lat") == "-33.87000"
+                  and win.form.widgets["lat"][1].text() == "-33.87000" and win.map.home == (-33.87, 151.21)
+                  and "fix" in win.gps_btn.text())
+_gps_stop.set()
+win.settings.setValue("gps/enabled", False)
+win.gps_tick()
 if shots:
     win.grab().save(str(shots / "ais_map.png"))
     dl.grab().save(str(shots / "decoded_log.png"))

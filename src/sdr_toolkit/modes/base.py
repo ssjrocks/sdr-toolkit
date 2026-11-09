@@ -111,6 +111,14 @@ class Mode:
         """Stop; return anything still pending (a half-received picture)."""
         return []
 
+    def actions(self) -> list[tuple[str, str, bool, str]]:
+        """Buttons above the output: (id, label, enabled, tooltip). Asked again every second."""
+        return []
+
+    def run_action(self, action_id: str) -> dict:
+        """A button was pressed. Returns settings to change: {key: value} (applied as if typed)."""
+        return {}
+
     def markers(self) -> list[tuple[float, str]]:
         """Audio frequencies to mark on the spectrum: (Hz, label)."""
         return []

@@ -51,8 +51,24 @@ Device, gain, frequency correction (ppm) and your location are set once for all 
 Above the output, each mode shows what it's doing: the frequency, how long it's listened, the noise
 or signal level and what it has seen (for ISM, every transmission rtl_433 notices, decoded or not),
 so a quiet band looks quiet rather than broken. With no dongle plugged in it says so instead of
-hanging. ADS-B shows readsb's estimate of the dongle's clock error, a good starting value for the
-frequency correction.
+hanging.
+
+**Frequency correction from ADS-B:** readsb counts the samples the dongle delivers against the PC's
+clock (which Ubuntu keeps right over the internet) and reports the difference every 30 seconds,
+which is the dongle's crystal error. After two readings that agree within 3 ppm, ADS-B shows
+**Set frequency correction to +N ppm**; clicking it saves the value for every RTL-SDR mode and
+restarts ADS-B with it. The readings are what's left after the current correction, so it adds to
+the value you have, and a second round shows whether it's right. It only works on a live dongle,
+not on a recording.
+
+**GPS:** the **GPS** button in the status bar reads a USB GPS receiver (NMEA over serial, any speed
+from 4800 to 115200, found by itself) or [gpsd](https://gpsd.io). With a fix, "Your location" is
+filled in for the RTL-SDR modes and the maps, and kept up to date as you move (saved when it moves
+50 m; a running mode restarts when it has moved more than 1 km). The port is only read, never
+written. **Automatic** uses gpsd if it's running, or a USB serial device whose name says it's a GPS
+(u-blox, SiRF, GlobalSat, "GPS", "GNSS"...); anything else, such as a radio's programming cable or a
+microcontroller, has to be picked by hand, because opening a serial port briefly raises its DTR and
+RTS lines, which on some cables keys a transmitter or resets a board.
 
 **ADS-B and AIS draw a map** (OpenStreetMap) above their tables: aircraft and ships with their
 heading, a label and a short trail, and your location if set. Drag to move, wheel to zoom, **Fit**
@@ -139,11 +155,15 @@ What the tests check, and against what:
 | POCSAG | an encoder written from the standard, checked against multimon-ng first |
 | SSTV | the SSTV Decoder's encoder, which was checked against PySSTV |
 | Morse, PSK, NAVTEX, WEFAX, DTMF, CTCSS, DCS | encoders in this project (so they show the decoders agree with my reading of each format, not with other software) |
-
 | ISM | a Nexus-TH sensor synthesized from rtl_433's protocol description, decoded by rtl_433 |
 | ADS-B | DF17 squitters (CRC-24, identification, CPR positions) encoded from the standard, decoded by readsb |
 | AIS | type 1 and 5 reports (HDLC, CRC-16, NRZI, GMSK) encoded from the standard, decoded by direwolf; the sentence decoder also against the AIVDM documentation's example (MMSI 366053209 in San Francisco Bay) |
 | Meshtastic, MeshCore | packets built to the published formats (Meshtastic firmware and protobufs, MeshCore docs), sent as real LoRa IQ by gr-lora_sdr's transmitter (`tests/lora_tx.py`) with a 5 ppm crystal error and noise, and decoded through the mode; the LongFast channel hash (8), MeshCore Public hash (0x11) and Meshtastic's documented default frequencies come out right. MeshCore's sync word (0x12, RadioLib's default) is assumed on both sides, so that value isn't checked |
+
+GPS is tested with NMEA sentences from a fake serial port (finding the speed, bad checksums, no
+fix yet) and a fake gpsd; the window test checks that a fix fills in the location. No real GPS
+receiver has been tried. The ADS-B frequency correction is tested on readsb's figures fed in by
+hand, not yet with a dongle.
 
 DMR/P25 has no test signal here (nothing on this PC generates those protocols): the tests check that
 noise gives no calls (Ubuntu's DSDcc reported false DMR frames on the same test, so it isn't used),

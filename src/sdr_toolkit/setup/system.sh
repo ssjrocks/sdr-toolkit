@@ -8,7 +8,7 @@ set -euo pipefail
 
 packages=(
   # the app
-  pipewire-bin python3-venv python3-numpy python3-scipy python3-pyqt6 python3-pil python3-cryptography
+  pipewire-bin python3-venv python3-numpy python3-scipy python3-pyqt6 python3-pil python3-cryptography python3-serial
   # outside decoders
   wsjtx direwolf multimon-ng rtl-433 readsb rtl-sdr gnuradio
   # to build gr-lora_sdr

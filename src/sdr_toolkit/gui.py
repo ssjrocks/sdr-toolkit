@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_ID, APP_NAME, __version__, appreports, deps, updater
+from . import APP_ID, APP_NAME, __version__, appreports, deps, gps, updater
 from .capture import AudioCapture, list_outputs
 from .mapview import MapView
 from .modes import GROUPS, MODES
@@ -426,6 +426,79 @@ class LogWindow(QDialog):
             Path(path).write_text("\n".join(self.lines) + "\n", encoding="utf-8")
 
 
+class GpsDialog(QDialog):
+    """Turn the GPS on, choose the receiver, see what it reports."""
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+        self.setWindowTitle("GPS")
+        self.resize(560, 260)
+        lay = QVBoxLayout(self)
+        self.enable = QCheckBox("Use a GPS receiver for my location")
+        self.enable.setChecked(win.settings.value("gps/enabled", "false") in (True, "true"))
+        self.source = QComboBox()
+        self.baud = QComboBox()
+        for b in ("auto",) + tuple(str(x) for x in gps.BAUDS):
+            self.baud.addItem("Find it automatically" if b == "auto" else f"{b} baud", b)
+        i = self.baud.findData(str(win.settings.value("gps/baud", "auto")))
+        self.baud.setCurrentIndex(max(i, 0))
+        refresh = QPushButton("Refresh")
+        refresh.clicked.connect(self.fill)
+        form = QFormLayout()
+        row = QHBoxLayout()
+        row.addWidget(self.source, 1)
+        row.addWidget(refresh)
+        form.addRow("Receiver", row)
+        form.addRow("Speed", self.baud)
+        note = QLabel("Automatic uses gpsd if it's running, or a USB device whose name says it's a GPS. "
+                      "Other serial devices are only opened if you choose them: on some (a radio's "
+                      "programming cable) opening the port can key the transmitter.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: palette(placeholder-text)")
+        self.state = QLabel("")
+        self.state.setWordWrap(True)
+        lay.addWidget(self.enable)
+        lay.addLayout(form)
+        lay.addWidget(note)
+        lay.addWidget(self.state)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+        self.fill()
+        self.enable.toggled.connect(self.changed)
+        self.source.currentIndexChanged.connect(self.changed)
+        self.baud.currentIndexChanged.connect(self.changed)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.show_state)
+        self.timer.start(500)
+        self.show_state()
+
+    def fill(self):
+        current = str(self.win.settings.value("gps/source", "auto"))
+        self.source.blockSignals(True)
+        self.source.clear()
+        self.source.addItem("Automatic", "auto")
+        self.source.addItem("gpsd" + (" (running)" if gps.gpsd_running() else " (not running)"), "gpsd")
+        for path, name, likely in gps.devices():
+            self.source.addItem(f"{name}" + ("" if likely else "   (not named as a GPS)"), path)
+        i = self.source.findData(current)
+        if i < 0 and current not in ("auto", "gpsd"):
+            self.source.addItem(f"{current} (not connected)", current)
+            i = self.source.count() - 1
+        self.source.setCurrentIndex(max(i, 0))
+        self.source.blockSignals(False)
+
+    def changed(self, *_):
+        self.win.settings.setValue("gps/enabled", self.enable.isChecked())
+        self.win.settings.setValue("gps/source", self.source.currentData())
+        self.win.settings.setValue("gps/baud", self.baud.currentData())
+        self.win.restart_gps()
+
+    def show_state(self):
+        self.state.setText(self.win.gps_text(long=True))
+
+
 class MainWindow(QMainWindow):
     report_finished = pyqtSignal(bool)
 
@@ -583,6 +656,13 @@ class MainWindow(QMainWindow):
         self._tasks = set()
         self._update = None
         ol.addWidget(self.install_bar)
+        self.action_bar = QWidget()
+        self._action_layout = QHBoxLayout(self.action_bar)
+        self._action_layout.setContentsMargins(0, 0, 0, 0)
+        self._action_buttons: dict[str, QPushButton] = {}
+        self._last_actions = 0.0
+        self.action_bar.setVisible(False)
+        ol.addWidget(self.action_bar)
         ol.addWidget(self.title)
         ol.addWidget(self.output, 1)
         vsplit.addWidget(out)
@@ -607,6 +687,17 @@ class MainWindow(QMainWindow):
         self.statusBar().addWidget(self.status, 1)
         self.level_label = QLabel("")
         self.statusBar().addPermanentWidget(self.level_label)
+        self.gps_btn = QToolButton()
+        self.gps_btn.setAutoRaise(True)
+        self.gps_btn.setToolTip("GPS receiver for your location")
+        self.gps_btn.clicked.connect(lambda: GpsDialog(self).exec())
+        self.statusBar().addPermanentWidget(self.gps_btn)
+        self.gps_reader = None
+        self._gps_next_try = 0.0
+        self._mode_home = None
+        self.gps_timer = QTimer(self)
+        self.gps_timer.timeout.connect(self.gps_tick)
+        self.gps_timer.start(1000)
 
         self.report_finished.connect(self._on_report_finished)
         self.timer = QTimer(self)
@@ -799,6 +890,7 @@ class MainWindow(QMainWindow):
             self.capture = None
         self._stop_mode()
         self.running = False
+        self.update_actions()
         self.start_btn.blockSignals(True)
         self.start_btn.setChecked(False)
         self.start_btn.blockSignals(False)
@@ -823,6 +915,10 @@ class MainWindow(QMainWindow):
             self._warned = True
             return False
         self._mode_started = True
+        try:
+            self._mode_home = (float(self.mode.values["lat"]), float(self.mode.values["lon"]))
+        except (KeyError, ValueError):
+            self._mode_home = None
         self._warned = False
         self.title.setText("")
         log.info("mode %s started", self.mode.id)
@@ -857,6 +953,35 @@ class MainWindow(QMainWindow):
     def _is_radio(self) -> bool:
         return getattr(self.mode, "source", "audio") == "radio"
 
+    def update_actions(self):
+        """The current mode's buttons above the output (rebuilt when they change)."""
+        actions = self.mode.actions() if self.mode is not None and self.running else []
+        ids = [a[0] for a in actions]
+        if ids != list(self._action_buttons):
+            for b in self._action_buttons.values():
+                b.deleteLater()
+            self._action_buttons = {}
+            while self._action_layout.count():
+                self._action_layout.takeAt(0)
+            for action_id in ids:
+                b = QPushButton()
+                b.clicked.connect(lambda _=False, a=action_id: self.run_action(a))
+                self._action_layout.addWidget(b)
+                self._action_buttons[action_id] = b
+            self._action_layout.addStretch(1)
+        for action_id, label, enabled, tip in actions:
+            b = self._action_buttons[action_id]
+            b.setText(label)
+            b.setEnabled(enabled)
+            b.setToolTip(tip)
+        self.action_bar.setVisible(bool(actions))
+
+    def run_action(self, action_id):
+        for key, value in self.mode.run_action(action_id).items():
+            self.form.set_value(key, value)
+            self.on_setting(key, value)
+            self.status.setText(f"{key} set to {value}")
+
     def tick(self):
         audio = np.zeros(0, np.float32)
         if not self._is_radio():
@@ -884,6 +1009,9 @@ class MainWindow(QMainWindow):
             self._start_mode()
             return
         self.handle(events)
+        if time.time() - self._last_actions >= 1.0:
+            self._last_actions = time.time()
+            self.update_actions()
         if len(audio):
             self._tail = np.concatenate([self._tail, audio])[-FFT_SIZE * 2 :]
             self.waterfall.add(self._tail, self.mode.rate)
@@ -1009,6 +1137,82 @@ class MainWindow(QMainWindow):
         folder = Path(self.mode.values.get("folder", Path.home())).expanduser()
         folder.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    # ---- GPS -----------------------------------------------------------
+
+    def gps_enabled(self) -> bool:
+        return self.settings.value("gps/enabled", "false") in (True, "true")
+
+    def restart_gps(self):
+        if self.gps_reader is not None:
+            self.gps_reader.stop()
+            self.gps_reader = None
+        self._gps_next_try = 0.0
+        self.gps_tick()
+
+    def gps_tick(self):
+        if self.gps_enabled() and self.gps_reader is None and time.time() >= self._gps_next_try:
+            src = str(self.settings.value("gps/source", "auto"))
+            if src == "auto":
+                src = gps.auto_source()
+            if src is None:
+                self._gps_next_try = time.time() + 10          # look again: it may be plugged in later
+            else:
+                self.gps_reader = gps.GpsReader(src, str(self.settings.value("gps/baud", "auto")))
+                self.gps_reader.start()
+        elif not self.gps_enabled() and self.gps_reader is not None:
+            self.gps_reader.stop()
+            self.gps_reader = None
+        self.gps_btn.setText(self.gps_text())
+        fix = self.gps_reader.fix if self.gps_reader is not None else None
+        if fix is not None and time.time() - fix.when < 10:
+            self.apply_location(fix.lat, fix.lon)
+
+    def gps_text(self, long=False) -> str:
+        if not self.gps_enabled():
+            return "GPS: off" if not long else "Off. Tick the box to use a GPS receiver."
+        r = self.gps_reader
+        if r is None:
+            return "GPS: none found" if not long else ("No GPS found: plug one in (it's looked for every "
+                                                       "10 s), start gpsd, or choose its port.")
+        fix = r.fix
+        if fix is not None and time.time() - fix.when < 10:
+            sats = f" · {fix.sats} satellites" if fix.sats else ""
+            short = f"GPS: {fix.mode if fix.mode != 'fix' else ''} fix{sats}".replace("  ", " ")
+            if not long:
+                return short
+            alt = f", {fix.alt:.0f} m" if fix.alt is not None else ""
+            return f"{short[5:]}: {fix.lat:.5f}, {fix.lon:.5f}{alt}. Your location follows it."
+        return f"GPS: {r.state}" if not long else f"{r.source}: {r.state}"
+
+    def apply_location(self, lat, lon):
+        """A GPS fix: fill in "Your location" (shared by the RTL-SDR modes) when it has moved."""
+        from .modes.ais import distance_km
+
+        try:
+            cur = (float(self.settings.value("radio/lat", "")), float(self.settings.value("radio/lon", "")))
+        except (TypeError, ValueError):
+            cur = None
+        if cur is not None and distance_km(cur, (lat, lon)) < 0.05:
+            return
+        lat_s, lon_s = f"{lat:.5f}", f"{lon:.5f}"
+        self.settings.setValue("radio/lat", lat_s)
+        self.settings.setValue("radio/lon", lon_s)
+        log.info("location from GPS: %s, %s", lat_s, lon_s)
+        m = self.mode
+        if m is None or "lat" not in m.values:
+            return
+        for key, value in (("lat", lat_s), ("lon", lon_s)):
+            self.form.set_value(key, value)
+        m.values.update(lat=lat_s, lon=lon_s)
+        self.map.home = (lat, lon)
+        self.map.update()
+        # Restart a running mode (readsb takes its position at start) only for a real move.
+        if self.running and getattr(self, "_mode_started", False):
+            started_at = self._mode_home
+            if started_at is None or distance_km(started_at, (lat, lon)) > 1.0:
+                self._stop_mode()
+                self._start_mode()
 
     def _show_log(self, window):
         window.show()
@@ -1138,6 +1342,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, ev):
         self.settings.setValue("geometry", self.saveGeometry())
+        if self.gps_reader is not None:
+            self.gps_reader.stop()
         self._stop()
         super().closeEvent(ev)
 

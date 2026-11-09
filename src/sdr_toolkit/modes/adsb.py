@@ -56,6 +56,8 @@ class ADSBMode(RadioMode):
         self._last_read = 0.0
         self._known = {}
         self._tracks: dict[str, list] = {}
+        self._ppm_readings: list[float] = []     # readsb's 30-second clock measurements
+        self._ppm_last = None
         self._logged: dict[str, tuple] = {}
         return cmd
 
@@ -144,11 +146,49 @@ class ADSBMode(RadioMode):
             if "signal" in loc and "noise" in loc:
                 parts.append(f"signal {loc['signal']:.0f} dB, noise {loc['noise']:.0f} dB")
             ppm = st.get("estimated_ppm")
-            if ppm is not None and n:
-                parts.append(f"dongle clock about {ppm:+.0f} ppm (readsb's estimate)")
+            # readsb measures it every 30 s (samples received against the PC's clock);
+            # a new value means a new measurement.
+            if self.live() and ppm is not None and ppm != self._ppm_last and (ppm != 0 or self._ppm_last is not None):
+                self._ppm_last = ppm
+                self._ppm_readings = (self._ppm_readings + [float(ppm)])[-10:]
+            if self._ppm_readings:
+                parts.append(f"dongle clock {self._ppm_readings[-1]:+.1f} ppm off after correction")
         except (OSError, ValueError, AttributeError):
             pass
         return " · ".join(parts)
+
+    def ppm_suggestion(self):
+        """(new correction, readings used) once two or more readings agree, else None.
+
+        readsb runs with the current correction applied (librtlsdr corrects the sample clock
+        with it too), so its readings are what's left over: the new value adds them on.
+        """
+        r = self._ppm_readings[-4:] if hasattr(self, "_ppm_readings") else []
+        if len(r) < 2 or max(r) - min(r) > 3:
+            return None
+        return int(round(int(self.values["ppm"]) + sum(r) / len(r))), len(r)
+
+    def actions(self):
+        if not self.live():
+            return []
+        s = self.ppm_suggestion()
+        if s is None:
+            n = len(getattr(self, "_ppm_readings", []))
+            return [("ppm", f"Measuring the dongle's clock… ({n} of 2 readings, one every 30 s)", False,
+                     "readsb compares the samples the dongle delivers with your PC's clock.")]
+        value, n = s
+        if value == int(self.values["ppm"]):
+            return [("ppm", f"Frequency correction {value:+d} ppm is right (measured)", False,
+                     f"The last {n} measurements agree with the current setting.")]
+        return [("ppm", f"Set frequency correction to {value:+d} ppm", True,
+                 f"From {n} measurements of the dongle's clock against your PC's. Applies to every "
+                 "RTL-SDR mode.")]
+
+    def run_action(self, action_id):
+        s = self.ppm_suggestion()
+        if action_id == "ppm" and s:
+            return {"ppm": s[0]}
+        return {}
 
     def stop(self):
         events = super().stop()
