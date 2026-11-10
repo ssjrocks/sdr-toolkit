@@ -50,6 +50,7 @@ it), set under **Settings → Input**: handy without a dongle, or to decode some
 | AIS ships (161.975 / 162.025 MHz) | rtl_fm + direwolf, sentences decoded by the toolkit | channel, how long ships stay listed |
 | LoRa / Meshtastic / MeshCore | gr-lora_sdr (built separately, see below) | network preset, region, frequency, SF/BW/CR/sync word, channel keys |
 | DMR, P25, NXDN, D-Star, YSF, dPMR, M17 | DSD-FME with mbelib (built separately, see below) | frequency, protocol, channel bandwidth, squelch, play voice, save each call as WAV |
+| Spectrum & receiver | the toolkit's own (rtl_tcp to the dongle) | frequency and step, mode (WFM, NFM, AM, USB, LSB, CW), bandwidth, de-emphasis, squelch, volume, sample rate, gain mode and gain steps, RTL AGC, ppm, direct sampling (HF), offset tuning, bias tee, FFT size, averaging, peak hold |
 | GPS position fix (1575.42 MHz) | GNSS-SDR | search range, satellites tracked at once, fill in my location |
 
 The LoRa decoder corrects the transmitter's and dongle's crystal error (tested to ±20 ppm, an 18 kHz
@@ -106,6 +107,16 @@ reached over the internet or Tailscale, which could be anywhere. A connection ov
 sample rate: about 38 Mbit/s for ADS-B, 4 for AIS and ISM, 16 for LoRa. While connected, the relay
 button's menu says whether the relay is up to date and offers **Update the relay to …** when a
 newer SDR Tools Relay is out (the relay must have a password, and relays from 0.1.2 on).
+
+**Spectrum & receiver** is a receiver like SDR++ or GQRX: a spectrum (with peak hold) over a
+waterfall of up to 2.6 MHz of the band, and a demodulator on the frequency you click, played
+through your speakers. Click or drag to tune (rounded to the tuning step), wheel to zoom, right-drag
+to pan, double-click for the whole span; typing a frequency outside the span retunes the dongle,
+keeping the signal a quarter of the span off its DC spike. Every dongle setting is an rtl_tcp
+command: the toolkit runs `rtl_tcp` for a dongle on this PC, or uses a connected relay's, so it
+works the same on both. Sample rates are whole multiples of 48 kHz (2.88 to 0.24 MS/s), so every
+step down to 48 kHz audio is a whole-number decimation with no clicks between blocks. The bias tee
+puts 4.5 V on the antenna socket: only for active antennas or LNAs, on dongles that have one.
 
 **GPS position fix** works out where you are from the GPS satellites' own signals, with the
 RTL-SDR on 1575.42 MHz, and fills in "Your location" for the other modes (averaged over the
@@ -214,6 +225,12 @@ The relay is tested with SDR Tools Relay playing test recordings as its dongle (
 when its checkout is beside this one): ISM, ADS-B, AIS and LoRa decode through it, and the
 password, busy and LAN-scan cases work. Not yet tested: a real dongle on a relay, or a relay
 over the internet.
+The receiver's demodulators are tested on synthetic WFM, NFM, AM, USB, LSB and CW signals (the
+right tone, the wrong sideband cut, no clicks at block edges, faster than real time), and the
+receiver on a recording and through a relay. It was also tried on a real R820T dongle through a
+relay: WFM on 104.5 MHz (a strong channel, healthy audio, the 19 kHz stereo pilot clear in the
+demodulated signal), manual gain (0 to 49.6 dB moved the station 32 dB), and a change of sample
+rate; not yet: AM, SSB and CW off air, direct sampling, offset tuning and the bias tee.
 LoRa at 125 kHz is tested through the resampling the live dongle needs (it can't sample at
 500 kHz, so it runs at 1 MHz). Not yet tested with a dongle: the GPS fix, range rings and
 LoRa's new sample rates.
