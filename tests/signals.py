@@ -156,3 +156,22 @@ def ft4(message, freq=1200, rate=12000):
 def resample(a, rate_from, rate_to):
     g = np.gcd(rate_from, rate_to)
     return resample_poly(a, rate_to // g, rate_from // g).astype(np.float32)
+
+
+DMR_SYNC_BS_VOICE = 0x755FD7DF75F7
+DMR_SYMBOL = {0b01: 3, 0b00: 1, 0b10: -1, 0b11: -3}
+
+
+def dmr_bursts(rate=48000, seconds=3.0, seed=1):
+    """DMR-framed 4FSK as FM discriminator audio (+-1 is +-1944 Hz): 30 ms bursts of CACH, payload,
+    the base station voice sync and payload, at 4800 symbols/s. Only the sync is real, so a decoder
+    sees DMR frames (slot, a colour code) but no call. Half a second of silence either side."""
+    rng = np.random.default_rng(seed)
+    sync = [(DMR_SYNC_BS_VOICE >> (47 - i)) & 1 for i in range(48)]
+    syms = []
+    while len(syms) < seconds * 4800:
+        bits = list(rng.integers(0, 2, 132)) + sync + list(rng.integers(0, 2, 108))
+        syms += [DMR_SYMBOL[(bits[i] << 1) | bits[i + 1]] for i in range(0, len(bits), 2)]
+    a = np.repeat(np.array(syms, np.float32) / 3, rate // 4800)
+    pad = np.zeros(rate // 2, np.float32)
+    return np.concatenate([pad, a, pad])

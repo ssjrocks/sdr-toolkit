@@ -283,6 +283,39 @@ def test_aprs_decoded_from_the_receivers_audio(monkeypatch, tmp_path):
     assert any(e.kind == "decoder_audio" and e.data["rate"] == 48000 for e in ev)
 
 
+def test_dmr_heard_through_the_receiver(monkeypatch, tmp_path):
+    from sdr_toolkit.modes.digital_voice import dsd_fme
+    if dsd_fme() is None:
+        pytest.skip("DSD-FME isn't built")
+    import signals
+    rec = save_iq(tmp_path / "dmr.cu8", fm_iq(signals.dmr_bursts(48000, 3.0), 600000, 1944))
+    found = lambda ev: any(" DMR signal: " in (e.text or "") for e in ev)   # noqa: E731
+    m, ev = run_decoder(monkeypatch, rec, "dmr", "NFM", 12500, found, wait=30)
+    heard = [e.text for e in decoded(ev) if " DMR signal: " in (e.text or "")]
+    assert heard and "colour code 12" in heard[0], [e.text for e in decoded(ev)][-8:]
+
+
+def test_receiver_voice_volume_reaches_the_decoder(monkeypatch, tmp_path):
+    from sdr_toolkit.modes import digital_voice as dv
+    got = []
+    monkeypatch.setattr(dv.DigitalVoiceMode, "set_voice_volume", lambda self, pct: got.append(pct))
+    monkeypatch.setattr(dv.DigitalVoiceMode, "start", lambda self, values: setattr(self, "values", dict(values))
+                        or setattr(self, "rate", 48000))
+    monkeypatch.setattr(dv.DigitalVoiceMode, "stop", lambda self: [])
+    monkeypatch.setattr(dv.DigitalVoiceMode, "poll", lambda self: [])
+    rec = fm_station(tmp_path / "fm.cu8", seconds=0.5)
+    m = start_receiver(monkeypatch, input="file", file=str(rec), file_rate=RATE, voice_volume=60)
+    try:
+        m.set_decoder("dmr", {})
+        poll_for(m, 0.5)
+        assert m.decoder is not None and m.decoder.mode.values["voice_volume"] == 60
+        m.apply(dict(m.values, voice_volume=25))
+        poll_for(m, 0.5)
+        assert got == [25]
+    finally:
+        m.stop()
+
+
 def keyed_carrier(text, offset, wpm=20):
     """A carrier keyed on and off (5 ms raised-cosine edges, as a transmitter's) with the
     timing of the Morse generator's text."""

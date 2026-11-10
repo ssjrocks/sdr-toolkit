@@ -579,6 +579,44 @@ def test_dmr_recording_of_noise_shows_no_calls(tmp_path):
 
 
 @needs_dsd
+def test_dmr_frames_show_before_any_call(tmp_path):
+    # DSD-FME's call log only fills once a call has been decoded; until then the frame syncs say a
+    # DMR signal is there (slot, colour code), and a summary follows when it ends.
+    import wave
+    a = signals.dmr_bursts(48000, 4.0) * 0.4
+    a = a + np.random.default_rng(2).normal(0, 0.01, len(a))
+    path = tmp_path / "dmr.wav"
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        w.writeframes((a * 32767).astype("<i2").tobytes())
+    mode, ev = run_radio("dmr", path, wait=60, voice=False)
+    out = [e.text for e in ev if e.kind == "line" and e.style != "dim"]
+    heard = [t for t in out if " DMR signal: " in t]
+    ended = [t for t in out if " DMR ended: " in t]
+    assert len(heard) == 1 and "slot" in heard[0] and "colour code" in heard[0], out
+    assert len(ended) == 1 and "frames" in ended[0], out
+
+
+def test_dmr_voice_volume_sets_its_stream(monkeypatch):
+    from sdr_toolkit.modes import digital_voice as dv
+    calls = []
+    monkeypatch.setattr(dv, "stream_node", lambda pid: 77 if pid == 4242 else None)
+    monkeypatch.setattr(dv.shutil, "which", lambda prog: "/usr/bin/" + prog)
+    monkeypatch.setattr(dv.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    m = BY_ID["dmr"]()
+    m.values = dict(m.values, voice=True)
+    m._proc = type("P", (), {"pid": 4242, "poll": lambda self: None})()
+    m.apply(dict(m.values, voice_volume=40))
+    for _ in range(50):
+        if calls:
+            break
+        time.sleep(0.02)
+    assert calls == [["wpctl", "set-volume", "77", "0.40"]]
+
+
+@needs_dsd
 def test_dmr_command_line():
     m = BY_ID["dmr"]()
     m.values.update(freq_mhz="438.875", protocol="-f1", bw=12, squelch=5, voice=False, ppm=-3, gain="30")

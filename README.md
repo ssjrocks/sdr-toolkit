@@ -127,7 +127,9 @@ suit it; with **Identify automatically** on it does this by itself every few sec
 there. It's a guess: weak signals and unusual ones often come out as "2-level FSK" or "narrow FM".
 When it can't tell, pick a decoder from **Decode with**: Morse, RTTY, PSK31, NAVTEX, FT8/FT4,
 SSTV, weather fax, APRS, pagers, DTMF/CTCSS/DCS tones or DMR/P25 (DSD-FME) run on the receiver's
-audio, with their own audio waterfall and output below the spectrum. **Tag…** (or right-click the
+audio, with their own audio waterfall and output below the spectrum. DMR/P25 shows a line as soon as
+DSD-FME locks on to a signal (protocol, slot, colour code), every 10 s while it lasts and a summary
+when it ends, before any call is decoded; the decoded voice has its own **Voice** volume slider. **Tag…** (or right-click the
 spectrum) saves a frequency with a label, demodulator and decoder in the logbook; tags show on the
 spectrum and the survey, and right-clicking one offers to listen with its settings and decoder.
 

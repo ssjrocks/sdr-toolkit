@@ -404,6 +404,10 @@ win._receiver_changed("decoder", "tones")
 for _ in range(20):
     app.processEvents()
     time.sleep(0.05)
+rp.show_values(dict(win.mode.values, decoder="dmr"))
+results["voice_slider"] = rp.voice.isVisible() and rp.voice.value() == 100
+rp.show_values(win.mode.values)
+results["voice_slider"] = results["voice_slider"] and not rp.voice.isVisible()
 results["decode_area"] = (win.decode_area.isVisible() and win.decode_area.M.id == "tones"
                           and win.mode.decoder is not None and win.mode.values["demod"] == "NFM")
 win.logbook.add_tag(101.3e6, "Test station", "WFM", 180000, "")

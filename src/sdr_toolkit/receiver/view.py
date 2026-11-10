@@ -323,12 +323,23 @@ class ReceiverPanel(QWidget):
         self.mute = QToolButton()
         self.mute.setCheckable(True)
         self.mute.setText("Mute")
+        self.voice_label = QLabel("Voice")
+        self.voice = QSlider(Qt.Orientation.Horizontal)
+        self.voice.setRange(0, 150)
+        self.voice.setMinimumWidth(80)
+        self.voice.setMaximumWidth(130)
+        self.voice.setToolTip("Volume of the decoded voice (DMR, P25 and the others), apart from the receiver's "
+                              "own audio")
+        self.voice_label.setToolTip(self.voice.toolTip())
+        self.voice_label.hide()
+        self.voice.hide()
         self.meter = QLabel("—")
         self.meter.setMinimumWidth(170)
         self.meter.setToolTip("Signal in the channel (dBFS), and whether the squelch is open")
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        for wdg in (self.freq, self.step, self.mode, self.bw, self.sq_on, self.sq, QLabel("Vol"), self.vol, self.mute):
+        for wdg in (self.freq, self.step, self.mode, self.bw, self.sq_on, self.sq, QLabel("Vol"), self.vol, self.mute,
+                    self.voice_label, self.voice):
             row.addWidget(wdg)
         row.addStretch(1)
         row.addWidget(self.meter)
@@ -417,6 +428,7 @@ class ReceiverPanel(QWidget):
         self.sq.valueChanged.connect(lambda v: self._emit("squelch", int(v)))
         self.vol.valueChanged.connect(lambda v: self._emit("volume", int(v)))
         self.mute.toggled.connect(lambda v: self._emit("mute", bool(v)))
+        self.voice.valueChanged.connect(lambda v: self._emit("voice_volume", int(v)))
         self.dwell.valueChanged.connect(self._dwell_moved)
         self.view.tuned.connect(self._clicked)
 
@@ -467,6 +479,10 @@ class ReceiverPanel(QWidget):
             self.sq.setValue(int(v.get("squelch", -60)))
             self.vol.setValue(int(v.get("volume", 70)))
             self.mute.setChecked(bool(v.get("mute")))
+            self.voice.setValue(int(v.get("voice_volume", 100)))
+            voice = v.get("decoder") == "dmr"           # the decoders that play what they decode
+            self.voice_label.setVisible(voice)
+            self.voice.setVisible(voice)
             self.dwell.setValue(int(v.get("dwell_ms", 0)) // 10)
             self._show_dwell(self.dwell.value() * 10)
             self.decoder.setCurrentIndex(max(self.decoder.findData(v.get("decoder", "")), 0))

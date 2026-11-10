@@ -65,6 +65,9 @@ class ReceiverMode(Mode):
                 help="Mute while the channel is weaker than this. The meter above the waterfall shows the level."),
         Setting("volume", "Volume", 70, "int", 0, 200, 5, suffix=" %"),
         Setting("mute", "Mute", False, "bool"),
+        Setting("voice_volume", "Decoded voice volume", 100, "int", 0, 150, 5, suffix=" %",
+                help="The voice a decoder plays (DMR, P25 and the others through DSD-FME), apart from the "
+                     "receiver's own audio above."),
         Setting("rate", "Sample rate", 2400000, "choice",
                 choices=tuple((r, f"{r / 1e6:g} MS/s ({r / 1e6 * 0.9:.2f} MHz of spectrum)") for r in dsp.RATES),
                 help="How wide a slice of the band the dongle sends. 2.4 MS/s is the most a cheap dongle "
@@ -235,6 +238,9 @@ class ReceiverMode(Mode):
             if v["fft"] != old["fft"]:
                 self.spectrum = dsp.Spectrum(int(v["fft"]), float(v["average"]))
             self.spectrum.average = float(v["average"])
+            if v.get("voice_volume") != old.get("voice_volume") and self.decoder is not None:
+                vol = int(v["voice_volume"])
+                self.decoder.call(lambda mode: getattr(mode, "set_voice_volume", lambda _: None)(vol))
             if self.survey is not None:                          # takes effect from the next slice
                 self.survey.settle = self._settle()
                 self.survey.dwell = float(v["dwell_ms"]) / 1000
@@ -393,6 +399,7 @@ class ReceiverMode(Mode):
                 if mode_id == "dmr":
                     from .digital_voice import RECEIVER_AUDIO
                     vals["input"] = RECEIVER_AUDIO
+                    vals["voice_volume"] = int(self.values.get("voice_volume", 100))
                 try:
                     self.decoder = DecoderHost(M(), vals)
                     self._decoder_note = f"Decoding with {M.name}"

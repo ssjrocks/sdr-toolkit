@@ -2,10 +2,15 @@
 
 DSD-FME reads the RTL-SDR itself, or a 48 kHz FM-demodulated WAV; an IQ recording is
 demodulated to such a WAV first. Calls appear in its event log, which is shown as it grows.
+Before a call is complete, its frame sync lines show that a signal is being heard: when one
+starts (protocol, slot, colour code), every 10 s while it lasts, and a summary when it ends.
 Voice plays on the speakers (or not). Encrypted calls stay encrypted: the toolkit doesn't
 offer DSD-FME's key options.
 """
 
+import collections
+import json
+import re
 import shutil
 import signal
 import socket
@@ -40,10 +45,33 @@ BORING = ("█", "╗", "╝", "═", "Build Version", "MBElib Version", "CODEC2
           "Audio In Device", "Audio Out Device", "Setting RTL", "Dev 0 Freq")
 
 
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+COLOUR_CODE = re.compile(r"Color Code=(\d+)")
+SLOT = re.compile(r"\[SLOT([12])\]")
+HEARD_AFTER = 6          # frame syncs within QUIET of each other that count without a verified one
+QUIET = 1.0              # s without a frame sync: the transmission has ended
+PROGRESS = 10.0          # s between "still hearing" lines
+
+
 def dsd_fme() -> str | None:
     if DSD_FME.is_file():
         return str(DSD_FME)
     return shutil.which("dsd-fme")
+
+
+def stream_node(pid) -> int | None:
+    """PipeWire's id for the audio output stream of process pid (None if it has none yet)."""
+    try:
+        out = subprocess.run(["pw-dump"], capture_output=True, text=True, timeout=5).stdout
+        objects = json.loads(out)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    for o in objects:
+        props = (o.get("info") or {}).get("props") or {}
+        if (o.get("type") == "PipeWire:Interface:Node" and props.get("media.class") == "Stream/Output/Audio"
+                and str(props.get("application.process.id")) == str(pid)):
+            return o["id"]
+    return None
 
 
 RECEIVER_AUDIO = "receiver"      # input: FM audio from Spectrum & receiver
@@ -71,6 +99,8 @@ class DigitalVoiceMode(RadioMode):
                 help="RTL-SDR input: 0 is off. DSD-FME's RMS level; raise it to skip noise between calls."),
         Setting("voice", "Play voice", True, "bool", restart=True,
                 help="On your speakers (PulseAudio). Encrypted calls are muted."),
+        Setting("voice_volume", "Voice volume", 100, "int", 0, 150, 5, suffix=" %",
+                help="The decoded voice's loudness (its own stream in the sound settings, \"DSD-FME\")."),
         Setting("save_calls", "Save each call as a WAV", False, "bool", restart=True),
         Setting("folder", "Save calls to", str(Path.home() / "Music" / "SDR Toolkit calls"), "text", restart=True),
         Setting("details", "Show decoder details", False, "bool",
@@ -101,6 +131,7 @@ class DigitalVoiceMode(RadioMode):
         self._events = self._dir / "events.log"
         self._seen = 0
         self._calls = 0
+        self._tx = None                  # the transmission being heard (frame syncs)
         if v["input"] == RECEIVER_AUDIO:
             # FM audio from Spectrum & receiver, sent to DSD-FME over TCP (it connects as SDR++'s
             # audio sink's client would).
@@ -164,6 +195,40 @@ class DigitalVoiceMode(RadioMode):
                 self._conn = None
         return []
 
+    def start(self, values):
+        super().start(values)
+        if int(self.values.get("voice_volume", 100)) != 100:
+            self.set_voice_volume(self.values["voice_volume"])
+
+    def apply(self, values):
+        old = self.values.get("voice_volume")
+        super().apply(values)
+        if self.values.get("voice_volume") != old:
+            self.set_voice_volume(self.values["voice_volume"])
+
+    def set_voice_volume(self, percent):
+        """The decoded voice's volume: DSD-FME's own stream in PipeWire, set with wpctl (DSD-FME
+        can't change its gain while running). Done in a thread; the stream may not be there yet."""
+        self.values["voice_volume"] = int(percent)
+        proc = getattr(self, "_proc", None)
+        if proc is None or not self.values.get("voice") or not shutil.which("wpctl"):
+            return
+        self._volume_seq = getattr(self, "_volume_seq", 0) + 1
+        seq = self._volume_seq
+
+        def run():
+            for _ in range(20):
+                if seq != self._volume_seq or proc.poll() is not None:
+                    return
+                node = stream_node(proc.pid)
+                if node is not None:
+                    subprocess.run(["wpctl", "set-volume", str(node), f"{int(percent) / 100:.2f}"],
+                                   capture_output=True, timeout=5)
+                    return
+                time.sleep(0.5)
+
+        threading.Thread(target=run, daemon=True, name="dsd-volume").start()
+
     def _stop_dsd(self):
         # DSD-FME ends on SIGINT (Ctrl+C) and ignores SIGTERM for seconds.
         proc = getattr(self, "_proc", None)
@@ -182,7 +247,81 @@ class DigitalVoiceMode(RadioMode):
                     pass
                 setattr(self, attr, None)
 
+    def _heard(self, line, now) -> list[Event]:
+        """A frame sync line ("Sync: +DMR  [SLOT1]  slot2  | Color Code=12 | VC1")."""
+        rest = line.split("Sync:", 1)[1].strip().lstrip("+-").split()
+        if not rest:
+            return []
+        proto = rest[0]
+        tx = self._tx
+        if tx is None or now - tx["last"] > QUIET or tx["proto"] != proto:
+            events = self._ended(now) if tx is not None else []
+            tx = self._tx = {"proto": proto, "start": now, "last": now, "frames": 0, "slots": collections.Counter(),
+                             "cc": collections.Counter(), "kinds": collections.Counter(), "errors": 0,
+                             "shown": False, "reported": now}
+        else:
+            events = []
+        tx["last"] = now
+        tx["frames"] += 1
+        slot = SLOT.search(line)
+        if slot:
+            tx["slots"][slot.group(1)] += 1
+        cc = COLOUR_CODE.search(line)              # decoded and passed its FEC: a verified frame
+        if cc:
+            tx["cc"][int(cc.group(1))] += 1
+        kind = line.rsplit("|", 1)[-1].strip().split()[0] if cc and "|" in line else ""
+        if kind:
+            tx["kinds"]["voice" if kind.startswith(("VC", "VLC", "TLC")) else
+                        "idle" if kind.startswith("IDLE") else "data"] += 1
+        if "Err" in line or "ERR" in line:
+            tx["errors"] += 1
+        if not tx["shown"] and (cc or tx["frames"] >= HEARD_AFTER):
+            tx["shown"] = True
+            tx["reported"] = now
+            parts = []
+            if tx["slots"]:
+                parts.append(" and ".join(f"slot {s}" for s in sorted(tx["slots"])))
+            if tx["cc"]:
+                parts.append(f"colour code {tx['cc'].most_common(1)[0][0]}")
+            if tx["kinds"]:
+                parts.append(tx["kinds"].most_common(1)[0][0])
+            text = f"{time.strftime('%H:%M:%S')}  {proto} signal" + (f": {', '.join(parts)}" if parts else "")
+            events += [Event("line", text), Event("status", f"hearing {proto} {time.strftime('%H:%M:%S')}")]
+        elif tx["shown"] and now - tx["reported"] >= PROGRESS:
+            tx["reported"] = now
+            events.append(Event("line", f"{time.strftime('%H:%M:%S')}  {proto} still heard: {self._summary(tx)}",
+                                style="dim"))
+        return events
+
+    @staticmethod
+    def _summary(tx):
+        s = f"{tx['last'] - tx['start']:.1f} s, {tx['frames']} frames"
+        if tx["slots"]:
+            s += " (" + ", ".join(f"slot {k}: {n}" for k, n in sorted(tx["slots"].items())) + ")"
+        if tx["kinds"]:
+            s += ", " + ", ".join(f"{n} {k}" for k, n in tx["kinds"].most_common())
+        if tx["cc"]:
+            s += f", colour code {tx['cc'].most_common(1)[0][0]}"
+        if tx["errors"]:
+            s += f", {tx['errors']} with errors"
+        return s
+
+    def _ended(self, now) -> list[Event]:
+        tx, self._tx = self._tx, None
+        if tx is None or not tx["shown"]:
+            return []
+        return [Event("line", f"{time.strftime('%H:%M:%S')}  {tx['proto']} ended: {self._summary(tx)}")]
+
     def parse(self, line):
+        line = ANSI.sub("", line)
+        events = []
+        if "Sync:" in line:
+            events = self._heard(line, time.monotonic())
+        elif self._tx is not None and ("ERR" in line or "Err" in line):
+            self._tx["errors"] += 1
+        return events + self._parse(line)
+
+    def _parse(self, line):
         problem = self.device_problem(line)
         if problem is not None:
             return problem
@@ -195,7 +334,10 @@ class DigitalVoiceMode(RadioMode):
         return []
 
     def poll(self):
-        return super().poll() + self._read_events()
+        events = super().poll() + self._read_events()
+        if getattr(self, "_tx", None) is not None and time.monotonic() - self._tx["last"] > QUIET:
+            events += self._ended(time.monotonic())
+        return events
 
     def _read_events(self):
         try:
@@ -223,11 +365,11 @@ class DigitalVoiceMode(RadioMode):
 
     def stop(self):
         self._stop_dsd()
-        events = super().stop() + self._read_events()
+        events = super().stop() + self._read_events() + self._ended(time.monotonic())
         shutil.rmtree(getattr(self, "_dir", ""), ignore_errors=True)
         return events
 
     def finished(self, code):
         if not self.live() and code == 0 and self.values["input"] != RECEIVER_AUDIO:
-            return self._read_events() + [Event("status", "recording finished")]
+            return self._read_events() + self._ended(time.monotonic()) + [Event("status", "recording finished")]
         return super().finished(code)
