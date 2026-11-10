@@ -6,6 +6,7 @@ RTL-SDR itself (rtl_433, readsb, rtl_fm), or reads a recording: unsigned
 "How to tune" gives.
 """
 
+import sys
 import time
 from pathlib import Path
 
@@ -76,26 +77,33 @@ def write_cu8(path, iq: np.ndarray, scale=1.0):
     np.clip(out * 127.5 + 127.5, 0, 255).astype(np.uint8).tofile(path)
 
 
-def fm_audio_chunks(path, iq_rate, offset_hz=0.0, audio_rate=48000, channel_hz=12500, chunk_s=0.5, level=0.2):
-    """Narrow FM demodulation of a recording, as 16-bit audio bytes (a flat discriminator, no de-emphasis).
+def cu8_to_complex(raw: bytes | np.ndarray) -> np.ndarray:
+    raw = np.frombuffer(raw, np.uint8) if isinstance(raw, (bytes, bytearray)) else raw
+    raw = raw[: len(raw) // 2 * 2].astype(np.float32)
+    return ((raw[0::2] - 127.5) + 1j * (raw[1::2] - 127.5)) / 127.5
+
+
+def fm_audio(iq_chunks, iq_rate, offset_hz=0.0, audio_rate=48000, channel_hz=12500, level=0.2):
+    """Narrow FM demodulation of complex sample chunks, as 16-bit audio bytes (a flat discriminator,
+    no de-emphasis). Endless input is fine: the state carries over between chunks.
 
     *level* is the audio for a deviation of half the channel width; 0.2 puts 2.5 kHz FM
     (APRS, AIS) about where direwolf asks for it.
     """
-    n = int(iq_rate * chunk_s)
     sos = butter(6, channel_hz / 2, fs=iq_rate, output="sos")
     zi = np.zeros((sos.shape[0], 2), complex)
     g = np.gcd(int(iq_rate), int(audio_rate))
     up, down = int(audio_rate) // g, int(iq_rate) // g
     last = 1 + 0j
-    t0 = 0
+    phase = 0.0
+    step = -2 * np.pi * offset_hz / iq_rate
     skip = 0
-    size = Path(path).stat().st_size // 2
-    for start in range(0, size, n):
-        x = read_cu8(path, start, n)
+    for x in iq_chunks:
+        if not len(x):
+            continue
         if offset_hz:
-            x = x * np.exp(-2j * np.pi * offset_hz * (t0 + np.arange(len(x))) / iq_rate)
-        t0 += len(x)
+            x = x * np.exp(1j * (phase + step * np.arange(len(x))))
+            phase = (phase + step * len(x)) % (2 * np.pi)
         x, zi = sosfilt(sos, x, zi=zi)
         prev = np.concatenate([[last], x[:-1]])
         last = x[-1]
@@ -108,7 +116,15 @@ def fm_audio_chunks(path, iq_rate, offset_hz=0.0, audio_rate=48000, channel_hz=1
         else:
             audio = resample_poly(disc, up, down)
         yield (np.clip(audio * level, -1, 1) * 32767).astype("<i2").tobytes()
-    # A second of silence: decoders (direwolf) drop the last packet if the input ends right after it.
+
+
+def fm_audio_chunks(path, iq_rate, offset_hz=0.0, audio_rate=48000, channel_hz=12500, chunk_s=0.5, level=0.2):
+    """fm_audio() of a recording, then a second of silence: decoders (direwolf) drop the last
+    packet if the input ends right after it."""
+    n = int(iq_rate * chunk_s)
+    size = Path(path).stat().st_size // 2
+    chunks = (read_cu8(path, start, n) for start in range(0, size, n))
+    yield from fm_audio(chunks, iq_rate, offset_hz, audio_rate, channel_hz, level)
     yield bytes(2 * int(audio_rate))
 
 
@@ -126,6 +142,22 @@ class RadioMode(ProcessMode):
 
     def live(self) -> bool:
         return self.values["input"] == "rtl"
+
+    def bridge(self):
+        """The bridge to a connected SDR Tools Relay, when this mode reads live input: the relay's
+        dongle is used instead of one on this PC."""
+        from .. import relay
+        return relay.current() if self.live() else None
+
+    def relay_stream(self, freq_hz, rate, **extra) -> list[str]:
+        """relay_stream's command line: the relay's samples on stdout, like rtl_sdr / rtl_fm."""
+        pkg_parent = str(Path(__file__).resolve().parents[2])        # works installed or from a checkout
+        boot = f"import sys; sys.path.insert(0, {pkg_parent!r}); from sdr_toolkit.relay_stream import main; main()"
+        cmd = [sys.executable, "-u", "-c", boot, "--port", str(self.bridge().local_port),
+               "--freq", str(int(freq_hz)), "--rate", str(int(rate)), "--gain", self.gain_db() or "auto"]
+        for k, v in extra.items():
+            cmd += [f"--{k}", str(v)]
+        return cmd
 
     def device_index(self) -> str:
         """rtl_fm / rtl_433 style: an index, or :serial."""
@@ -175,6 +207,9 @@ class RadioMode(ProcessMode):
 
     def activity(self) -> str:
         where = self.listening_on() if self.live() else "the recording"
+        b = self.bridge()
+        if b is not None:
+            where += f" through the relay {b.name}" + (f" ({b.last_error})" if b.last_error else "")
         return f"Listening on {where} · {self.elapsed()}"
 
     def upstream_error(self, line):

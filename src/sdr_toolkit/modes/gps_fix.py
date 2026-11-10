@@ -66,13 +66,17 @@ class GPSFixMode(RadioMode):
         self._dir = Path(tempfile.mkdtemp(prefix="sdr-toolkit-gps-"))
         (self._dir / "out").mkdir()
         v = self.values
-        if self.live():
+        ppm = float(v["ppm"])
+        if self.bridge():
+            source = {"stdin": True, "realtime": True}         # relay_stream's samples
+            ppm = 0.0                                          # the relay corrects its own dongle
+        elif self.live():
             dev = self.device_index()
             source = {"live": f"rtl={dev.lstrip(':')}", "gain": self.gain_db()}
         else:
             self._file = self.file_path()
             source = {"stdin": True}
-        conf = gnss.config(source, float(v["ppm"]), str(self._dir / "out"), channels=int(v["channels"]),
+        conf = gnss.config(source, ppm, str(self._dir / "out"), channels=int(v["channels"]),
                            doppler=int(v["doppler"]) * 1000)
         (self._dir / "gps.conf").write_text(conf)
         self._rx = gnss.Receiver()
@@ -84,6 +88,9 @@ class GPSFixMode(RadioMode):
 
     def workdir(self):
         return str(self._dir)
+
+    def upstream(self):
+        return self.relay_stream(gnss.L1, gnss.RATE, format="s8") if self.bridge() else None
 
     def feeder(self):
         if self.live():
@@ -161,7 +168,8 @@ class GPSFixMode(RadioMode):
         if self._rx.fix:
             lat, lon, h, used, _ = self._rx.fix
             parts.append(f"fix {lat:.5f}, {lon:.5f}, {h:.0f} m" + (f" from {used}" if used else ""))
-        elif self.live() and int(self.values["ppm"]) == 0 and int(self.values["doppler"]) <= 20:
+        elif (self.live() and not self.bridge() and int(self.values["ppm"]) == 0
+              and int(self.values["doppler"]) <= 20):
             parts.append("frequency correction is 0: set it first (ADS-B's button) or widen the search")
         return " · ".join(parts)
 

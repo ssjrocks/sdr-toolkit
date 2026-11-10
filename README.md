@@ -92,6 +92,16 @@ heard (red, dashed) and how far reception is reliable (green: at least 80% of an
 position updates still arrive within 10 s of the one before). They build up over days, from the
 live dongle only, and are kept per location in the logbook. **Range** turns them off.
 
+**A dongle on another PC:** **Connect relay…** (next to Start) uses an RTL-SDR plugged into another
+Windows or Linux PC running [SDR Tools Relay](https://github.com/ssjrocks/sdr-tools-relay). **On this
+network** scans the LAN for relays, **Internet** shows the relays listed on ssjrocks.com, and **By
+address** takes a host name or IP (a Tailscale name works too). While connected, every RTL-SDR mode
+on "RTL-SDR" input uses the relay's dongle: rtl_433, DSD-FME and GNSS-SDR talk rtl_tcp to a local
+bridge, and readsb, LoRa and AIS read its samples on stdin. The relay applies its own frequency
+correction, so ADS-B's correction button and range rings are off while it's in use, and distances
+are from your location, not the relay's. A connection over the internet needs the bandwidth of the
+sample rate: about 38 Mbit/s for ADS-B, 4 for AIS and ISM, 16 for LoRa.
+
 **GPS position fix** works out where you are from the GPS satellites' own signals, with the
 RTL-SDR on 1575.42 MHz, and fills in "Your location" for the other modes (averaged over the
 latest fixes, and updated when you move 30 m). The signals are far below the noise, so it needs an
@@ -195,6 +205,10 @@ the command line, and the no-dongle message. Real decoding is untested.
 Also tested: the logbook, range rings, replay, Details (aircraft from readsb with the aircraft
 database, ships from their static reports) and the window's picking, session tracks and rings;
 photo answers are tested on their real shapes, and the photo lookup was tried once for real.
+The relay is tested with SDR Tools Relay playing test recordings as its dongle (`tests/test_relay.py`,
+when its checkout is beside this one): ISM, ADS-B, AIS and LoRa decode through it, and the
+password, busy and LAN-scan cases work. Not yet tested: a real dongle on a relay, or a relay
+over the internet.
 LoRa at 125 kHz is tested through the resampling the live dongle needs (it can't sample at
 500 kHz, so it runs at 1 MHz). Not yet tested with a dongle: the GPS fix, range rings and
 LoRa's new sample rates.

@@ -99,7 +99,11 @@ class DigitalVoiceMode(RadioMode):
                 raise RuntimeError("Set the frequency in Settings (MHz).") from None
             gain = self.gain_db() or "0"           # 0 = auto in DSD-FME
             dev = self.device_index().lstrip(":")
-            src = f"rtl:{dev}:{freq}M:{gain}:{v['ppm']}:{v['bw']}:{v['squelch']}:2"
+            b = self.bridge()
+            if b:
+                src = f"rtltcp:127.0.0.1:{b.local_port}:{freq}M:{gain}:{v['ppm']}:{v['bw']}:{v['squelch']}:2"
+            else:
+                src = f"rtl:{dev}:{freq}M:{gain}:{v['ppm']}:{v['bw']}:{v['squelch']}:2"
         else:
             src = self._wav_from_recording()
         cmd = [exe, v["protocol"], "-i", src, "-o", "pulse" if v["voice"] else "null", "-J", str(self._events)]

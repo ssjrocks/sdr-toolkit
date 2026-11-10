@@ -49,7 +49,7 @@ from .logbook import Logbook
 from .mapview import MapView
 from .modes import GROUPS, MODES
 from .modes.base import Event, MissingParts, Mode, Setting
-from .panels import DetailsPanel, LogbookWindow, Photos
+from .panels import DetailsPanel, LogbookWindow, Photos, RelayDialog
 
 log = logging.getLogger(__name__)
 
@@ -492,6 +492,10 @@ class MainWindow(QMainWindow):
         top.addWidget(self.source_combo, 1)
         top.addWidget(refresh)
         top.addWidget(self.start_btn)
+        self.relay_btn = QPushButton("Connect relay…")
+        self.relay_btn.setToolTip("Use an RTL-SDR on another PC running SDR Tools Relay")
+        self.relay_btn.clicked.connect(self.relay_clicked)
+        top.addWidget(self.relay_btn)
         top.addWidget(self.update_btn)
 
         self.waterfall = Waterfall()
@@ -1145,7 +1149,7 @@ class MainWindow(QMainWindow):
         from .modes.radio import home
         self.coverage = None
         here = home(self.mode.values) if self.mode.id == "adsb" else None
-        if here is None or not self.mode.live():
+        if here is None or not self.mode.live() or self.mode.bridge():      # not a relay's dongle elsewhere
             self.map.set_rings(None)
             return
         data = self.logbook.load_coverage("adsb", coverage.site_key(here))
@@ -1166,6 +1170,31 @@ class MainWindow(QMainWindow):
         w.show()
         w.raise_()
         w.activateWindow()
+
+    # ---- relay ---------------------------------------------------------
+
+    def relay_clicked(self):
+        from . import relay
+        if relay.current() is not None:
+            name = relay.current().name
+            relay.disconnect()
+            self._relay_changed(f"Disconnected from the relay {name}: the RTL-SDR modes use this PC's dongle again")
+            return
+        dlg = RelayDialog(self, self.settings)
+        if dlg.exec() and dlg.bridge is not None:
+            self._relay_changed(f"Connected to the relay {dlg.bridge.name}: the RTL-SDR modes use its dongle")
+
+    def _relay_changed(self, message):
+        from . import relay
+        b = relay.current()
+        self.relay_btn.setText(f"Relay: {b.name} ✕" if b else "Connect relay…")
+        self.relay_btn.setToolTip("Disconnect from the relay" if b else
+                                  "Use an RTL-SDR on another PC running SDR Tools Relay")
+        self.status.setText(message)
+        log.info(message)
+        if self.running and self._is_radio():
+            self._stop_mode()
+            self._start_mode()
 
     def fetch_aircraft_db(self):
         """Download the aircraft database (registrations, types) in the background, then restart ADS-B."""
@@ -1317,6 +1346,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, ev):
         self.settings.setValue("geometry", self.saveGeometry())
         self._stop()
+        from . import relay
+        relay.disconnect()
         self.logbook.close()
         super().closeEvent(ev)
 

@@ -66,7 +66,8 @@ class ISMMode(RadioMode):
         for p in v["protocols"].split():
             cmd += ["-R", p]
         if self.live():
-            cmd += ["-d", self.device_index(), "-p", str(v["ppm"])]
+            b = self.bridge()
+            cmd += ["-d", f"rtl_tcp:127.0.0.1:{b.local_port}" if b else self.device_index(), "-p", str(v["ppm"])]
             if self.gain_db():
                 cmd += ["-g", self.gain_db()]
             for f in self.freqs():

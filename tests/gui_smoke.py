@@ -306,6 +306,43 @@ results["rings"] = (win.map.rings is not None and win.map.rings_btn.isVisible() 
                     and not win.map.rings_btn.isHidden() and "furthest 100 km" in win.map.rings_btn.toolTip())
 win._save_coverage()
 results["rings_saved"] = bool(win.logbook.load_coverage("adsb", coverage.site_key(here)))
+# Connect relay: by address to a relay playing a recording, then disconnect.
+relay_src = Path(__file__).resolve().parents[2] / "sdr-tools-relay" / "src"
+if relay_src.is_dir():
+    sys.path.append(str(relay_src))
+    import socket as _socket  # noqa: E402
+    from sdr_relay.server import Config as _RC, Relay as _Relay  # noqa: E402
+    _s = _socket.socket()
+    _s.bind(("127.0.0.1", 0))
+    _rport = _s.getsockname()[1]
+    _s.close()
+    _rec = Path(tempfile.mkdtemp()) / "r.cu8"
+    _rec.write_bytes(bytes(512))
+    _relay = _Relay(_RC(name="Garage relay", port=_rport, password="pw", file=str(_rec)), version="t")
+    _relay.start()
+    from sdr_toolkit.panels import RelayDialog  # noqa: E402
+    dlg = RelayDialog(win, win.settings)
+    dlg.tabs.setCurrentIndex(2)
+    dlg.address.setText(f"127.0.0.1:{_rport}")
+    dlg.password.setText("wrong")
+    dlg.connect_selected()
+    for _ in range(50):
+        app.processEvents()
+        time.sleep(0.05)
+    refused = "wrong password" in dlg.note.text()
+    dlg.password.setText("pw")
+    dlg.connect_selected()
+    for _ in range(50):
+        app.processEvents()
+        time.sleep(0.05)
+        if dlg.bridge:
+            break
+    win._relay_changed("connected")
+    results["relay"] = refused and dlg.bridge is not None and win.relay_btn.text() == "Relay: Garage relay ✕"
+    win.relay_clicked()                       # disconnects
+    results["relay"] = results["relay"] and win.relay_btn.text() == "Connect relay…"
+    dlg.close()
+    _relay.stop()
 if shots:
     win.grab().save(str(shots / "ais_map.png"))
     dl.grab().save(str(shots / "decoded_log.png"))

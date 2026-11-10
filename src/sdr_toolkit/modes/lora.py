@@ -139,6 +139,8 @@ class LoRaMode(RadioMode):
             return None
         v = self.values
         freq, sf, bw, *_ = self.params()
+        if self.bridge():
+            return self.relay_stream(freq, rtl_rate(bw * OVERSAMPLE))
         cmd = ["rtl_sdr", "-d", self.device_index().lstrip(":"), "-f", str(int(freq)),
                "-s", str(rtl_rate(bw * OVERSAMPLE)), "-p", str(v["ppm"])]
         if self.gain_db():

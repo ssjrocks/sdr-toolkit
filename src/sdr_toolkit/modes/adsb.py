@@ -42,7 +42,9 @@ class ADSBMode(RadioMode):
     def command(self):
         self._dir = Path(tempfile.mkdtemp(prefix="sdr-toolkit-adsb-"))
         v = self.values
-        if self.live():
+        if self.bridge():
+            cmd = ["readsb", "--device-type", "ifile", "--ifile=-", "--iformat", "UC8"]      # relay_stream's output
+        elif self.live():
             cmd = ["readsb", "--device-type", "rtlsdr", f"--device={self.device_index().lstrip(':')}",
                    f"--ppm={v['ppm']}"]
             if self.gain_db():
@@ -222,9 +224,12 @@ class ADSBMode(RadioMode):
             return None
         return int(round(int(self.values["ppm"]) + sum(r) / len(r))), len(r)
 
+    def upstream(self):
+        return self.relay_stream(1090e6, 2400000) if self.bridge() else None
+
     def actions(self):
-        if not self.live():
-            return []
+        if not self.live() or self.bridge():
+            return []                      # the relay's dongle: its owner sets its correction
         s = self.ppm_suggestion()
         if s is None:
             n = len(getattr(self, "_ppm_readings", []))
@@ -251,6 +256,6 @@ class ADSBMode(RadioMode):
         return events
 
     def finished(self, code):
-        if not self.live():
+        if not self.live() and not self.bridge():
             return self._read_json() + [Event("status", "recording finished")]
         return super().finished(code)

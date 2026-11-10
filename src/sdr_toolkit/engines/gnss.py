@@ -83,7 +83,7 @@ def config(source: dict, ppm: float, out_dir: str, channels=8, doppler=10000) ->
         "Acquisition_1C.max_dwells=1",
         # A recording is read as fast as it's processed: acquisition must hold the samples up
         # while it searches, or it falls behind and stops finding satellites.
-        f"Acquisition_1C.blocking={'false' if 'live' in source else 'true'}",
+        f"Acquisition_1C.blocking={'false' if 'live' in source or source.get('realtime') else 'true'}",
         "Tracking_1C.implementation=GPS_L1_CA_DLL_PLL_Tracking",
         "Tracking_1C.item_type=gr_complex",
         "Tracking_1C.pll_bw_hz=35.0",

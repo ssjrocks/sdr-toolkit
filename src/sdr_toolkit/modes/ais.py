@@ -66,6 +66,10 @@ class AISMode(RadioMode):
         if not self.live():
             return None
         v = self.values
+        if self.bridge():
+            # 240 kS/s, tuned 60 kHz above the channel to keep it off the dongle's DC spike.
+            f = float(self.freq().rstrip("M")) * 1e6
+            return self.relay_stream(f + 60000, 240000, fm=AUDIO_RATE, channel=25000, offset=-60000)
         cmd = ["rtl_fm", "-d", self.device_index().lstrip(":"), "-f", self.freq(), "-M", "fm",
                "-s", str(AUDIO_RATE), "-p", str(v["ppm"])]
         if self.gain_db():

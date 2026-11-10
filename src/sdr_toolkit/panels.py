@@ -446,3 +446,155 @@ class ReplayWindow(QDialog):
         if self.now >= self.t1:
             self.play.setChecked(False)
         self._show()
+
+
+# ---- Connect relay ------------------------------------------------------------
+
+class RelayDialog(QDialog):
+    """Find an SDR Tools Relay (this network, ssjrocks.com's list, or an address) and connect to it."""
+
+    def __init__(self, win, settings):
+        super().__init__(win)
+        from . import relay
+        self.relay = relay
+        self.win = win
+        self.settings = settings
+        self.bridge = None
+        self.setWindowTitle("Connect relay")
+        self.resize(640, 460)
+        intro = QLabel("Use an RTL-SDR plugged into another PC running "
+                       "<a href='https://github.com/ssjrocks/sdr-tools-relay'>SDR Tools Relay</a>. While connected, "
+                       "the RTL-SDR modes use its dongle instead of one on this PC.")
+        intro.setWordWrap(True)
+        intro.setOpenExternalLinks(True)
+        self.tabs = QTabWidget()
+        self.lan = QTableWidget(0, 4)
+        self.net = QTableWidget(0, 5)
+        for t, heads in ((self.lan, ("Name", "Address", "Dongle", "")),
+                         (self.net, ("Name", "Location", "Address", "Dongle", ""))):
+            t.setHorizontalHeaderLabels(heads)
+            t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+            t.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+            t.verticalHeader().setVisible(False)
+            t.horizontalHeader().setStretchLastSection(True)
+            t.doubleClicked.connect(self.connect_selected)
+        scan = QPushButton("Scan this network")
+        scan.clicked.connect(self.scan)
+        refresh = QPushButton("Get the list from ssjrocks.com")
+        refresh.clicked.connect(self.fetch)
+        for table, button, title in ((self.lan, scan, "On this network"), (self.net, refresh, "Internet")):
+            page = QWidget()
+            pl = QVBoxLayout(page)
+            pl.addWidget(button, 0, Qt.AlignmentFlag.AlignLeft)
+            pl.addWidget(table, 1)
+            self.tabs.addTab(page, title)
+        addr_page = QWidget()
+        al = QVBoxLayout(addr_page)
+        self.address = QLineEdit(str(settings.value("relay/address", "")))
+        self.address.setPlaceholderText(f"host or IP, optionally :port (default {relay.PORT}), e.g. a Tailscale name")
+        al.addWidget(QLabel("Address"))
+        al.addWidget(self.address)
+        al.addStretch(1)
+        self.tabs.addTab(addr_page, "By address")
+        self.tabs.setCurrentIndex(int(settings.value("relay/tab", 0)))
+        self.password = QLineEdit(str(settings.value("relay/password", "")))
+        self.password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password.setPlaceholderText("if the relay has one")
+        self.note = QLabel()
+        self.note.setWordWrap(True)
+        connect = QPushButton("Connect")
+        connect.setDefault(True)
+        connect.clicked.connect(self.connect_selected)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        bottom = QHBoxLayout()
+        bottom.addWidget(QLabel("Password"))
+        bottom.addWidget(self.password, 1)
+        bottom.addWidget(connect)
+        bottom.addWidget(cancel)
+        lay = QVBoxLayout(self)
+        lay.addWidget(intro)
+        lay.addWidget(self.tabs, 1)
+        lay.addWidget(self.note)
+        lay.addLayout(bottom)
+        self._found = {"lan": [], "net": []}
+        QTimer.singleShot(0, self.scan if self.tabs.currentIndex() == 0 else
+                          self.fetch if self.tabs.currentIndex() == 1 else lambda: None)
+
+    def _fill(self, table, rows, data):
+        table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            for c, text in enumerate(row):
+                item = QTableWidgetItem(str(text))
+                if c == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, data[r])
+                table.setItem(r, c, item)
+        table.resizeColumnsToContents()
+        if rows:
+            table.selectRow(0)
+
+    @staticmethod
+    def _flags(r) -> str:
+        return " · ".join(x for x in ("password" if r.get("password") else "", "in use" if r.get("busy") else "") if x)
+
+    def scan(self):
+        self.note.setText("Looking for relays on this network…")
+        self.win._run_task(lambda: self.relay.discover(), self._scanned,
+                           lambda msg: self.note.setText(f"Scan failed: {msg}"))
+
+    def _scanned(self, found):
+        devs = lambda r: ", ".join(d.get("name", "") for d in r.get("devices", [])) or "no dongle"  # noqa: E731
+        self._fill(self.lan, [(r.get("name", ""), f"{r['host']}:{r.get('port')}", devs(r), self._flags(r))
+                              for r in found], found)
+        if self.tabs.currentIndex() != 0:
+            return                          # don't cover a message about the relay being connected to
+        self.note.setText(f"{len(found)} relay{'s' if len(found) != 1 else ''} on this network." if found else
+                          "No relays answered. Is SDR Tools Relay running on the other PC, and is UDP port "
+                          f"{self.relay.DISCOVERY_PORT} allowed through its firewall?")
+
+    def fetch(self):
+        self.note.setText("Getting the list from ssjrocks.com…")
+        self.win._run_task(lambda: self.relay.directory(), self._fetched,
+                           lambda msg: self.note.setText(f"Couldn't get the list: {msg}"))
+
+    def _fetched(self, found):
+        self._fill(self.net, [(r.get("name", ""), r.get("location", ""), f"{r['host']}:{r['port']}",
+                               ", ".join(r.get("devices") or []) or "no dongle", self._flags(r)) for r in found], found)
+        if self.tabs.currentIndex() != 1:
+            return
+        self.note.setText(f"{len(found)} relay{'s' if len(found) != 1 else ''} listed." if found else
+                          "No relays are listed at the moment.")
+
+    def target(self) -> dict | None:
+        i = self.tabs.currentIndex()
+        if i == 2:
+            text = self.address.text().strip()
+            if not text:
+                return None
+            host, _, port = text.rpartition(":") if text.count(":") == 1 else (text, "", "")
+            return {"host": host or text, "port": int(port) if port.isdigit() else self.relay.PORT, "name": ""}
+        table = self.lan if i == 0 else self.net
+        rows = table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        return table.item(rows[0].row(), 0).data(Qt.ItemDataRole.UserRole)
+
+    def connect_selected(self):
+        t = self.target()
+        if t is None:
+            self.note.setText("Pick a relay first.")
+            return
+        password = self.password.text()
+        self.note.setText(f"Connecting to {t.get('name') or t['host']}…")
+
+        def done(bridge):
+            s = self.settings
+            s.setValue("relay/tab", self.tabs.currentIndex())
+            s.setValue("relay/address", self.address.text().strip())
+            s.setValue("relay/password", password)
+            self.bridge = bridge
+            self.accept()
+
+        self.win._run_task(lambda: self.relay.connect(t["host"], t["port"], password, t.get("name", "")), done,
+                           lambda msg: self.note.setText(msg))

@@ -26,6 +26,8 @@ HARMLESS = ("tuner error set to",)
 
 def looks_like_error(line: str) -> bool:
     low = line.lower()
+    if low.startswith("relay_stream:"):
+        return True
     return (any(w in low for w in ("error", "no supported", "failed", "fatal"))
             and not any(h in low for h in HARMLESS))
 
