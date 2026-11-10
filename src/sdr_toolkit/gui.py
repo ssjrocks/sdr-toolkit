@@ -2,6 +2,7 @@
 
 import collections
 import html
+import json
 import logging
 import time
 from pathlib import Path
@@ -1194,6 +1195,7 @@ class MainWindow(QMainWindow):
             self._relay_update_action = menu.addAction("Looking for a newer relay version…")
             self._relay_update_action.setEnabled(False)
             self._relay_update_action.triggered.connect(self.update_relay)
+            menu.addAction("Check the relay's dongle…", self.check_relay_dongle)
             menu.addAction("Disconnect", self.disconnect_relay)
             self.relay_btn.setMenu(menu)
             self._run_task(relay.latest_relay_version, self._relay_latest, lambda msg: self._relay_latest(""))
@@ -1211,6 +1213,33 @@ class MainWindow(QMainWindow):
         if b is not None:
             relay.disconnect()
             self._relay_changed(f"Disconnected from the relay {b.name}: the RTL-SDR modes use this PC's dongle again")
+
+    def check_relay_dongle(self):
+        from . import relay
+        b = relay.current()
+        if b is None:
+            return
+        if self.running and self._is_radio():
+            self._stop()                       # the relay has one dongle: the check needs it
+        self.status.setText(f"Checking the relay {b.name}'s dongle (about 20 s)…")
+
+        def done(report):
+            lines = []
+            for name, r in report.items():
+                if isinstance(r, dict):
+                    got = r.get("bytes")
+                    verdict = (f"{got / 1e6:.1f} MB in 2 s" if got else "no samples") if got is not None else ""
+                    extra = r.get("error") or r.get("skipped") or r.get("callback_error") or r.get("output", "")
+                    lines.append(f"{name}: {verdict} {('— ' + extra) if extra else ''}".strip())
+            text = "\n".join(lines) or json.dumps(report, indent=1)
+            log.info("relay dongle check: %s", json.dumps(report))
+            self.status.setText("Relay dongle check done")
+            QMessageBox.information(self, "The relay's dongle", f"{b.name}:\n\n{text}\n\n(4.8 MB in 2 s is a "
+                                    "dongle streaming normally at 2.4 MS/s.)")
+
+        self._run_task(lambda: relay.diagnose(b.host, b.port, b.password), done,
+                       lambda msg: (self.status.setText(f"Relay dongle check: {msg}"),
+                                    QMessageBox.warning(self, "The relay's dongle", msg)))
 
     def _relay_latest(self, latest):
         from . import relay

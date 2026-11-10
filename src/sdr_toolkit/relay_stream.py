@@ -22,10 +22,18 @@ def command(cmd, value) -> bytes:
     return struct.pack(">BI", cmd, int(value) & 0xFFFFFFFF)
 
 
+QUIET = 10.0          # s without samples before giving up (the relay's dongle isn't streaming)
+
+
 def chunks(sock, size):
     buf = b""
+    sock.settimeout(QUIET)
     while True:
-        data = sock.recv(size)
+        try:
+            data = sock.recv(size)
+        except TimeoutError:
+            sys.exit(f"relay_stream: the relay sent no samples for {QUIET:.0f} s: its dongle isn't streaming "
+                     "(see the relay's window, or Check the relay's dongle in the relay menu)")
         if not data:
             return
         buf += data
@@ -66,7 +74,6 @@ def main(argv=None):
             head += data
         if head[:4] != b"RTL0":
             sys.exit("relay_stream: not an rtl_tcp stream")
-        sock.settimeout(None)
         out = sys.stdout.buffer
         size = int(a.rate) // 10 * 2                # 0.1 s
         if a.fm:

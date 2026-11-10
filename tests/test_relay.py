@@ -261,3 +261,37 @@ def test_update_a_connected_relay(make_relay, tmp_path, monkeypatch):
     with pytest.raises(relay.RelayError, match="can't be updated from here"):
         relay.request_update("127.0.0.1", r.config.port, "pw")
     assert relay.parse_version("0.1.10") > relay.parse_version("0.1.9")
+
+
+def test_a_relay_whose_dongle_sends_nothing(make_relay, tmp_path):
+    # As on the Windows PC in the problem report: the header, then no samples at all.
+    from sdr_relay.rtlsdr import FileDongle as FD
+    rec = tmp_path / "x.cu8"
+    rec.write_bytes(bytes(256))
+    r = make_relay(rec)
+
+    class Silent(FD):
+        def start(self, on_data, buf_len=65536, method="auto"):
+            pass
+
+    r.open_dongle = lambda: Silent(rec)
+    relay.connect("127.0.0.1", r.config.port, "pw")
+    mode, ev = run_live("adsb", lambda ev: any("no samples" in (e.text or "") for e in ev), wait=25)
+    warn = [e.text for e in ev if e.kind == "line" and e.style == "warn"]
+    assert any("sent no samples for 10 s" in t for t in warn), [e.text for e in ev if e.kind in ("line", "raw")][-6:]
+    for _ in range(50):                       # and the relay is free again
+        if r.session is None:
+            break
+        time.sleep(0.1)
+    assert r.session is None
+
+
+def test_relay_dongle_check(make_relay, tmp_path):
+    rec = tmp_path / "x.cu8"
+    rec.write_bytes(bytes(256))
+    r = make_relay(rec)
+    b = relay.connect("127.0.0.1", r.config.port, "pw")
+    assert relay.diagnose("127.0.0.1", r.config.port, "pw") == {"skipped": "playing a recording"}
+    assert "diagnose" in b.features
+    with pytest.raises(relay.RelayError, match="wrong password"):
+        relay.diagnose("127.0.0.1", r.config.port, "nope")

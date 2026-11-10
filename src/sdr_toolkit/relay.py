@@ -338,6 +338,32 @@ def request_update(host, port, password) -> str:
             sock.close()
 
 
+def diagnose(host, port, password) -> dict:
+    """The relay's dongle check (it needs the password and the relay free); takes ~20 s."""
+    try:
+        sock = socket.create_connection((host, int(port)), timeout=15)
+    except OSError as e:
+        raise RelayError(f"Couldn't reach {host}:{port}: {e}") from None
+    try:
+        sock.settimeout(90)
+        info, _ = _read_line(sock)
+        if "diagnose" not in (info.get("features") or []):
+            raise RelayError(f"{info.get('name', 'The relay')} {info.get('version', '')} has no dongle check: "
+                             "update it (0.1.3 or later)")
+        if info.get("busy"):
+            raise Busy(f"{info.get('name', 'The relay')} is in use: stop the RTL-SDR mode first")
+        sock.sendall(json.dumps({"client": "SDR Toolkit", "version": __version__, "diagnose": True,
+                                 "auth": auth(password, info.get("nonce", ""))}).encode() + b"\n")
+        answer, _ = _read_line(sock, limit=1 << 20)
+        if not answer.get("ok"):
+            raise RelayError(f"{info.get('name', 'The relay')}: {answer.get('error', 'refused')}")
+        return answer.get("report", {})
+    except OSError as e:
+        raise RelayError(f"{host}:{port}: {e}") from None
+    finally:
+        sock.close()
+
+
 def wait_for_version(host, port, version, timeout=300, every=5.0) -> bool:
     """Wait for the relay to come back with *version* (it restarts after updating)."""
     end = time.monotonic() + timeout

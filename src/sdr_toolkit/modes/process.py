@@ -133,6 +133,10 @@ class ProcessMode(Mode):
             except queue.Empty:
                 break
             if line is None:
+                # The decoder has gone: stop the program feeding it too (relay_stream would
+                # otherwise keep the relay "in use" with nobody reading).
+                if self._up is not None and self._up.poll() is None:
+                    self._up.terminate()
                 events += self.finished(self._proc.poll())
                 continue
             if line.startswith(UPSTREAM):
