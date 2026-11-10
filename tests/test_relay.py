@@ -302,3 +302,30 @@ def test_which_relays_count_as_this_network():
     assert relay.is_lan("localhost")
     assert not relay.is_lan("100.66.93.15")          # Tailscale: could be anywhere
     assert not relay.is_lan("130.185.249.109") and not relay.is_lan("no-such-host.invalid")
+
+
+def test_receiver_drives_a_relays_dongle(make_relay, tmp_path, monkeypatch):
+    import numpy as np
+    import test_receiver as TR
+    rec = TR.fm_station(tmp_path / "fm.cu8", offset=600000, seconds=1.0)
+    r = make_relay(rec)
+    r.config.allow_client_ppm = True
+    relay.connect("127.0.0.1", r.config.port, "pw")
+    m = TR.start_receiver(monkeypatch, input="rtl", freq_mhz=101.1, gain_mode="manual", gain_db=37.2, rtl_agc=True,
+                          direct=2, bias_tee=True, ppm=-3, volume=100)
+    try:
+        ev = TR.poll_for(m, 2.5)
+        calls = r.dongles[-1].calls
+        for want in (("set_sample_rate", 2400000), ("set_center_freq", 100500000), ("set_tuner_gain_mode", 1),
+                     ("set_tuner_gain", 372), ("set_agc_mode", 1), ("set_direct_sampling", 2),
+                     ("set_bias_tee", 1), ("set_freq_correction", -3)):
+            assert want in calls, (want, calls)
+        assert [e for e in ev if e.kind == "spectrum"] and "relay Test relay" in m._status()[0].text
+        audio = np.concatenate(TR.FakeAudio.last.chunks)
+        assert abs(TR.tone_freq(audio) - 1000) < 5                 # the FM station, through the relay
+        m.apply(dict(m.values, gain_mode="auto", bias_tee=False, freq_mhz=145.0))
+        time.sleep(0.3)
+        assert ("set_tuner_gain_mode", 0) in calls and ("set_bias_tee", 0) in calls
+        assert ("set_center_freq", int(145e6 - 600000)) in calls
+    finally:
+        m.stop()

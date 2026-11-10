@@ -52,6 +52,7 @@ from .mapview import MapView
 from .modes import GROUPS, MODES
 from .modes.base import Event, MissingParts, Mode, Setting
 from .panels import DetailsPanel, LogbookWindow, Photos, RelayDialog
+from .receiver.view import ReceiverPanel
 
 log = logging.getLogger(__name__)
 
@@ -533,6 +534,9 @@ class MainWindow(QMainWindow):
         self.output.addWidget(text_page)
         self.output.addWidget(self.table_page)
         self.output.addWidget(self.picture)
+        self.receiver_panel = ReceiverPanel()
+        self.receiver_panel.changed.connect(self._receiver_changed)
+        self.output.addWidget(self.receiver_panel)
         self.decoded_log = LogWindow(self, "Decoded log", "Everything decoded appears here, with the time.")
         self.raw_log = LogWindow(self, "Raw data", "The decoder's raw output appears here.")
         self.title = QLabel("")
@@ -775,6 +779,9 @@ class MainWindow(QMainWindow):
                 hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
             hh.setSectionResizeMode(len(m.columns) - 1, QHeaderView.ResizeMode.Stretch)
             self.output.setCurrentWidget(self.table_page)
+        elif m.output == "receiver":
+            self.receiver_panel.show_values(m.values)
+            self.output.setCurrentWidget(self.receiver_panel)
         elif m.output == "image":
             self.output.setCurrentWidget(self.picture)
         else:
@@ -797,6 +804,20 @@ class MainWindow(QMainWindow):
             self.mode.values = values
         self.waterfall.markers = self.mode.markers()
         self.waterfall.update()
+        if self.mode.output == "receiver":
+            if key == "demod":                 # each mode starts at its usual bandwidth
+                from .receiver.dsp import MODES
+                bw = MODES[value][0]
+                self.form.set_value("bandwidth", bw)
+                self.on_setting("bandwidth", bw)
+            self.receiver_panel.show_values(self.mode.values)
+
+    def _receiver_changed(self, key, value):
+        """A setting changed on the receiver's toolbar (or by clicking the waterfall)."""
+        if self.mode is None or self.mode.output != "receiver":
+            return
+        self.form.set_value(key, value)
+        self.on_setting(key, value)
 
     def on_waterfall_click(self, f):
         if self.mode is None:
@@ -1016,6 +1037,14 @@ class MainWindow(QMainWindow):
                 self.title.setText(e.title)
             elif e.kind == "status":
                 self.status.setText(e.text)
+            elif e.kind == "spectrum":
+                d = e.data
+                view = self.receiver_panel.view
+                view.tune, view.mode, view.bandwidth = d["tune"], d["mode"], d["bandwidth"]
+                view.peak_hold = bool(self.mode.values.get("peak_hold", True))
+                view.set_frame(d["db"], d["center"], d["rate"])
+                self.receiver_panel.meter.setText(f"Signal {d['level']:.0f} dBFS" +
+                                                  ("" if d["open"] else " · squelched"))
             elif e.kind == "activity":
                 if not self._warned:
                     self.title.setText(html.escape(e.text))

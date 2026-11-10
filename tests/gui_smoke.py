@@ -109,6 +109,10 @@ for M in gui.MODES:
     if M.id == "lora" and lora_available() is None:
         assert not win.running and win.install_bar.isVisible() and "gr-lora_sdr" in win.install_label.text()
         continue
+    if M.id == "receiver":
+        # No dongle here: rtl_tcp finds none and the receiver says so instead of starting.
+        assert not win.running and "No RTL-SDR" in win.title.text(), win.title.text()
+        continue
     if M.id == "dmr":
         # No default frequency: it asks for one (or offers to install DSD-FME) instead of starting.
         assert not win.running and ("frequency" in win.title.text() or win.install_bar.isVisible())
@@ -362,6 +366,33 @@ if relay_src.is_dir():
     results["relay"] = results["relay"] and win.relay_btn.text() == "Connect relay…" and win.relay_btn.menu() is None
     dlg.close()
     _relay.stop()
+# Spectrum & receiver on a recording: frames reach the waterfall, clicking tunes, a mode brings its bandwidth.
+import test_receiver as _TR  # noqa: E402
+from sdr_toolkit.modes import receiver as _R  # noqa: E402
+
+_R.AudioOut = _TR.FakeAudio                      # no sound from the test
+_fm = _TR.fm_station(Path(tempfile.mkdtemp()) / "fm.cu8", seconds=1.0)
+win.settings.setValue("receiver/input", "file")  # never the live dongle
+win.settings.setValue("receiver/file", str(_fm))
+win.settings.setValue("receiver/freq_mhz", 101.1)
+win.tree.setCurrentItem(win._items["receiver"])
+for _ in range(40):
+    app.processEvents()
+    time.sleep(0.05)
+rp = win.receiver_panel
+results["receiver"] = (win.output.currentWidget() is rp and rp.view.db is not None and rp.view.center == 100.5e6
+                       and "Signal" in rp.meter.text())
+rp.view.tuned.emit(101.2e6 + 30)                 # a click: rounded to the 100 kHz step
+app.processEvents()
+results["receiver_tune"] = (abs(rp.freq.value() - 101.2) < 1e-9 and win.mode.values["freq_mhz"] == 101.2
+                            and win.form.widgets["freq_mhz"][1].value() == 101.2 and win.mode.center == 100.5e6)
+rp.mode.setCurrentIndex(rp.mode.findData("NFM"))
+app.processEvents()
+results["receiver_mode"] = (win.mode.demod.mode == "NFM" and win.mode.values["bandwidth"] == 12500
+                            and rp.bw.value() == 12500)
+if shots:
+    win.grab().save(str(shots / "receiver.png"))
+win._stop()
 if shots:
     win.grab().save(str(shots / "ais_map.png"))
     dl.grab().save(str(shots / "decoded_log.png"))
