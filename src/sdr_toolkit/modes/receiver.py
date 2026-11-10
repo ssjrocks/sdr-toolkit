@@ -98,6 +98,10 @@ class ReceiverMode(Mode):
         Setting("settle_ms", "Survey settle time", 150, "int", 20, 2000, 10, suffix=" ms",
                 help="After each hop of the survey, samples are thrown away for this long while the tuner "
                      "settles. Through a relay, 250 ms more is added for samples still on their way."),
+        Setting("dwell_ms", "Survey dwell time", 0, "int", 0, 2000, 10, suffix=" ms",
+                help="How long the survey measures each slice after settling, keeping the strongest moment: "
+                     "longer catches signals that are only on now and then, but each pass takes longer. "
+                     "0 is the shortest (a few milliseconds)."),
         Setting("fft", "FFT size", 4096, "choice",
                 choices=((1024, "1024"), (2048, "2048"), (4096, "4096"), (8192, "8192"), (16384, "16384")),
                 help="More bins: finer detail, slower to react."),
@@ -231,6 +235,9 @@ class ReceiverMode(Mode):
             if v["fft"] != old["fft"]:
                 self.spectrum = dsp.Spectrum(int(v["fft"]), float(v["average"]))
             self.spectrum.average = float(v["average"])
+            if self.survey is not None:                          # takes effect from the next slice
+                self.survey.settle = self._settle()
+                self.survey.dwell = float(v["dwell_ms"]) / 1000
 
     def _run(self):
         last_frame = 0.0
@@ -328,8 +335,8 @@ class ReceiverMode(Mode):
         if req is not None:
             what, lo, hi = req
             if what == "start":
-                settle = float(self.values["settle_ms"]) / 1000 + (0.25 if self.via else 0)
-                self.survey = Survey(int(self.values["rate"]), self.src.tuner, settle)
+                self.survey = Survey(int(self.values["rate"]), self.src.tuner, self._settle(),
+                                     dwell=float(self.values["dwell_ms"]) / 1000)
                 if lo is not None:
                     self.survey.set_view(lo, hi)
                 self._survey_tune(now)
@@ -350,6 +357,9 @@ class ReceiverMode(Mode):
             else:
                 sv.tuned(nxt, now - sv.settle)                         # staying put: no settling needed
         return True
+
+    def _settle(self):
+        return float(self.values["settle_ms"]) / 1000 + (0.25 if self.via else 0)
 
     def _survey_tune(self, now):
         sv = self.survey

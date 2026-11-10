@@ -478,6 +478,28 @@ def test_survey_zoomed_in_sweeps_less():
     assert (sv.min_hz, sv.max_hz) == (24e6, 1766e6)
 
 
+def test_survey_dwell_catches_a_burst():
+    """A burst 50 ms into the slice: missed with no dwell, caught with 100 ms, and the slice takes that long."""
+    rng = np.random.default_rng(3)
+    t = np.arange(int(0.2 * RATE)) / RATE
+    x = (rng.normal(0, 0.01, len(t)) + 1j * rng.normal(0, 0.01, len(t))).astype(np.complex64)
+    burst = (t > 0.05) & (t < 0.06)
+    x[burst] += 0.3 * np.exp(2j * np.pi * 400000 * t[burst])
+    for dwell, caught in ((0.0, False), (0.1, True)):
+        sv = SV.Survey(RATE, tuner=5, settle=0.0, dwell=dwell)
+        sv.set_view(100e6, 101e6)
+        sv.tuned(sv.next_center(), 0.0)
+        used = 0
+        for i in range(0, len(x), 16384):
+            used = i + 16384
+            if sv.feed(x[i:i + 16384], 1.0):
+                break
+        d = np.nan_to_num(sv.stitched(1000), nan=-200)
+        assert (np.max(d) > -30) == caught, (dwell, np.max(d))
+        if dwell:
+            assert 0.1 <= used / RATE < 0.12
+
+
 def test_receiver_surveys_with_retune_commands(monkeypatch, tmp_path):
     from sdr_toolkit.receiver.source import SET_FREQ
     rec = fm_station(tmp_path / "fm.cu8", seconds=0.5)

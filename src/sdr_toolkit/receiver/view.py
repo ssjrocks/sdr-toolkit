@@ -335,7 +335,8 @@ class ReceiverPanel(QWidget):
         from .decode import DECODERS
         self.identify_btn = QToolButton()
         self.identify_btn.setText("Identify")
-        self.identify_btn.setToolTip("Guess what the signal you're tuned to is")
+        self.identify_btn.setToolTip("Guess once what the signal you're tuned to is, and offer what to do with it. "
+                                     "Guessing by itself every few seconds is the Identify automatically setting.")
         self.identify_btn.clicked.connect(self.identify.emit)
         self.looks = QToolButton()
         self.looks.setText("Looks like: …")
@@ -369,6 +370,20 @@ class ReceiverPanel(QWidget):
                                    "(the audio pauses). Zoom in to sweep less, faster.")
         self.survey_btn.toggled.connect(self._survey_toggled)
         row2.addWidget(self.survey_btn)
+        self.dwell_label = QLabel()
+        self.dwell_label.setMinimumWidth(95)
+        self.dwell = QSlider(Qt.Orientation.Horizontal)
+        self.dwell.setRange(0, 200)                 # tens of ms
+        self.dwell.setMinimumWidth(80)
+        self.dwell.setMaximumWidth(160)
+        self.dwell.setToolTip("Dwell: how long the survey measures each slice, keeping the strongest moment. "
+                              "Longer catches signals that are only on now and then; passes take longer.")
+        self.dwell_label.setToolTip(self.dwell.toolTip())
+        row2.addWidget(self.dwell_label)
+        row2.addWidget(self.dwell)
+        self._show_dwell(0)
+        self.dwell_label.hide()
+        self.dwell.hide()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addLayout(row)
@@ -390,11 +405,21 @@ class ReceiverPanel(QWidget):
         self.sq.valueChanged.connect(lambda v: self._emit("squelch", int(v)))
         self.vol.valueChanged.connect(lambda v: self._emit("volume", int(v)))
         self.mute.toggled.connect(lambda v: self._emit("mute", bool(v)))
+        self.dwell.valueChanged.connect(self._dwell_moved)
         self.view.tuned.connect(self._clicked)
 
     def _survey_toggled(self, on):
         self.pages.setCurrentWidget(self.survey_view if on else self.view)
+        self.dwell_label.setVisible(on)
+        self.dwell.setVisible(on)
         self.survey.emit(on)
+
+    def _show_dwell(self, ms):
+        self.dwell_label.setText(f"Dwell {ms} ms" if ms < 1000 else f"Dwell {ms / 1000:.2f} s")
+
+    def _dwell_moved(self, v):
+        self._show_dwell(v * 10)
+        self._emit("dwell_ms", v * 10)
 
     def add_decode_area(self, widget):
         """The decoded output, under the spectrum (the window builds it)."""
@@ -430,6 +455,8 @@ class ReceiverPanel(QWidget):
             self.sq.setValue(int(v.get("squelch", -60)))
             self.vol.setValue(int(v.get("volume", 70)))
             self.mute.setChecked(bool(v.get("mute")))
+            self.dwell.setValue(int(v.get("dwell_ms", 0)) // 10)
+            self._show_dwell(self.dwell.value() * 10)
             self.decoder.setCurrentIndex(max(self.decoder.findData(v.get("decoder", "")), 0))
         finally:
             self._quiet = False

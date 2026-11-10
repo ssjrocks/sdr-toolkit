@@ -134,7 +134,9 @@ spectrum and the survey, and right-clicking one offers to listen with its settin
 **Survey** sweeps the dongle over its whole tuning range (or the part you're looking at) and
 stitches the slices into one zoomable spectrum and waterfall. After each retune it throws away the
 samples of a settle time (150 ms by default, 250 ms more through a relay, where samples from the
-old frequency are still on their way), averages a few spectra and keeps the middle 80% of the slice.
+old frequency are still on their way), then measures for the **Dwell** time (the slider beside Survey) and keeps the middle 80% of the slice.
+The dwell keeps the strongest moment of the slice, so a longer one catches signals that are only on
+now and then (pagers, DMR, data bursts), at the cost of slower passes.
 Only the range on screen is swept, so zooming in makes passes faster; zoomed in narrower than one
 slice, the dongle just stays there. A pass over 80-180 MHz through a relay takes about 20 s.
 Double-click to listen there.

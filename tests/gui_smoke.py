@@ -414,11 +414,15 @@ results["tags"] = results["tags"] and win.mode.values["freq_mhz"] == 101.3 and w
 win._receiver_slid(100.2e6)
 results["slide"] = win.mode.center == 100.2e6
 rp.survey_btn.setChecked(True)
+results["dwell_shown"] = rp.dwell.isVisible()
+rp.dwell.setValue(5)                                   # 50 ms
 for _ in range(40):
     app.processEvents()
     time.sleep(0.05)
 results["survey"] = (rp.pages.currentWidget() is rp.survey_view and rp.survey_view.db is not None
                      and win.mode.survey is not None)
+results["dwell"] = (win.mode.values["dwell_ms"] == 50 and win.mode.survey.dwell == 0.05
+                   and rp.dwell_label.text() == "Dwell 50 ms")
 if shots:
     win.grab().save(str(shots / "survey.png"))
 rp.survey_view.listen.emit(98.5e6)

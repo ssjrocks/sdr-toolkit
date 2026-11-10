@@ -2,8 +2,10 @@
 
 Each step tunes the dongle, throws away the samples of a settle time (the tuner's PLL and
 gain settling, and samples from the previous frequency still on their way, which over a
-relay can be a few hundred ms), averages a few spectra and keeps the middle 80% of the
-slice (the edges are on the dongle's filter slopes). Only the range being looked at is
+relay can be a few hundred ms), then measures for the dwell time and keeps the middle 80% of
+the slice (the edges are on the dongle's filter slopes). The dwell is cut into groups of a few
+spectra; each group is averaged (which smooths the noise) and the slice keeps the strongest group,
+so a longer dwell catches signals that are only on now and then (pagers, DMR, data bursts). Only the range being looked at is
 swept, so zooming in makes passes faster; a range narrower than one slice isn't swept at
 all, the dongle just stays there.
 """
@@ -19,12 +21,13 @@ TUNER_RANGE = {1: (52e6, 2200e6), 2: (22e6, 948e6), 3: (22e6, 1100e6), 4: (146e6
 
 
 class Survey:
-    def __init__(self, rate, tuner=5, settle=0.15, fft=1024, frames=6):
+    def __init__(self, rate, tuner=5, settle=0.15, fft=1024, frames=6, dwell=0.0):
         self.rate = int(rate)
         self.min_hz, self.max_hz = TUNER_RANGE.get(tuner, (24e6, 1766e6))
         self.settle = float(settle)
         self.fft = int(fft)
-        self.frames = int(frames)
+        self.frames = int(frames)                   # spectra averaged per group
+        self.dwell = float(dwell)                   # seconds measured per slice (at least one group)
         self.window = np.hanning(self.fft).astype(np.float32)
         self.norm = 20 * np.log10(np.sum(self.window))
         self.segments: dict[float, tuple] = {}     # centre -> (time, f_lo, f_hi, dB of the usable bins)
@@ -35,6 +38,8 @@ class Survey:
         self.tuned_at = 0.0
         self._acc = None
         self._n = 0
+        self._best = None
+        self._groups = 0
         self._buf = np.zeros(0, np.complex64)
         self.pass_started = time.monotonic()
         self.last_pass = 0.0
@@ -64,22 +69,35 @@ class Survey:
         self.tuned_at = now
         self._acc = None
         self._n = 0
+        self._best = None
+        self._groups = 0
         self._buf = np.zeros(0, np.complex64)
+
+    def groups_wanted(self) -> int:
+        return max(1, int(np.ceil(self.dwell * self.rate / (self.fft * self.frames))))
 
     def feed(self, x, now) -> bool:
         """Samples since the last call. Returns True when this slice is done (tune the next)."""
         if self.current is None or now - self.tuned_at < self.settle:
             return False                            # still settling: these may be the old frequency's
         self._buf = np.concatenate([self._buf, x])
-        while len(self._buf) >= self.fft and self._n < self.frames:
-            seg = self._buf[: self.fft] * self.window
-            self._buf = self._buf[self.fft:]
-            p = np.abs(np.fft.fftshift(np.fft.fft(seg))) ** 2
+        wanted = self.groups_wanted()
+        while self._groups < wanted:
+            n = min(len(self._buf) // self.fft, self.frames - self._n)
+            if n <= 0:
+                break
+            seg = self._buf[: n * self.fft].reshape(n, self.fft) * self.window
+            self._buf = self._buf[n * self.fft:]
+            p = (np.abs(np.fft.fft(seg, axis=1)) ** 2).sum(axis=0)
             self._acc = p if self._acc is None else self._acc + p
-            self._n += 1
-        if self._n < self.frames:
+            self._n += n
+            if self._n == self.frames:
+                self._best = self._acc if self._best is None else np.maximum(self._best, self._acc)
+                self._acc, self._n = None, 0
+                self._groups += 1
+        if self._groups < wanted:
             return False
-        db = 10 * np.log10(self._acc / self._n + 1e-20) - self.norm
+        db = 10 * np.log10(np.fft.fftshift(self._best) / self.frames + 1e-20) - self.norm
         keep = int(self.fft * (1 - USABLE) / 2)
         usable = db[keep:self.fft - keep].astype(np.float32)
         half = self.rate * USABLE / 2
