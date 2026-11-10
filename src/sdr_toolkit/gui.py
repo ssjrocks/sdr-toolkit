@@ -957,7 +957,8 @@ class MainWindow(QMainWindow):
                     else:
                         self.mode.values = values
         self.decode_area.show_decoder(M)
-        if self.running:
+        # _start_mode() calls this before the window counts as running: the mode has started then.
+        if self.running or getattr(self, "_mode_started", False):
             self.mode.set_decoder(mode_id, self._values(M) if M else {})
 
     # ---- identifying, tagging, sliding ---------------------------------

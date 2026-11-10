@@ -377,11 +377,13 @@ _fm = _TR.fm_station(Path(tempfile.mkdtemp()) / "fm.cu8", seconds=1.0)
 win.settings.setValue("receiver/input", "file")  # never the live dongle
 win.settings.setValue("receiver/file", str(_fm))
 win.settings.setValue("receiver/freq_mhz", 101.1)
+win.settings.setValue("receiver/decoder", "tones")  # chosen last time: it must run from the start
 win.tree.setCurrentItem(win._items["receiver"])
 for _ in range(40):
     app.processEvents()
     time.sleep(0.05)
 rp = win.receiver_panel
+results["saved_decoder_runs"] = win.mode.decoder is not None and win.mode.decoder.id == "tones"
 results["receiver"] = (win.output.currentWidget() is rp and rp.view.db is not None and rp.view.center == 100.5e6
                        and "Signal" in rp.meter.text())
 rp.view.tuned.emit(101.2e6 + 30)                 # a click: rounded to the 100 kHz step
