@@ -20,8 +20,10 @@ from .base import Event, MissingParts, Mode
 log = logging.getLogger(__name__)
 UPSTREAM = "\x00upstream "      # marks an error line from the upstream program
 # Lines that contain an error word but aren't errors: librtlsdr confirming the frequency
-# correction ("Tuner error set to 57 ppm.").
-HARMLESS = ("tuner error set to",)
+# correction ("Tuner error set to 57 ppm."), direwolf's advice about FIX_BITS ("...and you see
+# messages like "Audio input device 0 error code -32""), and DSD-FME's DMR location reports
+# ("Position Error: Less than 2m", the fix's accuracy).
+HARMLESS = ("tuner error set to", "you see messages like", "position error:")
 
 
 def looks_like_error(line: str) -> bool:

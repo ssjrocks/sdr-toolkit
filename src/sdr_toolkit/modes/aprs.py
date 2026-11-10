@@ -34,9 +34,10 @@ class APRSMode(ProcessMode):
                          ("A", "A, single"), ("B", "B, single")),
                 help="direwolf's demodulator profile. The '+' versions run several decoders and pick "
                      "what passes the checksum."),
-        Setting("fix_bits", "Repair bit errors", 1, "choice", restart=True,
+        Setting("fix_bits", "Repair bit errors", 0, "choice", restart=True,
                 choices=((0, "Off"), (1, "Single bits"), (2, "Up to two bits")),
-                help="Try flipping bits to pass the checksum. More finds more packets, and a few wrong ones."),
+                help="Try flipping bits to pass the checksum: finds a few more packets, and some wrong ones. "
+                     "direwolf 1.8 advises against it; it can take a whole CPU core and fall behind the audio."),
         Setting("levels", "Show audio levels", False, "bool",
                 help="direwolf's audio level for each packet. About 50 is ideal."),
     )

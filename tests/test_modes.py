@@ -169,6 +169,18 @@ def test_aprs():
     assert len(pk) == 4
 
 
+def test_aprs_bit_repair_advice_is_not_a_warning():
+    # direwolf 1.8 prints advice about FIX_BITS that ends "...and you see messages like "Audio input
+    # device 0 error code -32: Broken pipe""; it showed as a warning and in the app log.
+    from sdr_toolkit.modes.process import looks_like_error
+    assert BY_ID["aprs"]().values["fix_bits"] == 0
+    a = signals.aprs_packets(48000)
+    _, ev = run("aprs", pad(a, 48000), fix_bits=1)
+    assert len([t for t in lines(ev) if "WB2OSZ-15>TEST" in t]) == 4
+    assert not [e.text for e in ev if e.kind == "line" and e.style == "warn"]
+    assert not looks_like_error("Position Error: Less than 2m; Reserved: 7; TE: < 5s;")    # DSD-FME's LRRP
+
+
 @pytest.mark.parametrize("baud", [512, 1200, 2400])
 def test_pager(baud):
     a = signals.resample(signals.pocsag(1234567, "HELLO PAGER 42", baud), 22050, 22050)
