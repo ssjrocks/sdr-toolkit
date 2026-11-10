@@ -1015,6 +1015,8 @@ class MainWindow(QMainWindow):
         lo, hi = view.center - view.rate, view.center + view.rate
         view.tags = self.logbook.tags(lo, hi)
         view.update()
+        self.receiver_panel.survey_view.tags = self.logbook.tags()
+        self.receiver_panel.survey_view.update()
 
     def _tag_dialog(self, freq, label="", guess=None):
         if self.mode is None or self.mode.output != "receiver" or not freq:
@@ -1041,10 +1043,10 @@ class MainWindow(QMainWindow):
             return
         if on:
             sv = self.receiver_panel.survey_view
-            sv.db = None
-            sv._rows = None
-            self.mode.start_survey()
-            self.status.setText("Surveying the dongle's whole range: zoom in to sweep less, double-click to listen")
+            sv.tags = self.logbook.tags()
+            self.mode.start_survey(*(sv.sweep or (None, None)))      # what it swept last time, or everything
+            self.status.setText("Surveying: zoom and pan to look closer, Sweep what's shown for faster passes, "
+                                "double-click to listen")
         else:
             self.mode.stop_survey()
             self.status.setText("Back to the receiver")
@@ -1364,8 +1366,8 @@ class MainWindow(QMainWindow):
                 self.decode_area.audio(e.data["tail"], e.data["rate"], e.data["markers"])
             elif e.kind == "survey":
                 d = e.data
-                self.receiver_panel.survey_view.set_frame(d["lo"], d["hi"], d["db"], d["pos"], d["pass"], d["steps"],
-                                                          (d["min"], d["max"]))
+                self.receiver_panel.survey_view.set_frame(d["lo"], d["hi"], d["slices"], d["res"], d["pos"], d["pass"],
+                                                          d["steps"], (d["min"], d["max"]))
             elif e.kind == "identified":
                 self._show_guesses(e.data)
             elif e.kind == "spectrum":

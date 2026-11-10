@@ -6,10 +6,14 @@ relay can be a few hundred ms), then measures for the dwell time and keeps the m
 the slice (the edges are on the dongle's filter slopes). The dwell is cut into groups of a few
 spectra; each group is averaged (which smooths the noise) and the slice keeps the strongest group,
 so a longer dwell catches signals that are only on now and then (pagers, DMR, data bursts). Only the range being looked at is
-swept, so zooming in makes passes faster; a range narrower than one slice isn't swept at
-all, the dongle just stays there.
+swept (the window's "Sweep what's shown"), so passes over a smaller range are faster; a range
+narrower than one slice isn't swept at all, the dongle just stays there.
+
+``Capture`` is the window's side: every slice measured, kept at the dongle's full detail across
+its whole tuning range, so zooming and panning show what's already been captured.
 """
 
+import collections
 import time
 
 import numpy as np
@@ -41,6 +45,7 @@ class Survey:
         self._best = None
         self._groups = 0
         self._buf = np.zeros(0, np.complex64)
+        self.done: collections.deque = collections.deque(maxlen=5000)   # (f_lo, dB) for the window
         self.pass_started = time.monotonic()
         self.last_pass = 0.0
         self.set_view(self.lo, self.hi)
@@ -102,6 +107,7 @@ class Survey:
         usable = db[keep:self.fft - keep].astype(np.float32)
         half = self.rate * USABLE / 2
         self.segments[self.current] = (now, self.current - half, self.current + half, usable)
+        self.done.append((self.current + (keep - self.fft / 2) * self.rate / self.fft, usable))
         if len(self.segments) > 4000:                 # forget the oldest, far away
             for k in sorted(self.segments, key=lambda c: self.segments[c][0])[:1000]:
                 del self.segments[k]
@@ -129,3 +135,97 @@ class Survey:
             have = np.isfinite(seg)
             out[have] = np.fmax(out[have], seg[have])
         return out
+
+
+class Capture:
+    """Everything the survey has measured, at full detail (one bin is rate / fft) over the tuner's
+    whole range: the latest level of every bin, and the waterfall's history as rows of what each
+    interval brought. Drawing any range rebuilds its waterfall from those rows, so zooming in
+    shows the detail that was captured, not a stretched picture."""
+
+    def __init__(self, min_hz, max_hz, res, max_rows=400):
+        self.min_hz, self.max_hz, self.res = float(min_hz), float(max_hz), float(res)
+        self.n = int((self.max_hz - self.min_hz) / self.res) + 1
+        self.latest = np.full(self.n, np.nan, np.float32)
+        self.base = self.latest.copy()              # the levels before the oldest row
+        self.rows: collections.deque = collections.deque()   # oldest first: [(start bin, dB float16), ...]
+        self.pending: list = []
+        self.max_rows = max_rows
+
+    def index(self, hz) -> int:
+        return int(np.clip(round((hz - self.min_hz) / self.res), 0, self.n))
+
+    def add(self, f_lo, db):
+        a = int(round((f_lo - self.min_hz) / self.res))
+        db = np.asarray(db, np.float32)
+        if a < 0:
+            db, a = db[-a:], 0
+        db = db[: max(self.n - a, 0)]
+        if not len(db):
+            return
+        self.latest[a:a + len(db)] = db
+        self.pending.append((a, db.astype(np.float16)))
+
+    def push_row(self):
+        """Start a new waterfall row (what was measured since the last one)."""
+        self.rows.append(self.pending)
+        self.pending = []
+        while len(self.rows) > self.max_rows:
+            for a, d in self.rows.popleft():
+                self.base[a:a + len(d)] = d
+
+    def columns(self, lo, hi, width):
+        """The first bin of each of `width` columns across [lo, hi) (repeated when zoomed in past one bin)."""
+        i0 = self.index(lo)
+        i1 = max(self.index(hi), i0 + 1)
+        return np.minimum(np.floor(np.linspace(i0, i1, width, endpoint=False)).astype(np.int64), self.n - 1), i1
+
+    @staticmethod
+    def _reduce(levels, starts):
+        """The strongest bin of each column (NaN where nothing's been measured)."""
+        with np.errstate(invalid="ignore"):
+            return np.fmax.reduceat(levels, starts)
+
+    def spectrum(self, lo, hi, width) -> np.ndarray:
+        cols, i1 = self.columns(lo, hi, width)
+        return self._reduce(self.latest[cols[0]:i1], cols - cols[0])
+
+    def waterfall(self, lo, hi, width) -> "View":
+        return Capture.View(self, lo, hi, width)
+
+    class View:
+        """One range's waterfall, newest row first, kept up to date row by row."""
+
+        def __init__(self, cap, lo, hi, width):
+            self.cap = cap
+            self.cols, i1 = cap.columns(lo, hi, width)
+            self.i0, self.i1 = int(self.cols[0]), i1
+            self.rel = self.cols - self.i0
+            self.state = cap.base[self.i0:self.i1].copy()
+            self.line = Capture._reduce(self.state, self.rel)
+            self.image = np.full((cap.max_rows, width), np.nan, np.float32)
+            n = len(cap.rows)
+            for k, row in enumerate(cap.rows):            # oldest first, into place (newest at the top)
+                self._apply(row)
+                self.image[n - 1 - k] = self.line
+            self.count = n
+
+        def add_row(self, row):
+            self._apply(row)
+            self.image = np.roll(self.image, 1, axis=0)
+            self.image[0] = self.line
+            self.count = min(self.count + 1, len(self.image))
+
+        def _apply(self, row):
+            for a, d in row:
+                b = a + len(d)
+                lo, hi = max(a, self.i0), min(b, self.i1)
+                if lo >= hi:
+                    continue
+                self.state[lo - self.i0:hi - self.i0] = d[lo - a:hi - a]
+                # The columns those bins fall in.
+                pa = max(int(np.searchsorted(self.cols, lo, "right")) - 1, 0)
+                pa = int(np.searchsorted(self.cols, self.cols[pa], "left"))
+                pb = int(np.searchsorted(self.cols, hi - 1, "right"))
+                end = self.rel[pb] if pb < len(self.rel) else len(self.state)
+                self.line[pa:pb] = Capture._reduce(self.state[self.rel[pa]:end], self.rel[pa:pb] - self.rel[pa])

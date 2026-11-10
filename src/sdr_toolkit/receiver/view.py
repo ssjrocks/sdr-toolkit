@@ -382,14 +382,26 @@ class ReceiverPanel(QWidget):
         row2.addWidget(self.dwell_label)
         row2.addWidget(self.dwell)
         self._show_dwell(0)
-        self.dwell_label.hide()
-        self.dwell.hide()
+        self.sweep_shown_btn = QToolButton()
+        self.sweep_shown_btn.setText("Sweep what's shown")
+        self.sweep_shown_btn.setToolTip("Survey only the range on screen: passes get faster. Zooming and panning "
+                                        "don't change the sweep, they look at what's been captured.")
+        self.sweep_all_btn = QToolButton()
+        self.sweep_all_btn.setText("Sweep all")
+        self.sweep_all_btn.setToolTip("Survey the dongle's whole range again")
+        row2.addWidget(self.sweep_shown_btn)
+        row2.addWidget(self.sweep_all_btn)
+        self._survey_controls = (self.dwell_label, self.dwell, self.sweep_shown_btn, self.sweep_all_btn)
+        for wdg in self._survey_controls:
+            wdg.hide()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addLayout(row)
         lay.addLayout(row2)
         from PyQt6.QtWidgets import QStackedWidget
         self.survey_view = SurveyView()
+        self.sweep_shown_btn.clicked.connect(self.survey_view.sweep_shown)
+        self.sweep_all_btn.clicked.connect(self.survey_view.sweep_all)
         self.pages = QStackedWidget()
         self.pages.addWidget(self.view)
         self.pages.addWidget(self.survey_view)
@@ -410,8 +422,8 @@ class ReceiverPanel(QWidget):
 
     def _survey_toggled(self, on):
         self.pages.setCurrentWidget(self.survey_view if on else self.view)
-        self.dwell_label.setVisible(on)
-        self.dwell.setVisible(on)
+        for wdg in self._survey_controls:
+            wdg.setVisible(on)
         self.survey.emit(on)
 
     def _show_dwell(self, ms):
@@ -463,57 +475,74 @@ class ReceiverPanel(QWidget):
 
 
 class SurveyView(QWidget):
-    """The survey: a stitched spectrum of a wide range over a waterfall of its passes."""
+    """The survey: everything it has captured, as a spectrum over a waterfall. Zooming and panning
+    look at what's been captured (at full detail); the sweep changes only when asked."""
 
-    view_changed = pyqtSignal(float, float)     # the range shown (Hz): sweep only that
+    view_changed = pyqtSignal(float, float)     # sweep this range (Hz)
     listen = pyqtSignal(float)                  # double-click: go back to the receiver, tuned there
 
     def __init__(self):
         super().__init__()
         self.setMinimumHeight(280)
         self.setMouseTracking(True)
-        self.setToolTip("Wheel: zoom (sweeps only what's on screen). Drag: pan. Double-click: listen there.")
+        self.setToolTip("Wheel: zoom. Drag: pan. Double-click: listen there. "
+                        "Sweep what's shown: survey only this range, for faster passes.")
         self.cmap = _colour_map()
+        self.cap = None                             # survey.Capture: everything measured
+        self._wf = None                             # its waterfall for the range on screen
         self.lo, self.hi = 24e6, 1766e6            # what's on screen
         self.full = (24e6, 1766e6)
-        self.db = None
+        self.sweep = None                           # the range being swept
         self.pos = None
         self.pass_time = 0.0
         self.steps = 0
+        self.tags: list[dict] = []
         self.lo_db, self.hi_db = -100.0, -30.0
-        self._rows = None
         self._last_row = 0.0
         self._drag = None
         self._hover = None
-        from PyQt6.QtCore import QTimer
-        self._debounce = QTimer(self)
-        self._debounce.setSingleShot(True)
-        self._debounce.setInterval(350)
-        self._debounce.timeout.connect(lambda: self.view_changed.emit(self.lo, self.hi))
 
-    def set_frame(self, lo, hi, db, pos, pass_time, steps, full):
+    def set_frame(self, lo, hi, slices, res, pos, pass_time, steps, full):
         import time as _time
-        if self.db is None:
+        from .survey import Capture
+        if self.cap is None or self.cap.res != res or (self.cap.min_hz, self.cap.max_hz) != tuple(full):
+            self.cap = Capture(full[0], full[1], res)
+            self._wf = None
             self.lo, self.hi = lo, hi
-        self.full = full
-        if abs(lo - self.lo) > 1 or abs(hi - self.hi) > 1:
-            return                                  # an old range's frame, from before a zoom or pan
-        self.db, self.pos, self.pass_time, self.steps = db, pos, pass_time, steps
-        have = db[np.isfinite(db)]
+        self.full = tuple(full)
+        self.sweep = (lo, hi)
+        self.pos, self.pass_time, self.steps = pos, pass_time, steps
+        for f_lo, db in slices:
+            self.cap.add(f_lo, db)
+        now = _time.monotonic()
+        if now - self._last_row >= 0.5:
+            self._last_row = now
+            self.cap.push_row()
+            if self._wf is not None:
+                self._wf.add_row(self.cap.rows[-1])
+        line = self.cap.spectrum(self.lo, self.hi, max(self.width(), 2))
+        have = line[np.isfinite(line)]
         if len(have):
             floor, top = float(np.percentile(have, 20)), float(np.max(have))
             self.lo_db += 0.2 * ((floor - 10) - self.lo_db)
             self.hi_db += 0.2 * (max(top + 5, floor + 30) - self.hi_db)
-        if self._rows is None or self._rows.shape[1] != len(db):
-            self._rows = np.zeros((ROWS, len(db)), np.uint8)
-        now = _time.monotonic()
-        if now - self._last_row >= 0.5:
-            self._last_row = now
-            idx = np.clip((np.nan_to_num(db, nan=self.lo_db) - self.lo_db) / max(self.hi_db - self.lo_db, 1) * 255,
-                          0, 255).astype(np.uint8)
-            self._rows = np.roll(self._rows, 1, axis=0)
-            self._rows[0] = idx
         self.update()
+
+    @property
+    def db(self):
+        """The spectrum on screen (None before anything's been captured)."""
+        return None if self.cap is None else self.cap.spectrum(self.lo, self.hi, max(self.width(), 2))
+
+    def clear(self):
+        self.cap = None
+        self._wf = None
+        self.update()
+
+    def sweep_shown(self):
+        self.view_changed.emit(self.lo, self.hi)
+
+    def sweep_all(self):
+        self.view_changed.emit(*self.full)
 
     def x_of(self, hz):
         return (hz - self.lo) / (self.hi - self.lo) * self.width()
@@ -521,74 +550,100 @@ class SurveyView(QWidget):
     def hz_of(self, x):
         return self.lo + x / max(self.width(), 1) * (self.hi - self.lo)
 
+    def _waterfall(self, w):
+        wf = self._wf
+        if wf is None or wf.key != (self.lo, self.hi, w):
+            wf = self._wf = self.cap.waterfall(self.lo, self.hi, w)
+            wf.key = (self.lo, self.hi, w)
+        return wf
+
     def paintEvent(self, _ev):
         p = QPainter(self)
         w, h = self.width(), self.height()
         top = int(h * 0.4)
         p.fillRect(self.rect(), QColor(10, 12, 20))
-        head = (f"Survey {self.lo / 1e6:.1f}–{self.hi / 1e6:.1f} MHz · {self.steps} hop{'s' if self.steps != 1 else ''}"
-                + (f" · a pass takes {self.pass_time:.1f} s" if self.pass_time else "") + " · double-click to listen")
+        if self.sweep:
+            head = (f"Sweeping {self.sweep[0] / 1e6:.1f}–{self.sweep[1] / 1e6:.1f} MHz · {self.steps} "
+                    f"hop{'s' if self.steps != 1 else ''}" + (f", {self.pass_time:.1f} s a pass" if self.pass_time else "")
+                    + f" · showing {self.lo / 1e6:.3f}–{self.hi / 1e6:.3f} MHz · double-click to listen")
+        else:
+            head = "Survey"
         p.setPen(QColor(200, 210, 230))
         p.drawText(QPointF(6, 14), head)
-        if self.db is None:
+        if self.cap is None:
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Surveying…")
             p.end()
             return
-        if self._rows is not None:
-            img = np.ascontiguousarray(self.cmap[self._rows])
+        wf = self._waterfall(w)
+        if wf.count:
+            rows = wf.image[:wf.count]
+            idx = np.clip((np.nan_to_num(rows, nan=-1e9) - self.lo_db) / max(self.hi_db - self.lo_db, 1) * 255,
+                          0, 255).astype(np.uint8)
+            img = np.ascontiguousarray(self.cmap[idx])
             qimg = QImage(img.data, img.shape[1], img.shape[0], img.shape[1] * 4, QImage.Format.Format_RGB32)
-            p.drawImage(QRectF(0, top, w, h - top), qimg)
+            p.drawImage(QRectF(0, top, w, (h - top) * wf.count / len(wf.image)), qimg)
+        # The range being swept: a band under the heading.
+        if self.sweep:
+            x0, x1 = max(self.x_of(self.sweep[0]), 0), min(self.x_of(self.sweep[1]), w)
+            if x1 > x0:
+                p.fillRect(QRectF(x0, 18, max(x1 - x0, 2), 3), QColor(255, 200, 60, 160))
         p.setPen(QPen(QColor(60, 70, 90), 1))
         step = SpectrumView._grid_step(self.hi - self.lo)
         f = np.ceil(self.lo / step) * step
         while f < self.hi:
             x = self.x_of(f)
-            p.drawLine(QPointF(x, 20), QPointF(x, top))
+            p.drawLine(QPointF(x, 22), QPointF(x, top))
             p.setPen(QColor(150, 160, 180))
             p.drawText(QPointF(x + 3, top - 4), fmt_freq(f))
             p.setPen(QPen(QColor(60, 70, 90), 1))
             f += step
-        xs = np.linspace(0, w, len(self.db))
+        line = self.cap.spectrum(self.lo, self.hi, w)
         p.setPen(QPen(QColor(120, 220, 255), 1))
-        pts, run = [], []
-        for x, v in zip(xs, self.db):
+        run = []
+        for x, v in enumerate(line):
             if np.isfinite(v):
-                run.append(QPointF(x, top - (v - self.lo_db) / max(self.hi_db - self.lo_db, 1) * (top - 24)))
+                run.append(QPointF(x, top - (v - self.lo_db) / max(self.hi_db - self.lo_db, 1) * (top - 26)))
             elif run:
-                pts.append(run)
+                p.drawPolyline(QPolygonF(run))
                 run = []
         if run:
-            pts.append(run)
-        for r in pts:
-            p.drawPolyline(QPolygonF(r))
-        if self.pos is not None:
+            p.drawPolyline(QPolygonF(run))
+        for t in self.tags:
+            if self.lo <= t["freq"] <= self.hi:
+                xt = self.x_of(t["freq"])
+                pen = QPen(QColor(255, 210, 60, 200), 1)
+                pen.setStyle(Qt.PenStyle.DashLine)
+                p.setPen(pen)
+                p.drawLine(QPointF(xt, 22), QPointF(xt, top))
+                r = p.fontMetrics().boundingRect(t["label"])
+                box = QRectF(xt + 2, 24, r.width() + 8, r.height() + 2)
+                p.fillRect(box, QColor(255, 210, 60, 220))
+                p.setPen(QColor(20, 20, 20))
+                p.drawText(box, Qt.AlignmentFlag.AlignCenter, t["label"])
+        if self.pos is not None and self.lo <= self.pos <= self.hi:
             xp = self.x_of(self.pos)
             p.setPen(QPen(QColor(255, 200, 60, 160), 2))
-            p.drawLine(QPointF(xp, 20), QPointF(xp, top))
+            p.drawLine(QPointF(xp, 22), QPointF(xp, top))
         if self._hover is not None:
             p.setPen(QColor(220, 220, 220))
-            p.drawText(QPointF(min(self._hover.x() + 8, w - 110), max(self._hover.y() - 6, 30)),
-                       f"{self.hz_of(self._hover.x()) / 1e6:.3f} MHz")
+            p.drawText(QPointF(min(self._hover.x() + 8, w - 110), max(self._hover.y() - 6, 34)),
+                       f"{self.hz_of(self._hover.x()) / 1e6:.4f} MHz")
         p.end()
 
-    def _moved(self):
+    def _clamp(self, span):
         lo_min, hi_max = self.full
-        span = min(self.hi - self.lo, hi_max - lo_min)
+        span = float(np.clip(span, 50e3, hi_max - lo_min))
         self.lo = float(np.clip(self.lo, lo_min, hi_max - span))
         self.hi = self.lo + span
-        self._rows = None                       # a new range: start its waterfall afresh
-        self.db = None if self.db is None else np.full_like(self.db, np.nan)
         self.update()
-        self._debounce.start()
 
     def wheelEvent(self, ev):
         at = self.hz_of(ev.position().x())
         frac = ev.position().x() / max(self.width(), 1)
-        span = (self.hi - self.lo) * (0.7 if ev.angleDelta().y() > 0 else 1.4)
-        span = float(np.clip(span, 1e6, self.full[1] - self.full[0]))
+        span = float(np.clip((self.hi - self.lo) * (0.7 if ev.angleDelta().y() > 0 else 1.4), 50e3,
+                             self.full[1] - self.full[0]))
         self.lo = at - frac * span
-        self.hi = self.lo + span
-        self._moved()
+        self._clamp(span)
 
     def mousePressEvent(self, ev):
         self._drag = (ev.position().x(), self.lo)
@@ -599,15 +654,10 @@ class SurveyView(QWidget):
             x0, lo0 = self._drag
             span = self.hi - self.lo
             self.lo = lo0 - (ev.position().x() - x0) / max(self.width(), 1) * span
-            self.hi = self.lo + span
-            lo_min, hi_max = self.full
-            self.lo = float(np.clip(self.lo, lo_min, hi_max - span))
-            self.hi = self.lo + span
+            self._clamp(span)
         self.update()
 
     def mouseReleaseEvent(self, ev):
-        if self._drag is not None and abs(ev.position().x() - self._drag[0]) > 3:
-            self._moved()
         self._drag = None
 
     def mouseDoubleClickEvent(self, ev):

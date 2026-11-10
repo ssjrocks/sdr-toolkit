@@ -131,15 +131,17 @@ audio, with their own audio waterfall and output below the spectrum. **Tag…** 
 spectrum) saves a frequency with a label, demodulator and decoder in the logbook; tags show on the
 spectrum and the survey, and right-clicking one offers to listen with its settings and decoder.
 
-**Survey** sweeps the dongle over its whole tuning range (or the part you're looking at) and
-stitches the slices into one zoomable spectrum and waterfall. After each retune it throws away the
-samples of a settle time (150 ms by default, 250 ms more through a relay, where samples from the
-old frequency are still on their way), then measures for the **Dwell** time (the slider beside Survey) and keeps the middle 80% of the slice.
+**Survey** sweeps the dongle over its whole tuning range and stitches the slices into one spectrum
+and waterfall. After each retune it throws away the samples of a settle time (150 ms by default,
+250 ms more through a relay, where samples from the old frequency are still on their way), then
+measures for the **Dwell** time (the slider beside Survey) and keeps the middle 80% of the slice.
 The dwell keeps the strongest moment of the slice, so a longer one catches signals that are only on
-now and then (pagers, DMR, data bursts), at the cost of slower passes.
-Only the range on screen is swept, so zooming in makes passes faster; zoomed in narrower than one
-slice, the dongle just stays there. A pass over 80-180 MHz through a relay takes about 20 s.
-Double-click to listen there.
+now and then (pagers, DMR, data bursts), at the cost of slower passes. Everything captured is kept
+at the dongle's full detail (about 2.3 kHz at 2.4 MS/s) while the window is open: zoom and pan to
+look closer at it, waterfall included, without the sweep changing. **Sweep what's shown** then
+surveys only the range on screen, so passes get faster (narrower than one slice, the dongle just
+stays there); **Sweep all** goes back to the whole range. A pass over 80-180 MHz through a relay
+takes about 20 s. Double-click to listen there.
 
 **GPS position fix** works out where you are from the GPS satellites' own signals, with the
 RTL-SDR on 1575.42 MHz, and fills in "Your location" for the other modes (averaged over the

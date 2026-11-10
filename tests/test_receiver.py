@@ -500,6 +500,36 @@ def test_survey_dwell_catches_a_burst():
             assert 0.1 <= used / RATE < 0.12
 
 
+def test_capture_keeps_full_detail_and_history():
+    res = RATE / 1024
+    cap = SV.Capture(24e6, 1766e6, res, max_rows=5)
+    db = np.full(820, -90, np.float32)
+    db[400], db[404] = -20, -25                       # two signals 4 bins (about 9 kHz) apart
+    f_lo = 100e6
+    cap.add(f_lo, db)
+    cap.push_row()
+    f1, f2 = f_lo + 400 * res, f_lo + 404 * res
+    wide = cap.spectrum(24e6, 1766e6, 1000)           # 1.7 MHz a column: one blip
+    assert np.nanmax(wide) == -20 and np.sum(np.nan_to_num(wide, nan=-200) > -50) == 1
+    close = cap.spectrum(f1 - 20e3, f1 + 30e3, 500)  # zoomed in: both, apart, at their frequencies
+    xs = np.linspace(f1 - 20e3, f1 + 30e3, 500, endpoint=False)
+    loud = xs[close > -50]
+    assert abs(loud.min() - f1) < res and abs(loud.max() - f2) < 2 * res and np.any(close[(xs > f1 + res) & (xs < f2 - res)] < -80)
+    # The waterfall of any range is rebuilt from the rows: zooming in after the fact shows it.
+    wf = cap.waterfall(f1 - 20e3, f1 + 30e3, 500)
+    assert wf.count == 1 and np.nanmax(wf.image[0]) == -20
+    # A newer measurement replaces the old one (no stale peaks); rows past the limit fold into the base.
+    db2 = np.full(820, -90, np.float32)
+    for _ in range(7):
+        cap.add(f_lo, db2)
+        cap.push_row()
+    assert len(cap.rows) == 5 and np.nanmax(cap.spectrum(f1 - 20e3, f1 + 30e3, 500)) == -90
+    wf = cap.waterfall(f1 - 20e3, f1 + 30e3, 500)
+    assert wf.count == 5 and np.nanmax(wf.image[:5]) == -90
+    wf.add_row([(cap.index(f1), np.array([-10], np.float16))])
+    assert wf.count == 5 and np.nanmax(wf.image[0]) == -10 and np.nanmax(wf.image[1]) == -90
+
+
 def test_receiver_surveys_with_retune_commands(monkeypatch, tmp_path):
     from sdr_toolkit.receiver.source import SET_FREQ
     rec = fm_station(tmp_path / "fm.cu8", seconds=0.5)
@@ -508,6 +538,7 @@ def test_receiver_surveys_with_retune_commands(monkeypatch, tmp_path):
         m.start_survey(90e6, 110e6)
         ev = poll_for(m, 3.0)
         frames = [e.data for e in ev if e.kind == "survey"]
+        assert sum(len(f["slices"]) for f in frames) > 3 and frames[-1]["res"] == RATE / 1024
         assert frames and frames[-1]["lo"] == 90e6 and frames[-1]["steps"] == int(np.ceil(20e6 / (RATE * 0.8)))
         tuned = {v for c, v in m.src.commands if c == SET_FREQ}
         assert len(tuned) > 3                         # it hopped

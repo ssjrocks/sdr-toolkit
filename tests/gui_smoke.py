@@ -421,6 +421,20 @@ for _ in range(40):
     time.sleep(0.05)
 results["survey"] = (rp.pages.currentWidget() is rp.survey_view and rp.survey_view.db is not None
                      and win.mode.survey is not None)
+# Zooming keeps what was captured and doesn't change the sweep; the button does.
+sv = rp.survey_view
+cap = sv.cap
+sweep = (win.mode.survey.lo, win.mode.survey.hi)
+sv.lo, sv.hi = 99e6, 101e6
+sv._clamp(2e6)
+sv.repaint()
+results["survey_zoom"] = sv.cap is cap and sv._wf is not None and sv._wf.count > 0 and (
+    win.mode.survey.lo, win.mode.survey.hi) == sweep
+rp.sweep_shown_btn.click()
+for _ in range(20):
+    app.processEvents()
+    time.sleep(0.05)
+results["survey_sweep_shown"] = (win.mode.survey.lo, win.mode.survey.hi) == (99e6, 101e6) and sv.cap is cap
 results["dwell"] = (win.mode.values["dwell_ms"] == 50 and win.mode.survey.dwell == 0.05
                    and rp.dwell_label.text() == "Dwell 50 ms")
 if shots:

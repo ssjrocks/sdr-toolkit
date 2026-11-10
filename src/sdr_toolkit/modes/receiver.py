@@ -436,7 +436,8 @@ class ReceiverMode(Mode):
         sv = self.survey
         if sv is not None and time.time() - self._survey_frame >= 0.25:
             self._survey_frame = time.time()
-            events.append(Event("survey", data={"lo": sv.lo, "hi": sv.hi, "db": sv.stitched(2048),
+            slices = [sv.done.popleft() for _ in range(len(sv.done))]
+            events.append(Event("survey", data={"lo": sv.lo, "hi": sv.hi, "slices": slices, "res": sv.rate / sv.fft,
                                                 "pos": sv.current, "pass": sv.last_pass,
                                                 "steps": len(sv.centers), "min": sv.min_hz, "max": sv.max_hz}))
         found, self._identified = self._identified, None
