@@ -1139,7 +1139,8 @@ class MainWindow(QMainWindow):
         if self.coverage is not None and now - self._coverage_drawn >= 5.0:
             self._coverage_drawn = now
             self.map.set_rings(self.coverage.outlines())
-            self.map.rings_btn.setToolTip("Range rings: " + (self.coverage.summary() or "nothing yet") +
+            self.map.rings_btn.setToolTip("Range rings" + getattr(self, "_coverage_source", "") + ": " +
+                                          (self.coverage.summary() or "nothing yet") +
                                           ". Red dashed: furthest heard; green: reliable reception.")
             if now - self._coverage_saved >= 60.0:
                 self._save_coverage()
@@ -1147,14 +1148,18 @@ class MainWindow(QMainWindow):
             self.refresh_details()
 
     def _setup_coverage(self):
-        """ADS-B range rings: only from the live dongle, around your location."""
+        """ADS-B range rings around your location: from this PC's dongle, or a relay on this network
+        (its own rings: another antenna). Not a relay elsewhere: the rings would be in the wrong place."""
         from .modes.radio import home
         self.coverage = None
         here = home(self.mode.values) if self.mode.id == "adsb" else None
-        if here is None or not self.mode.live() or self.mode.bridge():      # not a relay's dongle elsewhere
+        b = self.mode.bridge() if here is not None else None
+        if here is None or not self.mode.live() or (b is not None and not b.on_lan):
             self.map.set_rings(None)
             return
-        data = self.logbook.load_coverage("adsb", coverage.site_key(here))
+        self._coverage_site = coverage.site_key(here) + (f" relay:{b.name}" if b is not None else "")
+        self._coverage_source = f" (the relay {b.name})" if b is not None else ""
+        data = self.logbook.load_coverage("adsb", self._coverage_site)
         self.coverage = coverage.Coverage(here, data)
         self._coverage_saved = time.time()
         self.map.set_rings(self.coverage.outlines())
@@ -1162,7 +1167,8 @@ class MainWindow(QMainWindow):
     def _save_coverage(self):
         if self.coverage is not None:
             self._coverage_saved = time.time()
-            self.logbook.save_coverage("adsb", coverage.site_key(self.coverage.home), self.coverage.data())
+            site = getattr(self, "_coverage_site", None) or coverage.site_key(self.coverage.home)
+            self.logbook.save_coverage("adsb", site, self.coverage.data())
 
     def show_logbook(self):
         if getattr(self, "_logbook_window", None) is None:

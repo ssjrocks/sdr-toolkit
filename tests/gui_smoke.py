@@ -349,6 +349,15 @@ if relay_src.is_dir():
     results["relay_update_offer"] = act.isEnabled() and "Update the relay to 0.2.0" in act.text()
     win._relay_latest("0.1.2")
     results["relay_update_offer"] = results["relay_update_offer"] and not act.isEnabled() and "latest" in act.text()
+    # Range rings over a relay on this network: its own, apart from this PC's dongle's.
+    win.tree.setCurrentItem(win._items["adsb"])
+    app.processEvents()
+    win.mode.values.update(input="rtl", lat="-33.87", lon="151.21")      # nothing is started
+    win._setup_coverage()
+    results["relay_rings"] = (win.coverage is not None and win._coverage_site.endswith(" relay:Garage relay")
+                              and "relay Garage relay" in win._coverage_source)
+    win.coverage = None
+    win.mode.values["input"] = "file"
     win.disconnect_relay()
     results["relay"] = results["relay"] and win.relay_btn.text() == "Connect relay…" and win.relay_btn.menu() is None
     dlg.close()

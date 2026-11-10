@@ -90,7 +90,8 @@ those sites.
 **ADS-B range rings** show how far your station hears in each direction: the furthest position
 heard (red, dashed) and how far reception is reliable (green: at least 80% of an aircraft's
 position updates still arrive within 10 s of the one before). They build up over days, from the
-live dongle only, and are kept per location in the logbook. **Range** turns them off.
+live dongle only (this PC's, or a relay on this network, each with its own rings), and are kept
+per location in the logbook. **Range** turns them off.
 
 **A dongle on another PC:** **Connect relay…** (next to Start) uses an RTL-SDR plugged into another
 Windows or Linux PC running [SDR Tools Relay](https://github.com/ssjrocks/sdr-tools-relay). **On this
@@ -98,8 +99,10 @@ network** scans the LAN for relays, **Internet** shows the relays listed on ssjr
 address** takes a host name or IP (a Tailscale name works too). While connected, every RTL-SDR mode
 on "RTL-SDR" input uses the relay's dongle: rtl_433, DSD-FME and GNSS-SDR talk rtl_tcp to a local
 bridge, and readsb, LoRa and AIS read its samples on stdin. The relay applies its own frequency
-correction, so ADS-B's correction button and range rings are off while it's in use, and distances
-are from your location, not the relay's. A connection over the internet needs the bandwidth of the
+correction, so ADS-B's correction button is off while it's in use. Distances are from your
+location, not the relay's, and range rings are drawn for a relay on this network (a private LAN
+address, so at your location), kept apart from this PC's dongle's (another antenna); not for one
+reached over the internet or Tailscale, which could be anywhere. A connection over the internet needs the bandwidth of the
 sample rate: about 38 Mbit/s for ADS-B, 4 for AIS and ISM, 16 for LoRa. While connected, the relay
 button's menu says whether the relay is up to date and offers **Update the relay to …** when a
 newer SDR Tools Relay is out (the relay must have a password, and relays from 0.1.2 on).

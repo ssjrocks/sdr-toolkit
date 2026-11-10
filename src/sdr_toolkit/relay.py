@@ -151,6 +151,16 @@ def directory(url=DIRECTORY, timeout=10) -> list[dict]:
         return json.loads(r.read()).get("relays", [])
 
 
+def is_lan(host) -> bool:
+    try:
+        ip = ipaddress.ip_address(socket.gethostbyname(host))
+    except (OSError, ValueError):
+        return False
+    if ip in ipaddress.ip_network("100.64.0.0/10"):       # Tailscale / carrier-grade NAT
+        return False
+    return ip.is_private or ip.is_loopback
+
+
 # ---- the bridge ----------------------------------------------------------
 
 class Bridge:
@@ -169,6 +179,12 @@ class Bridge:
         self._sock = None
         self._halt = threading.Event()
         self._active: list[socket.socket] = []
+
+    @property
+    def on_lan(self) -> bool:
+        """The relay is on this network (a private LAN address, or this PC), so at your location.
+        Tailscale (100.64.0.0/10) and internet addresses could be anywhere."""
+        return is_lan(self.host)
 
     def start(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

@@ -295,3 +295,10 @@ def test_relay_dongle_check(make_relay, tmp_path):
     assert "diagnose" in b.features
     with pytest.raises(relay.RelayError, match="wrong password"):
         relay.diagnose("127.0.0.1", r.config.port, "nope")
+
+
+def test_which_relays_count_as_this_network():
+    assert relay.is_lan("192.168.1.243") and relay.is_lan("10.0.0.5") and relay.is_lan("127.0.0.1")
+    assert relay.is_lan("localhost")
+    assert not relay.is_lan("100.66.93.15")          # Tailscale: could be anywhere
+    assert not relay.is_lan("130.185.249.109") and not relay.is_lan("no-such-host.invalid")
