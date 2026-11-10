@@ -13,6 +13,9 @@ import numpy as np
 
 from ..receiver import dsp
 from ..receiver.audio import AudioOut
+from ..receiver import identify
+from ..receiver.decode import DECODERS, DecoderHost
+from ..receiver.survey import Survey
 from ..receiver.source import (SET_AGC, SET_BIAS_TEE, SET_DIRECT_SAMPLING, SET_FREQ, SET_GAIN, SET_GAIN_MODE,
                                SET_OFFSET_TUNING, SET_PPM, FileSource, LocalRtlTcp, RtlTcp, SourceError)
 from .base import Event, Mode, Setting, Tuning
@@ -20,8 +23,15 @@ from .radio import RADIO_SETTINGS
 
 log = logging.getLogger(__name__)
 FRAME = 0.04                    # s between spectrum lines (25 a second)
+RECENT = 0.5                    # s of samples kept for identifying signals
+AUTO_ID = 3.0                   # s between automatic identifications of the tuned signal
 
 _radio = tuple(s for s in RADIO_SETTINGS if s.key in ("input", "file", "device"))
+DECODER_NAMES = {"morse": "Morse / CW", "rtty": "RTTY", "psk": "PSK31 / 63 / 125", "navtex": "NAVTEX",
+                 "ft8": "FT8", "ft4": "FT4", "sstv": "SSTV", "wefax": "Weather fax", "aprs": "APRS / packet",
+                 "pager": "Pagers (POCSAG / FLEX)", "tones": "DTMF / CTCSS / DCS",
+                 "dmr": "DMR / P25 / digital voice (DSD-FME)"}
+DECODER_CHOICES = tuple((k, DECODER_NAMES[k]) for k in DECODERS)
 
 
 class ReceiverMode(Mode):
@@ -80,6 +90,14 @@ class ReceiverMode(Mode):
         Setting("bias_tee", "Bias tee (antenna power)", False, "bool",
                 help="Puts 4.5 V on the antenna socket for an active antenna or LNA. Only on dongles that "
                      "have one (RTL-SDR Blog V3/V4); never with a DC-shorted antenna."),
+        Setting("decoder", "Decode with", "", "choice", choices=(("", "Nothing (just listen)"),) + DECODER_CHOICES,
+                help="Run one of the audio decoders on what you're hearing; choosing one also sets the mode and "
+                     "bandwidth it wants. Its settings: Decoder settings… above the decoded output."),
+        Setting("auto_id", "Identify automatically", True, "bool",
+                help="Every few seconds, guess what the signal you're tuned to is (shown above the waterfall)."),
+        Setting("settle_ms", "Survey settle time", 150, "int", 20, 2000, 10, suffix=" ms",
+                help="After each hop of the survey, samples are thrown away for this long while the tuner "
+                     "settles. Through a relay, 250 ms more is added for samples still on their way."),
         Setting("fft", "FFT size", 4096, "choice",
                 choices=((1024, "1024"), (2048, "2048"), (4096, "4096"), (8192, "8192"), (16384, "16384")),
                 help="More bins: finer detail, slower to react."),
@@ -109,6 +127,18 @@ class ReceiverMode(Mode):
         self._halt = threading.Event()
         self._last_activity = 0.0
         self._warned = ""
+        self.decoder: DecoderHost | None = None
+        self._decoder_request = None
+        self._decoder_events: list = []
+        self._decoder_note = ""
+        self._recent: list = []
+        self._recent_n = 0
+        self._identify_busy = False
+        self._last_auto = 0.0
+        self._identified = None
+        self.survey: Survey | None = None
+        self._survey_request = None
+        self._survey_frame = 0.0
         self.center = self._centre_for(float(v["freq_mhz"]) * 1e6, int(v["rate"]))
         from .. import relay
         bridge = relay.current() if v["input"] == "rtl" else None
@@ -211,6 +241,8 @@ class ReceiverMode(Mode):
                 time.sleep(0.01)
                 continue
             x = dsp.cu8(data)
+            if self._survey_step(x):
+                continue
             with self._lock:
                 demod, spectrum = self.demod, self.spectrum
                 v = self.values
@@ -221,6 +253,11 @@ class ReceiverMode(Mode):
                 continue
             if not v["mute"] and v["demod"] != "RAW":
                 self.audio.play(audio, float(v["volume"]) / 100)
+            self._decoder_step(audio)
+            self._recent.append(x)
+            self._recent_n += len(x)
+            while self._recent_n - len(self._recent[0]) > int(v["rate"]) * RECENT and len(self._recent) > 1:
+                self._recent_n -= len(self._recent.pop(0))
             n = spectrum.size                # the latest n samples, for the next spectrum line
             tail = x[-n:] if len(x) >= n or tail is None else np.concatenate([tail, x])[-n:]
             now = time.monotonic()
@@ -230,8 +267,151 @@ class ReceiverMode(Mode):
                 if db is not None:
                     self._frame = (db.copy(), self.center, int(v["rate"]), demod.level, demod.open)
 
+    # ---- identifying the tuned signal ---------------------------------------
+
+    def identify(self, auto=False):
+        """Measure the tuned signal and guess what it is (in the background); the answer comes as an
+        "identified" event."""
+        if self._identify_busy or not self._recent:
+            return
+        x = np.concatenate(list(self._recent))
+        rate, tune, center = int(self.values["rate"]), float(self.values["freq_mhz"]) * 1e6, self.center
+        self._identify_busy = True
+
+        def run():
+            try:
+                m = identify.measure(x, rate, tune - center)
+                g = identify.guesses(m, tune / 1e6)
+                self._identified = {"freq": tune, "auto": auto, "measurement": m, "guesses": g}
+            except Exception:  # a guess failing mustn't touch the receiver
+                log.exception("identify")
+            finally:
+                self._identify_busy = False
+
+        threading.Thread(target=run, daemon=True, name="identify").start()
+
+    def set_center(self, hz):
+        """The grab bar: slide the dongle along the band. The tuned frequency stays if it's still in
+        view, otherwise it moves with the band. Returns the new tuned MHz if it moved."""
+        if getattr(self, "src", None) is None:
+            return None
+        rate = int(self.values["rate"])
+        self.center = float(hz)
+        if self.values["input"] != "file":
+            self.src.command(SET_FREQ, int(self.center))
+        tune = float(self.values["freq_mhz"]) * 1e6
+        moved = None
+        if abs(tune - self.center) > rate * 0.45:
+            moved = round((self.center + rate / 4) / 1e6, 6)
+            self.values["freq_mhz"] = moved
+            tune = moved * 1e6
+        with self._lock:
+            self.demod.retune(tune - self.center)
+        return moved
+
+    # ---- the survey (mega-spectrum) ------------------------------------------
+
+    def start_survey(self, lo=None, hi=None):
+        """Sweep [lo, hi] (default: the tuner's whole range). The audio and decoder pause meanwhile."""
+        self._survey_request = ("start", lo, hi)
+
+    def survey_view(self, lo, hi):
+        self._survey_request = ("view", lo, hi)
+
+    def stop_survey(self):
+        self._survey_request = ("stop", None, None)
+
+    def _survey_step(self, x) -> bool:
+        """Runs on the receiver's thread. True while surveying (the block was the survey's)."""
+        req, self._survey_request = self._survey_request, None
+        now = time.monotonic()
+        if req is not None:
+            what, lo, hi = req
+            if what == "start":
+                settle = float(self.values["settle_ms"]) / 1000 + (0.25 if self.via else 0)
+                self.survey = Survey(int(self.values["rate"]), self.src.tuner, settle)
+                if lo is not None:
+                    self.survey.set_view(lo, hi)
+                self._survey_tune(now)
+            elif what == "view" and self.survey is not None:
+                self.survey.set_view(lo, hi)
+                self._survey_tune(now)
+            elif what == "stop" and self.survey is not None:
+                self.survey = None
+                self.src.command(SET_FREQ, int(self.center))        # back to where the receiver was
+                return True
+        sv = self.survey
+        if sv is None:
+            return False
+        if sv.feed(x, now):
+            nxt = sv.next_center()
+            if nxt != sv.current:
+                self._survey_tune(now)
+            else:
+                sv.tuned(nxt, now - sv.settle)                         # staying put: no settling needed
+        return True
+
+    def _survey_tune(self, now):
+        sv = self.survey
+        c = sv.next_center()
+        self.src.command(SET_FREQ, int(c))
+        sv.tuned(c, now)
+
+    # ---- the decoder on the receiver's audio --------------------------------
+
+    def set_decoder(self, mode_id, values=None):
+        """Start (or stop, with "") a decoder on the audio; values are its saved settings. Runs on
+        the receiver's thread at its next block."""
+        self._decoder_request = (mode_id, dict(values or {}))
+
+    def decoder_call(self, fn):
+        if self.decoder is not None:
+            self.decoder.call(fn)
+
+    def _decoder_step(self, audio):
+        req, self._decoder_request = self._decoder_request, None
+        if req is not None:
+            if self.decoder is not None:
+                self._decoder_events += [(self.decoder.id, e) for e in self.decoder.stop()]
+                self.decoder = None
+            mode_id, values = req
+            if mode_id:
+                from . import MODES
+                M = next(m for m in MODES if m.id == mode_id)
+                vals = {s.key: s.default for s in M.settings}
+                vals.update(values)
+                if mode_id == "dmr":
+                    from .digital_voice import RECEIVER_AUDIO
+                    vals["input"] = RECEIVER_AUDIO
+                try:
+                    self.decoder = DecoderHost(M(), vals)
+                    self._decoder_note = f"Decoding with {M.name}"
+                except Exception as e:  # missing parts or a bad setting: say so, keep listening
+                    log.info("decoder %s: %s", mode_id, e)
+                    from .base import MissingParts
+                    parts = f" (needs {', '.join(e.parts)}: install it from the {M.name} page)" \
+                        if isinstance(e, MissingParts) else ""
+                    self._decoder_note = f"Couldn't start {M.name}: {e}{parts}"
+                    self._decoder_events.append((mode_id, Event("line", self._decoder_note, style="warn")))
+            else:
+                self._decoder_note = ""
+        if self.decoder is not None:
+            self.decoder.feed(audio, time.time())
+            if self.decoder.error:
+                self._decoder_events.append((self.decoder.id, Event("line", self.decoder.error, style="warn")))
+                self.decoder.stop()
+                self.decoder = None
+
     def poll(self):
         events = []
+        d = self.decoder
+        if d is not None:
+            evs, tail = d.drain()
+            events += [Event("decoded", data={"id": d.id, "event": e}) for e in evs]
+            events.append(Event("decoder_audio", data={"id": d.id, "tail": tail, "rate": d.rate,
+                                                       "markers": d.mode.markers()}))
+        pending, self._decoder_events = self._decoder_events, []
+        events += [Event("decoded", data={"id": i, "event": e}) for i, e in pending]
         frame, self._frame = self._frame, None
         if frame is not None:
             db, center, rate, level, open_ = frame
@@ -239,6 +419,19 @@ class ReceiverMode(Mode):
                                                   "open": open_, "tune": float(self.values["freq_mhz"]) * 1e6,
                                                   "mode": self.values["demod"],
                                                   "bandwidth": float(self.values["bandwidth"])}))
+            if (self.values.get("auto_id") and time.time() - self._last_auto > AUTO_ID
+                    and level > float(np.median(db)) + 6):
+                self._last_auto = time.time()
+                self.identify(auto=True)
+        sv = self.survey
+        if sv is not None and time.time() - self._survey_frame >= 0.25:
+            self._survey_frame = time.time()
+            events.append(Event("survey", data={"lo": sv.lo, "hi": sv.hi, "db": sv.stitched(2048),
+                                                "pos": sv.current, "pass": sv.last_pass,
+                                                "steps": len(sv.centers), "min": sv.min_hz, "max": sv.max_hz}))
+        found, self._identified = self._identified, None
+        if found is not None:
+            events.append(Event("identified", data=found))
         now = time.time()
         if now - self._last_activity >= 1.0:
             self._last_activity = now
@@ -260,7 +453,8 @@ class ReceiverMode(Mode):
         gain = "auto gain" if v["gain_mode"] == "auto" else f"{float(v['gain_db']):.1f} dB"
         where = f"the relay {self.via}" if self.via else ("a recording" if v["input"] == "file" else "this PC's dongle")
         text = (("" if v["input"] == "file" else f"{s.tuner_name} on ") + f"{where} · centre {self.center / 1e6:.4f} MHz · {int(v['rate']) / 1e6:g} MS/s · "
-                f"{gain}" + (f" · {s.dropped} blocks dropped (too slow)" if s.dropped else ""))
+                f"{gain}" + (f" · {s.dropped} blocks dropped (too slow)" if s.dropped else "")
+                + (f" · {self._decoder_note}" if self._decoder_note else ""))
         return [Event("activity", text)]
 
     def stop(self):
@@ -268,6 +462,9 @@ class ReceiverMode(Mode):
             self._halt.set()
         if getattr(self, "_thread", None) is not None:
             self._thread.join(2)
+        if getattr(self, "decoder", None) is not None:
+            self.decoder.stop()
+            self.decoder = None
         for part in ("audio", "src"):
             obj = getattr(self, part, None)
             if obj is not None:

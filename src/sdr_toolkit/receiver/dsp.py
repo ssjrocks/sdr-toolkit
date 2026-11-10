@@ -24,6 +24,8 @@ MODES = {
     "RAW": (48000, 10000, 48000, "no demodulation (spectrum only)"),
 }
 CW_TONE = 700.0
+AGC_RELEASE = 1.0          # s for the AGC's gain to come halfway back up after a signal
+AGC_MAX_GAIN = 2000.0
 
 # Tuner gain steps (tenths of a dB), as librtlsdr lists them for each tuner type.
 TUNER_GAINS = {
@@ -132,7 +134,7 @@ class Demodulator:
         self.squelch = squelch                # dBFS of the channel, None = open
         self.level = -120.0                   # channel power, dBFS
         self.open = True
-        self._agc = 0.1
+        self._peak = 0.0                    # the AGC's idea of the signal's peak level
         self.mixer = Mixer(self.rate, offset)
         self._build()
 
@@ -227,10 +229,12 @@ class Demodulator:
         return audio
 
     def _gain(self, x):
-        """Slow automatic gain for AM and SSB: keep the peaks near 0.5."""
+        """AGC for AM and SSB: follows the signal's peak, rising at once and falling slowly (half in
+        about a second), so pauses between words or Morse elements don't pump the noise up. The
+        gain is capped, so pure noise isn't raised to full volume either."""
         if not len(x):
             return x
-        peak = float(np.percentile(np.abs(x), 99)) + 1e-9
-        target = 0.5 / peak
-        self._agc = self._agc * 0.9 + target * 0.1 if target > self._agc else target * 0.5 + self._agc * 0.5
-        return x * self._agc
+        peak = float(np.percentile(np.abs(x), 99)) + 1e-12
+        release = 0.5 ** (len(x) / AUDIO_RATE / AGC_RELEASE)
+        self._peak = peak if peak > self._peak else max(peak, self._peak * release)
+        return x * (0.5 / max(self._peak, 0.5 / AGC_MAX_GAIN))

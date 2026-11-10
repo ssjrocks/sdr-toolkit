@@ -118,6 +118,27 @@ works the same on both. Sample rates are whole multiples of 48 kHz (2.88 to 0.24
 step down to 48 kHz audio is a whole-number decimation with no clicks between blocks. The bias tee
 puts 4.5 V on the antenna socket: only for active antennas or LNAs, on dongles that have one.
 
+Drag the grab bar along the top of the spectrum to slide the dongle's span along the band (the
+frequency you're listening to stays put until you click elsewhere). **Identify** measures the signal
+you're tuned to (its width, whether its envelope is constant, FSK levels and baud rate, deviation,
+a carrier, AFSK tones, how much of the time it's keyed) and checks it against an Australian band
+plan, then offers its guesses, best first, each with the demodulator, bandwidth and decoder that
+suit it; with **Identify automatically** on it does this by itself every few seconds when something is
+there. It's a guess: weak signals and unusual ones often come out as "2-level FSK" or "narrow FM".
+When it can't tell, pick a decoder from **Decode with**: Morse, RTTY, PSK31, NAVTEX, FT8/FT4,
+SSTV, weather fax, APRS, pagers, DTMF/CTCSS/DCS tones or DMR/P25 (DSD-FME) run on the receiver's
+audio, with their own audio waterfall and output below the spectrum. **Tag…** (or right-click the
+spectrum) saves a frequency with a label, demodulator and decoder in the logbook; tags show on the
+spectrum and the survey, and right-clicking one offers to listen with its settings and decoder.
+
+**Survey** sweeps the dongle over its whole tuning range (or the part you're looking at) and
+stitches the slices into one zoomable spectrum and waterfall. After each retune it throws away the
+samples of a settle time (150 ms by default, 250 ms more through a relay, where samples from the
+old frequency are still on their way), averages a few spectra and keeps the middle 80% of the slice.
+Only the range on screen is swept, so zooming in makes passes faster; zoomed in narrower than one
+slice, the dongle just stays there. A pass over 80-180 MHz through a relay takes about 20 s.
+Double-click to listen there.
+
 **GPS position fix** works out where you are from the GPS satellites' own signals, with the
 RTL-SDR on 1575.42 MHz, and fills in "Your location" for the other modes (averaged over the
 latest fixes, and updated when you move 30 m). The signals are far below the noise, so it needs an

@@ -431,6 +431,118 @@ class LogWindow(QDialog):
             Path(path).write_text("\n".join(self.lines) + "\n", encoding="utf-8")
 
 
+class DecodeArea(QWidget):
+    """What a decoder makes of the receiver's audio: its own audio waterfall, then text, a table
+    or a picture, as on that decoder's own page."""
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.M = None
+        mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        self.title = QLabel()
+        self.settings_btn = QPushButton("Decoder settings…")
+        self.settings_btn.clicked.connect(win.decoder_settings)
+        self.stop_btn = QPushButton("Stop decoding")
+        self.stop_btn.clicked.connect(lambda: win._receiver_changed("decoder", ""))
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.addWidget(self.title, 1)
+        head.addWidget(self.settings_btn)
+        head.addWidget(self.stop_btn)
+        self.waterfall = Waterfall()
+        self.waterfall.setMinimumHeight(90)
+        self.waterfall.setMaximumHeight(140)
+        self.waterfall.setToolTip("The decoder's audio. Click a tone to set the decoder to it.")
+        self.waterfall.clicked.connect(win.decoder_click)
+        self.text = QPlainTextEdit()
+        self.text.setReadOnly(True)
+        self.text.setFont(mono)
+        self.text.setMaximumBlockCount(5000)
+        self.live = QLabel("")
+        self.live.setFont(mono)
+        self.table = QTableWidget(0, 0)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setFont(mono)
+        self.picture = PictureView()
+        text_page = QWidget()
+        tl = QVBoxLayout(text_page)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.addWidget(self.text, 1)
+        tl.addWidget(self.live)
+        self.stack = QStackedWidget()
+        for w in (text_page, self.table, self.picture):
+            self.stack.addWidget(w)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 4, 0, 0)
+        lay.addLayout(head)
+        lay.addWidget(self.waterfall)
+        lay.addWidget(self.stack, 1)
+        self.setVisible(False)
+
+    def show_decoder(self, M):
+        """Set up for decoder class M (None hides the area)."""
+        self.M = M
+        self.setVisible(M is not None)
+        if M is None:
+            return
+        self.title.setText(f"<b>Decoding with {html.escape(M.name)}</b>")
+        self.text.clear()
+        self.live.setText("")
+        self.picture.show_image(None)
+        hi = min(M.rate / 2, 3500 if M.rate <= 12000 else 4000)
+        self.waterfall.set_range(0, hi)
+        if M.output == "table":
+            self.table.clear()
+            self.table.setRowCount(0)
+            self.table.setColumnCount(len(M.columns))
+            self.table.setHorizontalHeaderLabels([h for _, h in M.columns])
+            self.table.horizontalHeader().setStretchLastSection(True)
+            self.stack.setCurrentWidget(self.table)
+        elif M.output == "image":
+            self.stack.setCurrentWidget(self.picture)
+        else:
+            self.stack.setCurrentIndex(0)
+
+    def handle(self, e):
+        """One event from the decoder; returns text for the logs, if any."""
+        M = self.M
+        if M is None:
+            return None
+        if e.kind == "line":
+            color = {"dim": "gray", "warn": "#c33"}.get(e.style)
+            text = html.escape(e.text).replace(" ", "&nbsp;") or "&nbsp;"
+            self.text.appendHtml(f"<span style='color:{color}'>{text}</span>" if color else text)
+            if M.output != "text" and e.style == "warn":
+                self.title.setText(f"<b>{html.escape(M.name)}</b>: <span style='color:#c33'>{html.escape(e.text)}</span>")
+            return e.text.strip() if e.style not in ("warn", "dim") else None
+        if e.kind == "live":
+            self.live.setText(e.text)
+        elif e.kind == "row":
+            t = self.table
+            r = t.rowCount()
+            t.insertRow(r)
+            for c, (key, _) in enumerate(M.columns):
+                t.setItem(r, c, QTableWidgetItem(str(e.data.get(key, ""))))
+            if t.rowCount() > 2000:
+                t.removeRow(0)
+            t.scrollToBottom()
+            return "  ".join(f"{h}: {e.data[k]}" for k, h in M.columns if str(e.data.get(k, "")) != "")
+        elif e.kind == "image":
+            self.picture.show_image(to_qimage(e.image), e.row, getattr(M, "aspect", None))
+            self.title.setText(f"<b>Decoding with {html.escape(M.name)}</b> · {html.escape(e.title)}")
+            return e.title if e.done else None
+        elif e.kind == "log":
+            return e.text if e.style != "pos" else None
+        return None
+
+    def audio(self, tail, rate, markers):
+        if len(tail):
+            self.waterfall.add(tail, rate)
+            self.waterfall.markers = markers
+
+
 class MainWindow(QMainWindow):
     report_finished = pyqtSignal(bool)
 
@@ -536,6 +648,20 @@ class MainWindow(QMainWindow):
         self.output.addWidget(self.picture)
         self.receiver_panel = ReceiverPanel()
         self.receiver_panel.changed.connect(self._receiver_changed)
+        self.decode_area = DecodeArea(self)
+        self.receiver_panel.add_decode_area(self.decode_area)
+        rp = self.receiver_panel
+        rp.identify.connect(lambda: self.mode.identify() if self.running and self.mode.output == "receiver" else None)
+        rp.guesses.connect(self._guess_menu)
+        rp.tag.connect(lambda: self._tag_dialog(float(self.mode.values.get("freq_mhz", 0)) * 1e6))
+        rp.view.slid.connect(self._receiver_slid)
+        rp.view.menu.connect(self._receiver_menu)
+        rp.survey.connect(self._survey_toggled)
+        rp.survey_view.view_changed.connect(lambda lo, hi: self.mode.survey_view(lo, hi)
+                                            if self.running and self.mode.output == "receiver" else None)
+        rp.survey_view.listen.connect(self._survey_listen)
+        self._guesses: list = []
+        self._tags_view = None
         self.output.addWidget(self.receiver_panel)
         self.decoded_log = LogWindow(self, "Decoded log", "Everything decoded appears here, with the time.")
         self.raw_log = LogWindow(self, "Raw data", "The decoder's raw output appears here.")
@@ -810,7 +936,197 @@ class MainWindow(QMainWindow):
                 bw = MODES[value][0]
                 self.form.set_value("bandwidth", bw)
                 self.on_setting("bandwidth", bw)
+            if key == "decoder":
+                self._receiver_decoder(set_demod=True)
             self.receiver_panel.show_values(self.mode.values)
+
+    def _receiver_decoder(self, set_demod=False):
+        """Start the receiver's chosen decoder (with its saved settings) and show its area."""
+        from .receiver.decode import DECODERS
+        mode_id = self.mode.values.get("decoder", "")
+        M = next((m for m in MODES if m.id == mode_id), None)
+        if M is not None and set_demod:
+            demod, bw = DECODERS[mode_id]
+            for k, val in (("demod", demod), ("bandwidth", bw)):
+                if self.mode.values.get(k) != val:
+                    self.form.set_value(k, val)
+                    self.settings.setValue(self._key(self.mode, k), val)
+                    values = dict(self.mode.values, **{k: val})
+                    if self.running:
+                        self.mode.apply(values)
+                    else:
+                        self.mode.values = values
+        self.decode_area.show_decoder(M)
+        if self.running:
+            self.mode.set_decoder(mode_id, self._values(M) if M else {})
+
+    # ---- identifying, tagging, sliding ---------------------------------
+
+    def _show_guesses(self, found):
+        self._guesses = found["guesses"]
+        g = self._guesses[0] if self._guesses else None
+        btn = self.receiver_panel.looks
+        if g is not None:
+            btn.setText(f"Looks like: {g.name} ({g.confidence:.0%}) at {found['freq'] / 1e6:.4f} MHz")
+            btn.setToolTip(f"{g.why}\nClick for all guesses and what to do.")
+        if not found["auto"]:
+            self._guess_menu(btn)
+
+    def _apply_guess(self, g):
+        if g.mode:
+            self.tree.setCurrentItem(self._items[g.mode])
+            return
+        if g.demod:
+            self._receiver_changed("demod", g.demod)
+        if g.bandwidth:
+            self._receiver_changed("bandwidth", int(g.bandwidth))
+        if g.decoder and g.decoder != self.mode.values.get("decoder"):
+            self._receiver_changed("decoder", g.decoder)
+
+    def _guess_menu(self, anchor):
+        if not self._guesses:
+            QMessageBox.information(self, "Identify", "Nothing identified yet: tune to a signal and press Identify.")
+            return
+        menu = QMenu(self)
+        names = {M.id: M.name for M in MODES}
+        for g in self._guesses[:5]:
+            head = menu.addAction(f"{g.name} — {g.confidence:.0%}")
+            head.setEnabled(False)
+            f = head.font()
+            f.setBold(True)
+            head.setFont(f)
+            why = menu.addAction(f"    {g.why}")
+            why.setEnabled(False)
+            if g.mode:
+                menu.addAction(f"    Open {names.get(g.mode, g.mode)}", lambda g=g: self._apply_guess(g))
+            elif g.demod:
+                what = f"    Listen as {g.demod} {g.bandwidth / 1000:g} kHz"
+                if g.decoder:
+                    what += f" and decode with {names.get(g.decoder, g.decoder)}"
+                menu.addAction(what, lambda g=g: self._apply_guess(g))
+            if g.confidence >= 0.4 and g.name != "nothing much here":
+                menu.addAction("    Tag as this", lambda g=g: self._tag_dialog(
+                    float(self.mode.values.get("freq_mhz", 0)) * 1e6, g.name.split(" (")[0], g))
+            menu.addSeparator()
+        menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+
+    def _refresh_tags(self):
+        view = self.receiver_panel.view
+        lo, hi = view.center - view.rate, view.center + view.rate
+        view.tags = self.logbook.tags(lo, hi)
+        view.update()
+
+    def _tag_dialog(self, freq, label="", guess=None):
+        if self.mode is None or self.mode.output != "receiver" or not freq:
+            return
+        v = self.mode.values
+        suggestions = [label] if label else []
+        suggestions += [g.name.split(" (")[0] for g in self._guesses[:3] if g.name.split(" (")[0] not in suggestions]
+        suggestions += [x for x in ("DMR", "P25", "APRS", "Pager", "Repeater", "Airband", "Marine", "FM station",
+                                    "Beacon", "Noise / interference") if x not in suggestions]
+        text, ok = QInputDialog.getItem(self, "Tag this frequency", f"{freq / 1e6:.5f} MHz is:", suggestions, 0, True)
+        if not ok or not text.strip():
+            return
+        g = guess
+        self.logbook.add_tag(freq, text.strip(), g.demod if g else v.get("demod", ""),
+                             g.bandwidth if g else v.get("bandwidth", 0), g.decoder if g else v.get("decoder", ""))
+        self._refresh_tags()
+        self.status.setText(f"Tagged {freq / 1e6:.5f} MHz as {text.strip()}")
+
+    def _survey_toggled(self, on):
+        if self.mode is None or self.mode.output != "receiver" or not self.running:
+            if on:
+                self.receiver_panel.survey_btn.setChecked(False)
+                self.status.setText("Start the receiver first")
+            return
+        if on:
+            sv = self.receiver_panel.survey_view
+            sv.db = None
+            sv._rows = None
+            self.mode.start_survey()
+            self.status.setText("Surveying the dongle's whole range: zoom in to sweep less, double-click to listen")
+        else:
+            self.mode.stop_survey()
+            self.status.setText("Back to the receiver")
+
+    def _survey_listen(self, hz):
+        self.receiver_panel.survey_btn.setChecked(False)          # stops the survey
+        self._receiver_changed("freq_mhz", round(hz / 1e6, 4))
+
+    def _receiver_slid(self, center):
+        if self.mode is None or self.mode.output != "receiver" or not self.running:
+            return
+        moved = self.mode.set_center(center)
+        if moved is not None:
+            self.form.set_value("freq_mhz", moved)
+            self.settings.setValue(self._key(self.mode, "freq_mhz"), moved)
+            self.receiver_panel.show_values(self.mode.values)
+        self.status.setText(f"Dongle centred on {center / 1e6:.4f} MHz")
+
+    def _receiver_menu(self, hz, pos):
+        if self.mode is None or self.mode.output != "receiver":
+            return
+        from .receiver.decode import DECODERS
+        from .receiver.dsp import MODES as DEMODS
+        step = self.mode.values.get("step", 1000) or 1000
+        mhz = round(round(hz / step) * step / 1e6, 6)
+        menu = QMenu(self)
+        menu.addAction(f"Tune to {mhz:.5f} MHz", lambda: self._receiver_changed("freq_mhz", mhz))
+        menu.addAction("Identify the signal here", lambda: (self._receiver_changed("freq_mhz", mhz),
+                                                             self.mode.identify() if self.running else None))
+        menu.addAction("Tag this frequency…", lambda: self._tag_dialog(mhz * 1e6))
+        view = self.receiver_panel.view
+        lo, hi = view.span()
+        near = [t for t in view.tags if abs(t["freq"] - hz) < (hi - lo) / 60]
+        for t in near:
+            menu.addAction(f"Listen to tag “{t['label']}”", lambda t=t: self._listen_tag(t))
+            menu.addAction(f"Remove tag “{t['label']}”", lambda t=t: (self.logbook.delete_tag(t["id"]),
+                                                                      self._refresh_tags()))
+        listen = menu.addMenu("Listen as")
+        for d in DEMODS:
+            listen.addAction(d, lambda d=d: (self._receiver_changed("freq_mhz", mhz), self._receiver_changed("demod", d)))
+        names = {M.id: M.name for M in MODES}
+        dec = menu.addMenu("Decode with")
+        dec.addAction("Nothing", lambda: self._receiver_changed("decoder", ""))
+        for k in DECODERS:
+            dec.addAction(names.get(k, k), lambda k=k: (self._receiver_changed("freq_mhz", mhz),
+                                                        self._receiver_changed("decoder", k)))
+        menu.exec(pos)
+
+    def _listen_tag(self, t):
+        self._receiver_changed("freq_mhz", round(t["freq"] / 1e6, 6))
+        if t.get("demod"):
+            self._receiver_changed("demod", t["demod"])
+        if t.get("bandwidth"):
+            self._receiver_changed("bandwidth", int(t["bandwidth"]))
+        if t.get("decoder") is not None and t.get("decoder") != self.mode.values.get("decoder"):
+            self._receiver_changed("decoder", t["decoder"] or "")
+
+    def decoder_settings(self):
+        """The receiver's decoder's own settings (the same as on its page)."""
+        M = self.decode_area.M
+        if M is None or self.mode is None or self.mode.output != "receiver":
+            return
+        skip = {"input", "file", "device", "gain", "ppm", "freq_mhz", "file_rate", "file_offset", "bw", "squelch"} \
+            if M.id == "dmr" else set()
+        settings = tuple(s for s in M.settings if s.key not in skip)
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"{M.name} settings")
+        form = SettingsForm(settings, self._values(M))
+        form.changed.connect(lambda k, v: (self.settings.setValue(self._key(M, k), v),
+                                           self.mode.set_decoder(M.id, self._values(M))))
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setWidget(form)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(area)
+        dlg.resize(460, 560)
+        dlg.exec()
+
+    def decoder_click(self, hz):
+        """A click on the decoder's audio waterfall: tune the decoder to that tone."""
+        if self.mode is not None and self.mode.output == "receiver":
+            self.mode.decoder_call(lambda d: d.set_frequency(hz))
 
     def _receiver_changed(self, key, value):
         """A setting changed on the receiver's toolbar (or by clicking the waterfall)."""
@@ -888,6 +1204,8 @@ class MainWindow(QMainWindow):
         self._warned = False
         self.title.setText("")
         self._setup_coverage()
+        if self.mode.output == "receiver":
+            self._receiver_decoder()
         log.info("mode %s started", self.mode.id)
         return True
 
@@ -1037,9 +1355,25 @@ class MainWindow(QMainWindow):
                 self.title.setText(e.title)
             elif e.kind == "status":
                 self.status.setText(e.text)
+            elif e.kind == "decoded":
+                text = self.decode_area.handle(e.data["event"])
+                if text:
+                    self.decoded_log.add(text)
+                    self.logbook.add(e.data["id"], text)
+            elif e.kind == "decoder_audio":
+                self.decode_area.audio(e.data["tail"], e.data["rate"], e.data["markers"])
+            elif e.kind == "survey":
+                d = e.data
+                self.receiver_panel.survey_view.set_frame(d["lo"], d["hi"], d["db"], d["pos"], d["pass"], d["steps"],
+                                                          (d["min"], d["max"]))
+            elif e.kind == "identified":
+                self._show_guesses(e.data)
             elif e.kind == "spectrum":
                 d = e.data
                 view = self.receiver_panel.view
+                if self._tags_view != (d["center"], d["rate"]):
+                    self._tags_view = (d["center"], d["rate"])
+                    self._refresh_tags()
                 view.tune, view.mode, view.bandwidth = d["tune"], d["mode"], d["bandwidth"]
                 view.peak_hold = bool(self.mode.values.get("peak_hold", True))
                 view.set_frame(d["db"], d["center"], d["rate"])

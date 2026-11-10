@@ -3,6 +3,7 @@
     QT_QPA_PLATFORM=offscreen python3 tests/gui_smoke.py [screenshot-folder]
 """
 
+import faulthandler
 import os
 import sys
 import tempfile
@@ -15,6 +16,7 @@ os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp()      # its own logbook and airc
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 errors = []
+faulthandler.dump_traceback_later(400, exit=True)          # a hang (a modal dialog) ends the test, with where
 
 
 def hook(*a):
@@ -390,6 +392,42 @@ rp.mode.setCurrentIndex(rp.mode.findData("NFM"))
 app.processEvents()
 results["receiver_mode"] = (win.mode.demod.mode == "NFM" and win.mode.values["bandwidth"] == 12500
                             and rp.bw.value() == 12500)
+# Identify, decode, tag, slide and survey on the recording.
+win.mode.identify(auto=True)                       # a click would open the guesses menu (modal)
+for _ in range(40):
+    app.processEvents()
+    time.sleep(0.05)
+    if win._guesses:
+        break
+results["identify"] = bool(win._guesses) and "FM broadcast" in rp.looks.text()
+win._receiver_changed("decoder", "tones")
+for _ in range(20):
+    app.processEvents()
+    time.sleep(0.05)
+results["decode_area"] = (win.decode_area.isVisible() and win.decode_area.M.id == "tones"
+                          and win.mode.decoder is not None and win.mode.values["demod"] == "NFM")
+win.logbook.add_tag(101.3e6, "Test station", "WFM", 180000, "")
+win._refresh_tags()
+results["tags"] = [t["label"] for t in rp.view.tags] == ["Test station"]
+win._listen_tag(rp.view.tags[0])
+results["tags"] = results["tags"] and win.mode.values["freq_mhz"] == 101.3 and win.mode.values["demod"] == "WFM"
+win._receiver_slid(100.2e6)
+results["slide"] = win.mode.center == 100.2e6
+rp.survey_btn.setChecked(True)
+for _ in range(40):
+    app.processEvents()
+    time.sleep(0.05)
+results["survey"] = (rp.pages.currentWidget() is rp.survey_view and rp.survey_view.db is not None
+                     and win.mode.survey is not None)
+if shots:
+    win.grab().save(str(shots / "survey.png"))
+rp.survey_view.listen.emit(98.5e6)
+for _ in range(10):
+    app.processEvents()
+    time.sleep(0.05)
+results["survey_listen"] = (not rp.survey_btn.isChecked() and rp.pages.currentWidget() is rp.view
+                            and win.mode.values["freq_mhz"] == 98.5 and win.mode.survey is None)
+win._receiver_changed("decoder", "")
 if shots:
     win.grab().save(str(shots / "receiver.png"))
 win._stop()

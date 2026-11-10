@@ -5,6 +5,7 @@ from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QSplitter,
     QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
@@ -18,6 +19,7 @@ from PyQt6.QtWidgets import (
 
 from .dsp import MODES
 
+BAR = 16                         # px: the grab bar along the top (drag to slide the band)
 STEPS = ((100, "100 Hz"), (1000, "1 kHz"), (5000, "5 kHz"), (6250, "6.25 kHz"), (10000, "10 kHz"),
          (12500, "12.5 kHz"), (25000, "25 kHz"), (100000, "100 kHz"), (200000, "200 kHz"), (1000000, "1 MHz"))
 ROWS = 400
@@ -41,6 +43,8 @@ def fmt_freq(hz: float) -> str:
 
 class SpectrumView(QWidget):
     tuned = pyqtSignal(float)          # a frequency clicked or dragged to (Hz)
+    slid = pyqtSignal(float)           # the grab bar dragged: the dongle's new centre (Hz)
+    menu = pyqtSignal(float, object)   # right-click without dragging: (Hz there, global position)
 
     def __init__(self):
         super().__init__()
@@ -64,10 +68,14 @@ class SpectrumView(QWidget):
         self._rows = None               # waterfall: colour indices, newest first
         self._drag = None
         self._hover = None
+        self.tags: list[dict] = []      # {"freq", "label"} shown as markers
+        self._slide_center = None       # where the band is being slid to, drawn before it arrives
 
     # ---- data ----------------------------------------------------------
 
     def set_frame(self, db, center, rate):
+        if self._slide_center is not None and self._drag is None and abs(center - self._slide_center) < 1:
+            self._slide_center = None           # the dongle has arrived where the bar was slid to
         if self.center != center or self.rate != rate or self._rows is None or self._rows.shape[1] != len(db):
             if self.rate != rate or self._rows is None or self._rows.shape[1] != len(db):
                 self.view_center, self.zoom = 0.0, 1.0
@@ -90,7 +98,7 @@ class SpectrumView(QWidget):
 
     def span(self):
         half = self.rate / 2 * self.zoom
-        mid = self.center + self.view_center
+        mid = (self._slide_center if self._slide_center is not None else self.center) + self.view_center
         return mid - half, mid + half
 
     def x_of(self, hz):
@@ -116,6 +124,12 @@ class SpectrumView(QWidget):
         w, h = self.width(), self.height()
         top = int(h * 0.38)
         p.fillRect(self.rect(), QColor(10, 12, 20))
+        # The grab bar: drag it to slide the band the dongle sees.
+        p.fillRect(QRectF(0, 0, w, BAR), QColor(45, 55, 80))
+        p.setPen(QColor(190, 200, 225))
+        p.drawText(QRectF(0, 0, w, BAR), Qt.AlignmentFlag.AlignCenter,
+                   "◀  drag to slide along the band  ▶" if self._slide_center is None else
+                   f"centre {self._slide_center / 1e6:.4f} MHz")
         if self.db is None:
             p.setPen(QColor(180, 180, 180))
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Waiting for samples…")
@@ -158,12 +172,26 @@ class SpectrumView(QWidget):
             p.drawPolyline(QPolygonF([QPointF(x, self._y(v, top)) for x, v in zip(xs, self.peak[b0:b1])]))
         p.setPen(QPen(QColor(120, 220, 255), 1))
         p.drawPolyline(QPolygonF([QPointF(x, self._y(v, top)) for x, v in zip(xs, self.db[b0:b1])]))
+        # Tags
+        for t in self.tags:
+            if lo <= t["freq"] <= hi:
+                xt = self.x_of(t["freq"])
+                pen = QPen(QColor(255, 210, 60, 200), 1)
+                pen.setStyle(Qt.PenStyle.DashLine)
+                p.setPen(pen)
+                p.drawLine(QPointF(xt, BAR), QPointF(xt, top))
+                label = t["label"]
+                r = p.fontMetrics().boundingRect(label)
+                box = QRectF(xt + 2, BAR + 2, r.width() + 8, r.height() + 2)
+                p.fillRect(box, QColor(255, 210, 60, 220))
+                p.setPen(QColor(20, 20, 20))
+                p.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
         # Tuned frequency
         p.setPen(QPen(QColor(255, 70, 70), 1))
         xt = self.x_of(self.tune)
         p.drawLine(QPointF(xt, 0), QPointF(xt, h))
         p.setPen(QColor(255, 255, 255))
-        p.drawText(QPointF(xt + 4, 14), f"{self.tune / 1e6:.6f} MHz {self.mode}")
+        p.drawText(QPointF(xt + 4, BAR + 30), f"{self.tune / 1e6:.6f} MHz {self.mode}")
         if self._hover is not None:
             p.setPen(QColor(200, 200, 200))
             p.drawText(QPointF(min(self._hover.x() + 8, w - 110), self._hover.y() - 6),
@@ -183,24 +211,42 @@ class SpectrumView(QWidget):
     # ---- mouse -----------------------------------------------------------
 
     def mousePressEvent(self, ev):
+        pos = ev.position()
         if ev.button() == Qt.MouseButton.RightButton:
-            self._drag = ("pan", ev.position().x(), self.view_center)
+            self._drag = ("pan", pos.x(), self.view_center, pos)
+        elif pos.y() < BAR:
+            self._drag = ("slide", pos.x(), self.center)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
         else:
             self._drag = ("tune",)
-            self.tuned.emit(self.hz_of(ev.position().x()))
+            self.tuned.emit(self.hz_of(pos.x()))
 
     def mouseMoveEvent(self, ev):
         self._hover = ev.position()
         if self._drag and self._drag[0] == "pan":
-            _, x0, vc0 = self._drag
+            _, x0, vc0, _ = self._drag
             self.view_center = vc0 - (ev.position().x() - x0) / max(self.width(), 1) * self.rate * self.zoom * 2
             self._limit()
+        elif self._drag and self._drag[0] == "slide":
+            _, x0, c0 = self._drag
+            # Dragging the band right shows lower frequencies, as dragging a map does.
+            self._slide_center = c0 - (ev.position().x() - x0) / max(self.width(), 1) * self.rate * self.zoom * 2
         elif self._drag:
             self.tuned.emit(self.hz_of(ev.position().x()))
+        elif ev.position().y() < BAR:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        else:
+            self.setCursor(Qt.CursorShape.CrossCursor)
         self.update()
 
-    def mouseReleaseEvent(self, _ev):
-        self._drag = None
+    def mouseReleaseEvent(self, ev):
+        drag, self._drag = self._drag, None
+        if drag and drag[0] == "slide" and self._slide_center is not None:
+            self.slid.emit(self._slide_center)
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif drag and drag[0] == "pan" and (ev.position() - drag[3]).manhattanLength() < 5:
+            self.menu.emit(self.hz_of(ev.position().x()), ev.globalPosition().toPoint())
+        self._slide_center = None if not (drag and drag[0] == "slide") else self._slide_center
 
     def leaveEvent(self, _ev):
         self._hover = None
@@ -229,6 +275,10 @@ class ReceiverPanel(QWidget):
     """The toolbar above the spectrum. changed(key, value) is a setting the window saves and applies."""
 
     changed = pyqtSignal(str, object)
+    identify = pyqtSignal()               # Identify pressed
+    guesses = pyqtSignal(object)          # the identification line clicked (button, for its menu)
+    tag = pyqtSignal()                    # Tag pressed (the tuned frequency)
+    survey = pyqtSignal(bool)             # Survey toggled
 
     def __init__(self):
         super().__init__()
@@ -282,10 +332,55 @@ class ReceiverPanel(QWidget):
             row.addWidget(wdg)
         row.addStretch(1)
         row.addWidget(self.meter)
+        from .decode import DECODERS
+        self.identify_btn = QToolButton()
+        self.identify_btn.setText("Identify")
+        self.identify_btn.setToolTip("Guess what the signal you're tuned to is")
+        self.identify_btn.clicked.connect(self.identify.emit)
+        self.looks = QToolButton()
+        self.looks.setText("Looks like: …")
+        self.looks.setToolTip("The best guess for the tuned signal. Click for all guesses and what to do.")
+        self.looks.setAutoRaise(True)
+        self.looks.clicked.connect(lambda: self.guesses.emit(self.looks))
+        self.tag_btn = QToolButton()
+        self.tag_btn.setText("Tag…")
+        self.tag_btn.setToolTip("Tag the tuned frequency (shown on the spectrum; right-click the spectrum for more)")
+        self.tag_btn.clicked.connect(self.tag.emit)
+        self.decoder = QComboBox()
+        self.decoder.addItem("Nothing", "")
+        names = {"morse": "Morse", "rtty": "RTTY", "psk": "PSK31", "navtex": "NAVTEX", "ft8": "FT8", "ft4": "FT4",
+                 "sstv": "SSTV", "wefax": "Weather fax", "aprs": "APRS", "pager": "Pagers", "tones": "DTMF/CTCSS",
+                 "dmr": "DMR/P25"}
+        for k in DECODERS:
+            self.decoder.addItem(names.get(k, k), k)
+        self.decoder.setToolTip("Run a decoder on what you're hearing (it also sets the mode it wants)")
+        self.decoder.currentIndexChanged.connect(lambda _: self._emit("decoder", self.decoder.currentData()))
+        row2 = QHBoxLayout()
+        row2.setContentsMargins(0, 0, 0, 0)
+        row2.addWidget(self.identify_btn)
+        row2.addWidget(self.looks, 1)
+        row2.addWidget(self.tag_btn)
+        row2.addWidget(QLabel("Decode"))
+        row2.addWidget(self.decoder)
+        self.survey_btn = QToolButton()
+        self.survey_btn.setText("Survey")
+        self.survey_btn.setCheckable(True)
+        self.survey_btn.setToolTip("Sweep the dongle across its whole range and stitch it into one waterfall "
+                                   "(the audio pauses). Zoom in to sweep less, faster.")
+        self.survey_btn.toggled.connect(self._survey_toggled)
+        row2.addWidget(self.survey_btn)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addLayout(row)
-        lay.addWidget(self.view, 1)
+        lay.addLayout(row2)
+        from PyQt6.QtWidgets import QStackedWidget
+        self.survey_view = SurveyView()
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self.view)
+        self.pages.addWidget(self.survey_view)
+        self.split = QSplitter(Qt.Orientation.Vertical)
+        self.split.addWidget(self.pages)
+        lay.addWidget(self.split, 1)
         self._quiet = False
         self.freq.valueChanged.connect(lambda v: self._emit("freq_mhz", round(v, 6)))
         self.step.currentIndexChanged.connect(self._step_changed)
@@ -296,6 +391,15 @@ class ReceiverPanel(QWidget):
         self.vol.valueChanged.connect(lambda v: self._emit("volume", int(v)))
         self.mute.toggled.connect(lambda v: self._emit("mute", bool(v)))
         self.view.tuned.connect(self._clicked)
+
+    def _survey_toggled(self, on):
+        self.pages.setCurrentWidget(self.survey_view if on else self.view)
+        self.survey.emit(on)
+
+    def add_decode_area(self, widget):
+        """The decoded output, under the spectrum (the window builds it)."""
+        self.split.addWidget(widget)
+        self.split.setSizes([500, 300])
 
     def _emit(self, key, value):
         if not self._quiet:
@@ -326,5 +430,158 @@ class ReceiverPanel(QWidget):
             self.sq.setValue(int(v.get("squelch", -60)))
             self.vol.setValue(int(v.get("volume", 70)))
             self.mute.setChecked(bool(v.get("mute")))
+            self.decoder.setCurrentIndex(max(self.decoder.findData(v.get("decoder", "")), 0))
         finally:
             self._quiet = False
+
+
+class SurveyView(QWidget):
+    """The survey: a stitched spectrum of a wide range over a waterfall of its passes."""
+
+    view_changed = pyqtSignal(float, float)     # the range shown (Hz): sweep only that
+    listen = pyqtSignal(float)                  # double-click: go back to the receiver, tuned there
+
+    def __init__(self):
+        super().__init__()
+        self.setMinimumHeight(280)
+        self.setMouseTracking(True)
+        self.setToolTip("Wheel: zoom (sweeps only what's on screen). Drag: pan. Double-click: listen there.")
+        self.cmap = _colour_map()
+        self.lo, self.hi = 24e6, 1766e6            # what's on screen
+        self.full = (24e6, 1766e6)
+        self.db = None
+        self.pos = None
+        self.pass_time = 0.0
+        self.steps = 0
+        self.lo_db, self.hi_db = -100.0, -30.0
+        self._rows = None
+        self._last_row = 0.0
+        self._drag = None
+        self._hover = None
+        from PyQt6.QtCore import QTimer
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(350)
+        self._debounce.timeout.connect(lambda: self.view_changed.emit(self.lo, self.hi))
+
+    def set_frame(self, lo, hi, db, pos, pass_time, steps, full):
+        import time as _time
+        if self.db is None:
+            self.lo, self.hi = lo, hi
+        self.full = full
+        if abs(lo - self.lo) > 1 or abs(hi - self.hi) > 1:
+            return                                  # an old range's frame, from before a zoom or pan
+        self.db, self.pos, self.pass_time, self.steps = db, pos, pass_time, steps
+        have = db[np.isfinite(db)]
+        if len(have):
+            floor, top = float(np.percentile(have, 20)), float(np.max(have))
+            self.lo_db += 0.2 * ((floor - 10) - self.lo_db)
+            self.hi_db += 0.2 * (max(top + 5, floor + 30) - self.hi_db)
+        if self._rows is None or self._rows.shape[1] != len(db):
+            self._rows = np.zeros((ROWS, len(db)), np.uint8)
+        now = _time.monotonic()
+        if now - self._last_row >= 0.5:
+            self._last_row = now
+            idx = np.clip((np.nan_to_num(db, nan=self.lo_db) - self.lo_db) / max(self.hi_db - self.lo_db, 1) * 255,
+                          0, 255).astype(np.uint8)
+            self._rows = np.roll(self._rows, 1, axis=0)
+            self._rows[0] = idx
+        self.update()
+
+    def x_of(self, hz):
+        return (hz - self.lo) / (self.hi - self.lo) * self.width()
+
+    def hz_of(self, x):
+        return self.lo + x / max(self.width(), 1) * (self.hi - self.lo)
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        w, h = self.width(), self.height()
+        top = int(h * 0.4)
+        p.fillRect(self.rect(), QColor(10, 12, 20))
+        head = (f"Survey {self.lo / 1e6:.1f}–{self.hi / 1e6:.1f} MHz · {self.steps} hop{'s' if self.steps != 1 else ''}"
+                + (f" · a pass takes {self.pass_time:.1f} s" if self.pass_time else "") + " · double-click to listen")
+        p.setPen(QColor(200, 210, 230))
+        p.drawText(QPointF(6, 14), head)
+        if self.db is None:
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Surveying…")
+            p.end()
+            return
+        if self._rows is not None:
+            img = np.ascontiguousarray(self.cmap[self._rows])
+            qimg = QImage(img.data, img.shape[1], img.shape[0], img.shape[1] * 4, QImage.Format.Format_RGB32)
+            p.drawImage(QRectF(0, top, w, h - top), qimg)
+        p.setPen(QPen(QColor(60, 70, 90), 1))
+        step = SpectrumView._grid_step(self.hi - self.lo)
+        f = np.ceil(self.lo / step) * step
+        while f < self.hi:
+            x = self.x_of(f)
+            p.drawLine(QPointF(x, 20), QPointF(x, top))
+            p.setPen(QColor(150, 160, 180))
+            p.drawText(QPointF(x + 3, top - 4), fmt_freq(f))
+            p.setPen(QPen(QColor(60, 70, 90), 1))
+            f += step
+        xs = np.linspace(0, w, len(self.db))
+        p.setPen(QPen(QColor(120, 220, 255), 1))
+        pts, run = [], []
+        for x, v in zip(xs, self.db):
+            if np.isfinite(v):
+                run.append(QPointF(x, top - (v - self.lo_db) / max(self.hi_db - self.lo_db, 1) * (top - 24)))
+            elif run:
+                pts.append(run)
+                run = []
+        if run:
+            pts.append(run)
+        for r in pts:
+            p.drawPolyline(QPolygonF(r))
+        if self.pos is not None:
+            xp = self.x_of(self.pos)
+            p.setPen(QPen(QColor(255, 200, 60, 160), 2))
+            p.drawLine(QPointF(xp, 20), QPointF(xp, top))
+        if self._hover is not None:
+            p.setPen(QColor(220, 220, 220))
+            p.drawText(QPointF(min(self._hover.x() + 8, w - 110), max(self._hover.y() - 6, 30)),
+                       f"{self.hz_of(self._hover.x()) / 1e6:.3f} MHz")
+        p.end()
+
+    def _moved(self):
+        lo_min, hi_max = self.full
+        span = min(self.hi - self.lo, hi_max - lo_min)
+        self.lo = float(np.clip(self.lo, lo_min, hi_max - span))
+        self.hi = self.lo + span
+        self._rows = None                       # a new range: start its waterfall afresh
+        self.db = None if self.db is None else np.full_like(self.db, np.nan)
+        self.update()
+        self._debounce.start()
+
+    def wheelEvent(self, ev):
+        at = self.hz_of(ev.position().x())
+        frac = ev.position().x() / max(self.width(), 1)
+        span = (self.hi - self.lo) * (0.7 if ev.angleDelta().y() > 0 else 1.4)
+        span = float(np.clip(span, 1e6, self.full[1] - self.full[0]))
+        self.lo = at - frac * span
+        self.hi = self.lo + span
+        self._moved()
+
+    def mousePressEvent(self, ev):
+        self._drag = (ev.position().x(), self.lo)
+
+    def mouseMoveEvent(self, ev):
+        self._hover = ev.position()
+        if self._drag is not None:
+            x0, lo0 = self._drag
+            span = self.hi - self.lo
+            self.lo = lo0 - (ev.position().x() - x0) / max(self.width(), 1) * span
+            self.hi = self.lo + span
+            lo_min, hi_max = self.full
+            self.lo = float(np.clip(self.lo, lo_min, hi_max - span))
+            self.hi = self.lo + span
+        self.update()
+
+    def mouseReleaseEvent(self, ev):
+        if self._drag is not None and abs(ev.position().x() - self._drag[0]) > 3:
+            self._moved()
+        self._drag = None
+
+    def mouseDoubleClickEvent(self, ev):
+        self.listen.emit(self.hz_of(ev.position().x()))

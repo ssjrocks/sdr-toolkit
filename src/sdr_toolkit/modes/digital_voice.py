@@ -7,10 +7,16 @@ offer DSD-FME's key options.
 """
 
 import shutil
+import signal
+import socket
+import subprocess
 import tempfile
+import threading
 import time
 import wave
 from pathlib import Path
+
+import numpy as np
 
 from .base import Event, MissingParts, Setting, Tuning
 from .radio import RADIO_SETTINGS, RadioMode, fm_audio_chunks
@@ -38,6 +44,9 @@ def dsd_fme() -> str | None:
     if DSD_FME.is_file():
         return str(DSD_FME)
     return shutil.which("dsd-fme")
+
+
+RECEIVER_AUDIO = "receiver"      # input: FM audio from Spectrum & receiver
 
 
 class DigitalVoiceMode(RadioMode):
@@ -92,7 +101,25 @@ class DigitalVoiceMode(RadioMode):
         self._events = self._dir / "events.log"
         self._seen = 0
         self._calls = 0
-        if self.live():
+        if v["input"] == RECEIVER_AUDIO:
+            # FM audio from Spectrum & receiver, sent to DSD-FME over TCP (it connects as SDR++'s
+            # audio sink's client would).
+            self.rate = 48000
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.bind(("127.0.0.1", 0))
+            srv.listen(1)
+            srv.settimeout(15)
+            self._server, self._conn = srv, None
+
+            def accept():
+                try:
+                    self._conn, _ = srv.accept()
+                except OSError:
+                    pass
+
+            threading.Thread(target=accept, daemon=True, name="dsd-audio").start()
+            src = f"tcp:127.0.0.1:{srv.getsockname()[1]}"
+        elif self.live():
             try:
                 freq = float(v["freq_mhz"])
             except ValueError:
@@ -126,6 +153,34 @@ class DigitalVoiceMode(RadioMode):
                                          48000, 12500, level=0.5):
                 w.writeframes(chunk)
         return str(out)
+
+    def feed(self, audio, now):
+        """Receiver audio (48 kHz FM) for DSD-FME, when it's fed from Spectrum & receiver."""
+        conn = getattr(self, "_conn", None)
+        if conn is not None and len(audio):
+            try:
+                conn.sendall((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
+            except OSError:
+                self._conn = None
+        return []
+
+    def _stop_dsd(self):
+        # DSD-FME ends on SIGINT (Ctrl+C) and ignores SIGTERM for seconds.
+        proc = getattr(self, "_proc", None)
+        if proc is not None and proc.poll() is None:
+            proc.send_signal(signal.SIGINT)
+            try:
+                proc.wait(2)
+            except subprocess.TimeoutExpired:
+                pass
+        for attr in ("_conn", "_server"):
+            sock = getattr(self, attr, None)
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                setattr(self, attr, None)
 
     def parse(self, line):
         problem = self.device_problem(line)
@@ -167,11 +222,12 @@ class DigitalVoiceMode(RadioMode):
         return f"{super().activity()} · {self._calls} call events"
 
     def stop(self):
+        self._stop_dsd()
         events = super().stop() + self._read_events()
         shutil.rmtree(getattr(self, "_dir", ""), ignore_errors=True)
         return events
 
     def finished(self, code):
-        if not self.live() and code == 0:
+        if not self.live() and code == 0 and self.values["input"] != RECEIVER_AUDIO:
             return self._read_events() + [Event("status", "recording finished")]
         return super().finished(code)

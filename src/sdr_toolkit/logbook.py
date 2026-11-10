@@ -45,6 +45,8 @@ class Logbook:
                                                   alt REAL, heading REAL, label TEXT);
             CREATE INDEX IF NOT EXISTS positions_t ON positions (mode, t);
             CREATE TABLE IF NOT EXISTS coverage (mode TEXT, site TEXT, data TEXT, PRIMARY KEY (mode, site));
+            CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY, freq REAL, label TEXT, demod TEXT,
+                                             bandwidth INTEGER, decoder TEXT, note TEXT, created REAL);
         """)
         self._last_pos: dict[tuple, tuple] = {}         # (mode, key) -> (t, lat, lon) last stored
         self._craft_seen: dict[tuple, float] = {}        # (mode, key) -> last craft-row update
@@ -161,6 +163,24 @@ class Logbook:
     def save_coverage(self, mode, site, data: dict):
         self.db.execute("INSERT OR REPLACE INTO coverage VALUES (?, ?, ?)", (mode, site, json.dumps(data)))
         self._dirty = True
+
+    # ---- frequency tags (Spectrum & receiver) ---------------------------
+
+    def add_tag(self, freq, label, demod="", bandwidth=0, decoder="", note="") -> int:
+        cur = self.db.execute("INSERT INTO tags (freq, label, demod, bandwidth, decoder, note, created) "
+                              "VALUES (?, ?, ?, ?, ?, ?, ?)", (float(freq), label, demod, int(bandwidth or 0),
+                                                               decoder, note, time.time()))
+        self.db.commit()
+        return cur.lastrowid
+
+    def tags(self, lo=0.0, hi=1e12) -> list[dict]:
+        rows = self.db.execute("SELECT id, freq, label, demod, bandwidth, decoder, note, created FROM tags "
+                               "WHERE freq BETWEEN ? AND ? ORDER BY freq", (lo, hi)).fetchall()
+        return [dict(zip(("id", "freq", "label", "demod", "bandwidth", "decoder", "note", "created"), r)) for r in rows]
+
+    def delete_tag(self, tag_id):
+        self.db.execute("DELETE FROM tags WHERE id=?", (tag_id,))
+        self.db.commit()
 
     def close(self):
         self.flush()
