@@ -320,7 +320,9 @@ if relay_src.is_dir():
     _rec.write_bytes(bytes(512))
     _relay = _Relay(_RC(name="Garage relay", port=_rport, password="pw", file=str(_rec)), version="t")
     _relay.start()
+    from sdr_toolkit import relay as _relay_mod  # noqa: E402
     from sdr_toolkit.panels import RelayDialog  # noqa: E402
+    _relay_mod.latest_relay_version = lambda: "0.1.2"       # no GitHub lookup from the test
     dlg = RelayDialog(win, win.settings)
     dlg.tabs.setCurrentIndex(2)
     dlg.address.setText(f"127.0.0.1:{_rport}")
@@ -338,9 +340,17 @@ if relay_src.is_dir():
         if dlg.bridge:
             break
     win._relay_changed("connected")
-    results["relay"] = refused and dlg.bridge is not None and win.relay_btn.text() == "Relay: Garage relay ✕"
-    win.relay_clicked()                       # disconnects
-    results["relay"] = results["relay"] and win.relay_btn.text() == "Connect relay…"
+    results["relay"] = refused and dlg.bridge is not None and win.relay_btn.text() == "Relay: Garage relay ▾"
+    _relay.on_update = lambda who: (True, "9.9.9")
+    dlg.bridge.features = ["check", "update"]
+    dlg.bridge.relay_version = "0.1.2"
+    win._relay_latest("0.2.0")                 # what GitHub would say
+    act = win._relay_update_action
+    results["relay_update_offer"] = act.isEnabled() and "Update the relay to 0.2.0" in act.text()
+    win._relay_latest("0.1.2")
+    results["relay_update_offer"] = results["relay_update_offer"] and not act.isEnabled() and "latest" in act.text()
+    win.disconnect_relay()
+    results["relay"] = results["relay"] and win.relay_btn.text() == "Connect relay…" and win.relay_btn.menu() is None
     dlg.close()
     _relay.stop()
 if shots:

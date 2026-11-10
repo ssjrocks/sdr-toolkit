@@ -29,6 +29,8 @@ DISCOVERY_PORT = 47321
 DISCOVER = b"SDR-TOOLS-RELAY? 1"
 DIRECTORY = "https://ssjrocks.com/api/sdr-relay/v1/relays"
 USER_AGENT = f"SDR-Toolkit/{__version__} (+https://github.com/ssjrocks/sdr-toolkit)"
+RELAY_RELEASES = "https://api.github.com/repos/ssjrocks/sdr-tools-relay/releases/latest"
+BUSY_RETRY = 6.0
 
 
 class RelayError(RuntimeError):
@@ -55,8 +57,14 @@ def _read_line(sock, limit=8192) -> tuple[dict, bytes]:
         raise RelayError("that isn't an SDR Tools Relay") from None
 
 
-def open_session(host, port, password="", timeout=8.0):
-    """Connect and log in. Returns (socket, hello, answer, bytes already received after it)."""
+class Busy(RelayError):
+    pass
+
+
+def open_session(host, port, password="", timeout=8.0, check=False):
+    """Connect and log in. Returns (socket, hello, answer, bytes already received after it).
+    With *check*, only the password is checked: the relay doesn't open its dongle (relays before
+    0.1.2 ignore it and open it)."""
     try:
         sock = socket.create_connection((host, int(port)), timeout=timeout)
     except OSError as e:
@@ -66,16 +74,17 @@ def open_session(host, port, password="", timeout=8.0):
         if hello.get("relay") != "sdr-tools-relay":
             raise RelayError("that isn't an SDR Tools Relay")
         if hello.get("busy"):
-            raise RelayError(f"{hello.get('name', 'The relay')} is in use by someone else")
+            raise Busy(f"{hello.get('name', 'The relay')} is in use by someone else")
         if hello.get("password") and not password:
             raise RelayError(f"{hello.get('name', 'The relay')} needs a password")
-        sock.sendall(json.dumps({"client": "SDR Toolkit", "version": __version__,
+        sock.sendall(json.dumps({"client": "SDR Toolkit", "version": __version__, "check": check,
                                  "auth": auth(password, hello.get("nonce", ""))}).encode() + b"\n")
         if rest:
             raise RelayError("unexpected data from the relay")
         answer, rest = _read_line(sock)
         if not answer.get("ok"):
-            raise RelayError(f"{hello.get('name', 'The relay')}: {answer.get('error', 'refused')}")
+            error = answer.get("error", "refused")
+            raise (Busy if error == "busy" else RelayError)(f"{hello.get('name', 'The relay')}: {error}")
         sock.settimeout(None)
         return sock, hello, answer, rest
     except (OSError, RelayError) as e:
@@ -150,6 +159,8 @@ class Bridge:
     def __init__(self, host, port, password="", name=""):
         self.host, self.port, self.password = host, int(port), password
         self.name = name or f"{host}:{port}"
+        self.relay_version = ""
+        self.features: list[str] = []
         self.local_port = 0
         self.last_error = ""
         self.relay_ppm = 0
@@ -190,11 +201,21 @@ class Bridge:
             threading.Thread(target=self._serve, args=(local,), daemon=True).start()
 
     def _serve(self, local):
-        try:
-            remote, hello, answer, rest = open_session(self.host, self.port, self.password)
-        except RelayError as e:
-            self.last_error = str(e)
-            log.info("relay: %s", e)
+        # "In use" right after a decoder restarts (or the password check) is usually the previous
+        # connection still closing the dongle: try again for a few seconds.
+        end = time.monotonic() + BUSY_RETRY
+        while True:
+            try:
+                remote, hello, answer, rest = open_session(self.host, self.port, self.password)
+                break
+            except Busy as e:
+                if time.monotonic() < end and not self._halt.is_set():
+                    time.sleep(0.5)
+                    continue
+                self.last_error = str(e)
+            except RelayError as e:
+                self.last_error = str(e)
+            log.info("relay: %s", self.last_error)
             local.close()
             return
         self.last_error = ""
@@ -244,11 +265,13 @@ def current() -> Bridge | None:
 def connect(host, port, password="", name="") -> Bridge:
     """Check the relay answers and the password is right, then start the bridge to it."""
     global _bridge
-    sock, hello, answer, _ = open_session(host, port, password)
+    sock, hello, answer, _ = open_session(host, port, password, check=True)
     sock.close()
     disconnect()
     b = Bridge(host, port, password, name or hello.get("name", ""))
     b.relay_ppm = answer.get("ppm", 0)
+    b.relay_version = str(hello.get("version", ""))
+    b.features = list(hello.get("features") or [])
     b.start()
     _bridge = b
     return b
@@ -259,3 +282,70 @@ def disconnect():
     if _bridge is not None:
         _bridge.stop()
         _bridge = None
+
+
+# ---- updating a relay -----------------------------------------------------
+
+def parse_version(v: str) -> tuple[int, ...]:
+    return tuple(int("".join(c for c in p if c.isdigit()) or 0) for p in str(v).lstrip("v").split("."))
+
+
+def latest_relay_version(url=RELAY_RELEASES, timeout=10) -> str:
+    """The newest SDR Tools Relay release on GitHub, e.g. "0.1.2"."""
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())["tag_name"].lstrip("v")
+
+
+def hello(host, port, timeout=5.0) -> dict:
+    """The relay's hello (it's in use or not, its version), without logging in."""
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout) as sock:
+            return _read_line(sock)[0]
+    except OSError as e:
+        raise RelayError(f"Couldn't reach {host}:{port}: {e}") from None
+
+
+def request_update(host, port, password) -> str:
+    """Ask the relay to install its latest release (it needs the password). Returns the version
+    it's installing; raises RelayError if it won't. It then restarts by itself."""
+    end = time.monotonic() + BUSY_RETRY
+    while True:
+        try:
+            sock = socket.create_connection((host, int(port)), timeout=15)
+        except OSError as e:
+            raise RelayError(f"Couldn't reach {host}:{port}: {e}") from None
+        try:
+            sock.settimeout(60)                     # the relay looks for the release before answering
+            info, _ = _read_line(sock)
+            if "update" not in (info.get("features") or []):
+                raise RelayError(f"{info.get('name', 'The relay')} {info.get('version', '')} can't be updated "
+                                 "from here: update it on its PC (from 0.1.2 on it can be)")
+            if info.get("busy"):
+                if time.monotonic() < end:
+                    time.sleep(0.5)
+                    continue
+                raise Busy(f"{info.get('name', 'The relay')} is in use by someone else")
+            sock.sendall(json.dumps({"client": "SDR Toolkit", "version": __version__, "update": True,
+                                     "auth": auth(password, info.get("nonce", ""))}).encode() + b"\n")
+            answer, _ = _read_line(sock)
+            if not answer.get("ok"):
+                raise RelayError(f"{info.get('name', 'The relay')}: {answer.get('error', 'refused')}")
+            return str(answer.get("updating", ""))
+        except OSError as e:
+            raise RelayError(f"{host}:{port}: {e}") from None
+        finally:
+            sock.close()
+
+
+def wait_for_version(host, port, version, timeout=300, every=5.0) -> bool:
+    """Wait for the relay to come back with *version* (it restarts after updating)."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        try:
+            if str(hello(host, port).get("version")) == version:
+                return True
+        except RelayError:
+            pass
+        time.sleep(every)
+    return False

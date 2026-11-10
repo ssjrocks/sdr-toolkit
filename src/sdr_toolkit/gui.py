@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -1176,25 +1177,99 @@ class MainWindow(QMainWindow):
     def relay_clicked(self):
         from . import relay
         if relay.current() is not None:
-            name = relay.current().name
-            relay.disconnect()
-            self._relay_changed(f"Disconnected from the relay {name}: the RTL-SDR modes use this PC's dongle again")
+            self.relay_btn.showMenu()          # while connected the button opens its menu
             return
         dlg = RelayDialog(self, self.settings)
         if dlg.exec() and dlg.bridge is not None:
             self._relay_changed(f"Connected to the relay {dlg.bridge.name}: the RTL-SDR modes use its dongle")
 
-    def _relay_changed(self, message):
+    def _relay_changed(self, message, restart=True):
         from . import relay
         b = relay.current()
-        self.relay_btn.setText(f"Relay: {b.name} ✕" if b else "Connect relay…")
-        self.relay_btn.setToolTip("Disconnect from the relay" if b else
+        self.relay_btn.setText(f"Relay: {b.name} ▾" if b else "Connect relay…")
+        self.relay_btn.setToolTip(f"The relay {b.name} (version {b.relay_version or '?'})" if b else
                                   "Use an RTL-SDR on another PC running SDR Tools Relay")
+        if b:
+            menu = QMenu(self)
+            self._relay_update_action = menu.addAction("Looking for a newer relay version…")
+            self._relay_update_action.setEnabled(False)
+            self._relay_update_action.triggered.connect(self.update_relay)
+            menu.addAction("Disconnect", self.disconnect_relay)
+            self.relay_btn.setMenu(menu)
+            self._run_task(relay.latest_relay_version, self._relay_latest, lambda msg: self._relay_latest(""))
+        else:
+            self.relay_btn.setMenu(None)
         self.status.setText(message)
         log.info(message)
-        if self.running and self._is_radio():
+        if restart and self.running and self._is_radio():
             self._stop_mode()
             self._start_mode()
+
+    def disconnect_relay(self):
+        from . import relay
+        b = relay.current()
+        if b is not None:
+            relay.disconnect()
+            self._relay_changed(f"Disconnected from the relay {b.name}: the RTL-SDR modes use this PC's dongle again")
+
+    def _relay_latest(self, latest):
+        from . import relay
+        b = relay.current()
+        action = getattr(self, "_relay_update_action", None)
+        if b is None or action is None:
+            return
+        self._relay_latest_version = latest
+        newer = bool(latest) and relay.parse_version(latest) > relay.parse_version(b.relay_version)
+        action.setEnabled(newer and "update" in b.features)
+        if not latest:
+            action.setText(f"Relay version {b.relay_version or '?'} (couldn't check for a newer one)")
+        elif not newer:
+            action.setText(f"Relay version {b.relay_version} is the latest")
+        elif "update" in b.features:
+            action.setText(f"Update the relay to {latest} (it's on {b.relay_version})")
+            self.status.setText(f"The relay {b.name} is on {b.relay_version}; {latest} is out: see the relay button")
+        else:
+            action.setText(f"Relay {latest} is out: update it on its PC (version {b.relay_version} can't be "
+                           "updated from here)")
+        log.info("relay %s is on %s, latest %s", b.name, b.relay_version, latest or "unknown")
+
+    def update_relay(self):
+        from . import relay
+        from .relay import RelayError
+        b = relay.current()
+        latest = getattr(self, "_relay_latest_version", "")
+        if b is None or not latest:
+            return
+        if QMessageBox.question(self, "Update the relay",
+                                f"Update the relay {b.name} from {b.relay_version} to {latest}? It downloads the "
+                                "release from GitHub, installs it and restarts, which takes a minute or two. "
+                                "The running mode stops meanwhile.") != QMessageBox.StandardButton.Yes:
+            return
+        was_running = self.running and self._is_radio()
+        if was_running:
+            self._stop()
+        self.status.setText(f"Asking the relay {b.name} to update to {latest}…")
+
+        def work():
+            version = relay.request_update(b.host, b.port, b.password)
+            if not relay.wait_for_version(b.host, b.port, version):
+                raise RelayError(f"the relay asked for {version} but hasn't come back with it after 5 minutes: "
+                                 "check it on its PC")
+            return version
+
+        def done(version):
+            b.relay_version = version
+            self._relay_changed(f"The relay {b.name} is updated to {version}", restart=False)
+            if was_running:
+                self.start_btn.setChecked(True)
+
+        def failed(msg):
+            self.status.setText(f"Relay update: {msg}")
+            QMessageBox.warning(self, "Update the relay", msg)
+            if was_running:
+                self.start_btn.setChecked(True)
+
+        self._run_task(work, done, failed)
 
     def fetch_aircraft_db(self):
         """Download the aircraft database (registrations, types) in the background, then restart ADS-B."""

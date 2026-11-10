@@ -100,7 +100,9 @@ on "RTL-SDR" input uses the relay's dongle: rtl_433, DSD-FME and GNSS-SDR talk r
 bridge, and readsb, LoRa and AIS read its samples on stdin. The relay applies its own frequency
 correction, so ADS-B's correction button and range rings are off while it's in use, and distances
 are from your location, not the relay's. A connection over the internet needs the bandwidth of the
-sample rate: about 38 Mbit/s for ADS-B, 4 for AIS and ISM, 16 for LoRa.
+sample rate: about 38 Mbit/s for ADS-B, 4 for AIS and ISM, 16 for LoRa. While connected, the relay
+button's menu says whether the relay is up to date and offers **Update the relay to …** when a
+newer SDR Tools Relay is out (the relay must have a password, and relays from 0.1.2 on).
 
 **GPS position fix** works out where you are from the GPS satellites' own signals, with the
 RTL-SDR on 1575.42 MHz, and fills in "Your location" for the other modes (averaged over the

@@ -203,3 +203,61 @@ def test_lora_through_relay(make_relay, tmp_path):
     _, ev = run_live("lora", found, wait=60, preset="mt:LongFast", region="ANZ")
     assert found(ev), [e.text for e in ev if e.kind in ("line", "raw")][-10:]
     assert r.dongles[-1].rate == 1000000 and ("set_center_freq", 919875000) in r.dongles[-1].calls
+
+
+def test_connect_and_mode_switches_arent_turned_away(make_relay, tmp_path):
+    # Seen on Windows: "in use by someone else" straight after Connect, and after switching
+    # modes, while the relay was still closing the dongle of the connection before.
+    from sdr_relay.rtlsdr import FileDongle as FD
+    rec = tmp_path / "x.cu8"
+    rec.write_bytes(bytes(range(256)) * 64)
+    r = make_relay(rec)
+
+    class SlowClose(FD):
+        def close(self):
+            time.sleep(1.5)
+            super().close()
+
+    def opener():
+        d = SlowClose(rec)
+        r.dongles.append(d)
+        return d
+
+    r.open_dongle = opener
+    b = relay.connect("127.0.0.1", r.config.port, "pw")
+    assert r.dongles == []                     # the password check doesn't open the dongle
+    for _ in range(2):                         # a decoder, then the next mode's decoder straight after
+        s = socket.create_connection(("127.0.0.1", b.local_port), timeout=10)
+        s.sendall(P.command(P.SET_RATE, 250000))
+        head = b""
+        while len(head) < 12:
+            chunk = s.recv(12 - len(head))
+            assert chunk, b.last_error
+            head += chunk
+        assert head[:4] == b"RTL0"
+        s.close()
+    assert len(r.dongles) == 2 and b.last_error == ""
+
+
+def test_update_a_connected_relay(make_relay, tmp_path, monkeypatch):
+    rec = tmp_path / "x.cu8"
+    rec.write_bytes(bytes(256))
+    r = make_relay(rec)
+    asked = []
+
+    def on_update(who):
+        asked.append(who)
+        r.version = "9.9.9"                     # as if it had updated and restarted
+        return True, "9.9.9"
+
+    r.on_update = on_update
+    b = relay.connect("127.0.0.1", r.config.port, "pw")
+    assert b.relay_version == "t" and "update" in b.features
+    assert relay.request_update("127.0.0.1", r.config.port, "pw") == "9.9.9" and asked == ["127.0.0.1"]
+    assert relay.wait_for_version("127.0.0.1", r.config.port, "9.9.9", timeout=3, every=0.2)
+    with pytest.raises(relay.RelayError, match="wrong password"):
+        relay.request_update("127.0.0.1", r.config.port, "nope")
+    r.on_update = None                          # an older relay: no "update" feature
+    with pytest.raises(relay.RelayError, match="can't be updated from here"):
+        relay.request_update("127.0.0.1", r.config.port, "pw")
+    assert relay.parse_version("0.1.10") > relay.parse_version("0.1.9")
