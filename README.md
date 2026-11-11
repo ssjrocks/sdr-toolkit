@@ -150,8 +150,8 @@ to: right-click the spectrum and choose **Decode … MHz too** (DMR/P25, pagers,
 cyan line on the spectrum (with ● while it's decoding something); its output appears under the
 decode area, each line marked with its frequency, and in the decoded log. The channels are cut
 out of the dongle's samples together, from one FFT per block, so a dozen cost less CPU than the
-receiver's own demodulator. Points outside the band the dongle sends wait until it's back there;
-they're kept between sessions. DMR voice from every point plays at the Voice volume (mute one
+receiver's own demodulator; each point runs its own decoder program, though, so up to 24 at once.
+Points outside the band the dongle sends wait until it's back there; they're kept between sessions. DMR voice from every point plays at the Voice volume (mute one
 from its right-click menu); right-click a point to stop it, or **Stop all channels**.
 
 **Survey** sweeps the dongle over its whole tuning range and stitches the slices into one spectrum

@@ -27,7 +27,7 @@ FRAME = 0.04                    # s between spectrum lines (25 a second)
 RECENT = 0.5                    # s of samples kept for identifying signals
 AUTO_ID = 3.0                   # s between automatic identifications of the tuned signal
 POINT_DECODERS = ("dmr", "pager", "aprs", "tones")    # narrow-FM decoders a decode point can run
-MAX_POINTS = 12
+MAX_POINTS = 24
 POINT_WIDTH = 12500             # Hz: each decode point's channel
 
 _radio = tuple(s for s in RADIO_SETTINGS if s.key in ("input", "file", "device"))
