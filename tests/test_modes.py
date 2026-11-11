@@ -731,6 +731,27 @@ def test_adsb_message_rate_and_missed_share(tmp_path):
     assert cols.index("rate") == cols.index("msgs") + 1 and cols.index("missed") == cols.index("rate") + 1
 
 
+def test_big_tables_fill_quickly():
+    """Refilling a big table whose columns fit their contents took seconds (each cell re-measured its
+    column over every row): the Satellite tracker's list froze the window."""
+    from PyQt6.QtWidgets import QApplication, QHeaderView, QTableWidget
+    from sdr_toolkit.widgets import SortItem, filling, sortable
+    app = QApplication.instance() or QApplication([])
+    t = sortable(QTableWidget(0, 6))
+    for i in range(6):
+        t.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+    start = time.perf_counter()
+    for rnd in range(2):
+        with filling(t):
+            t.setRowCount(1500)
+            for r in range(1500):
+                for c in range(6):
+                    t.setItem(r, c, SortItem(f"{r * (c + 1) + rnd} s"))
+        app.processEvents()
+    assert time.perf_counter() - start < 1.0
+    assert t.horizontalHeader().sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents
+
+
 def test_table_sort_order():
     from sdr_toolkit.widgets import sort_key
     cells = ["10 s", "", "abc", "9 s", "-82.1", "7C1234", "3", "12.5 km at 30°", "Zulu", "2026-11-11 08:00"]

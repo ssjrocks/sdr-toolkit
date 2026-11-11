@@ -27,6 +27,7 @@ from ..widgets import FitLabel, SortItem, filling, sortable, unsorted
 from .data import CATEGORIES, short
 
 COMING_HOURS = 12                   # the Coming over tab looks this far ahead
+REFRESH = 1.5                       # s between refreshes while the next passes are coming in
 KIND_NAMES = {"listen": "Listen", "decode": "Decode", "pictures": "Pictures", "telemetry": "Telemetry",
               "out": "Out of range"}
 
@@ -148,6 +149,7 @@ class SatellitePanel(QWidget):
         super().__init__()
         self.catalogue: dict = {}
         self.next_passes: dict = {}
+        self._refreshed = 0.0
         self.home = None
         self.min_el, self.days, self.only_hear = 10.0, 5, True
         self.selected = None              # Satellite
@@ -254,8 +256,13 @@ class SatellitePanel(QWidget):
         self.refresh_list()
         self.timer.start()
 
-    def set_next(self, passes):
+    def set_next(self, passes, done=True):
+        """The next passes (again, as more are worked out). While they're coming in, the tables are
+        refreshed at most every REFRESH s: each refresh of a thousand rows takes a moment."""
         self.next_passes = passes
+        if not done and time.time() - self._refreshed < REFRESH:
+            return
+        self._refreshed = time.time()
         self.refresh_list()
         self.refresh_coming()
 

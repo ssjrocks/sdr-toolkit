@@ -1,6 +1,9 @@
 """Satellite tracker: passes over you, and what the satellites transmit (satellites/)."""
 
+import json
 import logging
+import subprocess
+import sys
 import threading
 import time
 
@@ -9,6 +12,8 @@ from .radio import LOCATION_SETTINGS, home
 
 log = logging.getLogger(__name__)
 NEXT_HOURS = 24                     # the list's "next pass" looks this far ahead
+WORKERS = 3                         # processes working out the next passes (satellites/worker.py)
+REPORT_EVERY = 1.0                  # s between progress reports while they do
 
 
 class SatelliteMode(Mode):
@@ -54,7 +59,7 @@ class SatelliteMode(Mode):
         return home(self.values)
 
     def _load(self):
-        from ..satellites import data, orbit
+        from ..satellites import data
         self._events.append(Event("status", "Getting the satellite list (SatNOGS, CelesTrak)…"))
         try:
             cat = data.load(offline=self.offline, folder=self.folder)
@@ -70,20 +75,47 @@ class SatelliteMode(Mode):
         if here is None:
             self._events.append(Event("status", "Set your location (Settings) for passes"))
             return
+        # The next passes of every satellite, in processes of their own: a thread here would keep
+        # the window's Python busy for seconds. The ones you can listen to come first.
+        from ..satellites.worker import to_passes
         now = time.time()
-        found = {}
-        for i, sat in enumerate(sorted(cat.values(), key=lambda s: (not s.fun, not s.can_hear))):
-            if self._halt.is_set():
-                return
-            try:
-                ps = orbit.passes(orbit.satrec(sat.line1, sat.line2), here, now - 1800, NEXT_HOURS / 24 + 1 / 48,
-                                  float(self.values.get("min_el", 10)), step=60.0)
-            except Exception:  # elements SGP4 can't use (decayed): no passes
-                ps = []
-            found[sat.norad] = [p for p in ps if p.end > now]
-            if i % 100 == 99:
-                self.next_passes = dict(found)
-                self._events.append(Event("sat_next", data={"passes": self.next_passes, "done": False}))
+        sats = sorted(cat.values(), key=lambda s: (not s.fun, not s.can_hear))
+        job = {"home": list(here), "start": now - 1800, "days": NEXT_HOURS / 24 + 1 / 48,
+               "min_el": float(self.values.get("min_el", 10)), "step": 60.0}
+        found, lock = {}, threading.Lock()
+        reported = [0.0]
+
+        def read(proc):
+            for line in proc.stdout:
+                try:
+                    norad, rows = json.loads(line)
+                except ValueError:
+                    continue
+                with lock:
+                    found[norad] = [p for p in to_passes(rows) if p.end > now]
+                    if time.time() - reported[0] >= REPORT_EVERY:
+                        reported[0] = time.time()
+                        self.next_passes = dict(found)
+                        self._events.append(Event("sat_next", data={"passes": self.next_passes, "done": False}))
+
+        self._procs = []
+        readers = []
+        for k in range(WORKERS):
+            part = [[s.norad, s.line1, s.line2] for s in sats[k::WORKERS]]
+            proc = subprocess.Popen([sys.executable, "-m", "sdr_toolkit.satellites.worker"], stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, text=True)
+            self._procs.append(proc)
+            proc.stdin.write(json.dumps(dict(job, sats=part)))
+            proc.stdin.close()
+            t = threading.Thread(target=read, args=(proc,), daemon=True)
+            t.start()
+            readers.append(t)
+        for t in readers:
+            t.join()
+        for proc in self._procs:
+            proc.wait()
+        if self._halt.is_set():
+            return
         self.next_passes = found
         self._events.append(Event("sat_next", data={"passes": found, "done": True}))
 
@@ -95,4 +127,7 @@ class SatelliteMode(Mode):
         halt = getattr(self, "_halt", None)
         if halt is not None:
             halt.set()
+        for proc in getattr(self, "_procs", []):
+            if proc.poll() is None:
+                proc.terminate()
         return []

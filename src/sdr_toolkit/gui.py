@@ -1620,7 +1620,7 @@ class MainWindow(QMainWindow):
             elif e.kind == "sat_catalogue":
                 self.satellite_panel.set_catalogue(e.data["catalogue"])
             elif e.kind == "sat_next":
-                self.satellite_panel.set_next(e.data["passes"])
+                self.satellite_panel.set_next(e.data["passes"], e.data.get("done", True))
             elif e.kind == "point_decoded":
                 d = e.data
                 text = self.decode_area.point_event(d["freq"], d["id"], d["event"])

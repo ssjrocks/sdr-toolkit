@@ -9,16 +9,18 @@ Sortable tables: click a column's heading to sort by it (again for the other way
 numbers, units and all ("9 s" before "10 s", "-82.1" before "3"); the rest as text.
 """
 
+import functools
 import re
 from contextlib import contextmanager
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QLabel, QSizePolicy, QTableWidgetItem, QToolButton
+from PyQt6.QtWidgets import QHeaderView, QLabel, QSizePolicy, QTableWidgetItem, QToolButton
 
 NUMBER = re.compile(r"[-+]?\d+(?:\.\d+)?")
 ORDER = Qt.ItemDataRole.UserRole + 1          # a row's arrival number, on its first cell
 
 
+@functools.lru_cache(maxsize=65536)
 def sort_key(text):
     """Numbers (with anything after them that isn't part of a word: "45 s", "12.5 km at 30°") first,
     in order of value; then text, ignoring case; empty cells last."""
@@ -53,12 +55,25 @@ def unsorted(table):
 
 @contextmanager
 def filling(table):
-    """Sorting paused while cells are written (it would move rows halfway through), then re-applied."""
+    """Sorting paused while cells are written (it would move rows halfway through), then re-applied.
+    Columns sized to their contents are fixed meanwhile and sized once afterwards: otherwise every
+    cell written re-measures its column over the rows (rows x rows: a thousand-row table took
+    seconds, long enough for "not responding")."""
     on = table.isSortingEnabled()
     table.setSortingEnabled(False)
+    hh = table.horizontalHeader()
+    fit = [i for i in range(table.columnCount())
+           if hh.sectionResizeMode(i) == QHeaderView.ResizeMode.ResizeToContents]
+    for i in fit:
+        hh.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+    table.setUpdatesEnabled(False)
     try:
         yield
     finally:
+        for i in fit:
+            if i < table.columnCount():
+                hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+        table.setUpdatesEnabled(True)
         if on:
             table.setSortingEnabled(True)
 
