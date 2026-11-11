@@ -1,6 +1,6 @@
 [project]
 name = "sdr-toolkit"
-version = "0.8.6"
+version = "0.8.7"
 description = "Decoders for amateur and utility radio data modes, fed by any audio playing on an Ubuntu desktop"
 readme = "README.md"
 requires-python = ">=3.12"
