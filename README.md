@@ -88,6 +88,13 @@ or else a Wikipedia photo of its type. No free service has photos of individual 
 get a photo of their type. Looking up a photo sends the aircraft's ICAO address or the type to
 those sites.
 
+**On the map, aircraft and ships move on between reports:** from their last position along their
+course at their speed, redrawn ten times a second. Once a track has missed three of its usual
+updates (at least 5 s), its position is a prediction: the icon flashes, with a dashed line back to
+the last position heard; it goes on moving while other messages (speed, altitude) still arrive,
+and an aircraft leaves the map 60 s after its last message of any kind. Ships coast on for up to
+10 minutes, as their reports are further apart.
+
 **ADS-B range rings** show how far your station hears in each direction: the furthest position
 heard (red, dashed) and how far reception is reliable (green: at least 80% of an aircraft's
 position updates still arrive within 10 s of the one before). Purple (dotted) is an estimate of

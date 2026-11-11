@@ -126,7 +126,8 @@ class ADSBMode(RadioMode):
             flight = a.get("flight", "").strip()
             alt = a.get("alt_baro", a.get("alt_geom", ""))
             points.append({"id": hexid, "lat": a["lat"], "lon": a["lon"], "kind": "aircraft",
-                           "pos_t": self._pos_t.get(hexid, last), "gs": a.get("gs"),
+                           "pos_t": self._pos_t.get(hexid, last), "msg_t": last, "gs": a.get("gs"),
+                           "course": a.get("track", a.get("calc_track")),
                            "label": f"{flight or hexid.upper()} {alt}" if alt != "" else (flight or hexid.upper()),
                            "heading": a.get("track", a.get("calc_track")), "track": list(track),
                            "name": flight or a.get("r", ""), "alt": alt if isinstance(alt, (int, float)) else None,

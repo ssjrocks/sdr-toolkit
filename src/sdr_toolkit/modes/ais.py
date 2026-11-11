@@ -116,6 +116,7 @@ class AISMode(RadioMode):
         ship["last"] = now
         if "lat" in report.fields:
             ship["track"] = (ship["track"] + [(report.fields["lat"], report.fields["lon"])])[-30:]
+            ship["pos_t"] = now
         self._dirty = True
         return [Event("log", self._describe(report), style="pos" if "lat" in report.fields else "")]
 
@@ -160,6 +161,9 @@ class AISMode(RadioMode):
                 points.append({"id": s["mmsi"], "lat": pos[0], "lon": pos[1], "kind": "ship",
                                "label": s.get("name") or str(s["mmsi"]),
                                "heading": s.get("heading", s.get("course")), "track": s["track"],
+                               # for the map to move it on between reports (mapview.py)
+                               "pos_t": s.get("pos_t", s["last"]), "msg_t": s["last"], "gs": s.get("speed"),
+                               "course": s.get("course"),
                                "name": s.get("name", ""),
                                "info": {k: s[k] for k in ("name", "callsign", "imo", "type", "destination",
                                                           "length", "beam", "class") if k in s}})

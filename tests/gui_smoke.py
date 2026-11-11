@@ -341,6 +341,24 @@ results["rings_estimated"] = (est is not None and "heard to about" in win.map.ri
 if shots:
     win.map.refit()
     win.map.grab().save(str(shots / "rings.png"))
+# Markers move on between reports; one whose positions stopped 20 s ago is a flashing prediction.
+now = time.time()
+fresh = coverage.destination(here, 200.0, 30.0)
+stale = coverage.destination(here, 30.0, 60.0)
+win.map.show_rings = False
+win.handle([gui.Event("points", data={"home": here, "heard": {}, "points": [
+    {"id": "aa0001", "kind": "aircraft", "lat": fresh[0], "lon": fresh[1], "pos_t": now - 0.5, "msg_t": now - 0.5,
+     "gs": 300, "course": 200.0, "heading": 200.0, "label": "FRESH 12000", "track": []},
+    {"id": "aa0002", "kind": "aircraft", "lat": stale[0], "lon": stale[1], "pos_t": now - 20, "msg_t": now - 1,
+     "gs": 450, "course": 30.0, "heading": 30.0, "label": "STALE 35000", "track": []}]})])
+win.map.refit()
+live = {p_["id"]: win.map.live(p_) for p_ in win.map.current()}
+results["map_dead_reckoning"] = (win.map._anim.isActive() and not live["aa0001"]["predicted"]
+                                 and live["aa0002"]["predicted"] and live["aa0002"]["lat"] > stale[0])
+if shots:
+    win.map.grab().save(str(shots / "predicted.png"))
+win.map.show_rings = True
+win.handle([gui.Event("points", data={"points": [], "home": here})])
 win._save_coverage()
 results["rings_saved"] = bool(win.logbook.load_coverage("adsb", coverage.site_key(here)))
 # Connect relay: by address to a relay playing a recording, then disconnect.

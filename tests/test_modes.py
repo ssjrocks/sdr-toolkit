@@ -726,6 +726,43 @@ def test_map_projection_and_fit():
     assert app is not None
 
 
+def test_map_moves_markers_on_between_and_after_reports():
+    from PyQt6.QtWidgets import QApplication
+    from sdr_toolkit import mapview
+    app = QApplication.instance() or QApplication([])
+    m = mapview.MapView(online=False)
+    home = (-33.87, 151.21)
+    v = 450 * 1.852 / 3600                                  # km/s
+    t0 = 1_800_000_000.0
+    for i in range(10):                                     # a fix every second, flying north
+        lat, lon = coverage.destination(home, 0.0, 20 + i * v)
+        m.set_points([{"id": "7c1234", "kind": "aircraft", "lat": lat, "lon": lon, "pos_t": t0 + i,
+                       "msg_t": t0 + i, "gs": 450, "course": 0.0, "heading": 0.0}], home)
+    pt = m.points[0]
+    last = t0 + 9
+    # Between reports it moves on at its speed.
+    at = m.live(pt, last + 0.5)
+    assert abs(coverage.bearing_km(home, (at["lat"], at["lon"]))[1] - (20 + 9.5 * v)) < 0.01
+    assert not at["predicted"]
+    # Three missed updates (at its one a second, but at least 5 s): a prediction, still moving.
+    assert not m.live(pt, last + 4)["predicted"]
+    later = m.live(pt, last + 30)
+    assert later["predicted"] and abs(coverage.bearing_km(home, (later["lat"], later["lon"]))[1]
+                                      - (20 + 39 * v)) < 0.01
+    assert later["fix"] == (pt["lat"], pt["lon"])
+    # Messages still coming keep it; 60 s after the last one it's gone.
+    pt["msg_t"] = last + 40
+    assert m.current(last + 90) == [pt] and m.current(last + 101) == []
+    # Without speed and course it stays put; a ship coasts on for longer.
+    still = dict(pt, gs=None)
+    assert m.live(still, last + 30) is still
+    ship = {"id": 1, "kind": "ship", "lat": -33.9, "lon": 151.3, "pos_t": t0, "msg_t": t0, "gs": 10, "course": 90.0}
+    m.points = [ship]
+    assert m.current(t0 + 300) == [ship] and not m.live(ship, t0 + 60)["predicted"]
+    assert m.live(ship, t0 + 120)["predicted"]
+    assert app is not None
+
+
 def test_adsb_ppm_from_readsb_measurements():
     """readsb's estimated_ppm is what's left after the correction already set; the button adds it on."""
     m = BY_ID["adsb"]()

@@ -14,13 +14,23 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import QToolButton, QWidget
 
 from . import __version__
 from .coverage import destination
+
+# Markers move on between reports: from the last position along its course at its speed (dead
+# reckoning), drawn ten times a second. After OVERDUE of its usual updates are missed, the
+# position is a prediction: the icon flashes, with a dashed line back to the last real position.
+FRAME_MS = 100
+OVERDUE = 3                     # missed updates, at the track's usual interval...
+MIN_OVERDUE = 5.0               # ...and at least this many seconds
+DROP_AIRCRAFT = 60.0            # s with no message at all: an aircraft leaves the map
+MAX_COAST = {"aircraft": DROP_AIRCRAFT, "ship": 600.0}    # s of dead reckoning at most
+USUAL = {"aircraft": 1.0, "ship": 30.0}                   # update interval to assume at first
 
 TILE = 256
 URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -68,6 +78,10 @@ class MapView(QWidget):
         self.setMouseTracking(False)
         self.setToolTip("Drag to move, wheel to zoom. Fit shows everything again.")
         self.session: dict = {}          # id -> {"track": [...], "last": point}: everything this session
+        self._usual: dict = {}           # id -> (last position time, its usual update interval)
+        self._anim = QTimer(self)
+        self._anim.setInterval(FRAME_MS)
+        self._anim.timeout.connect(self._animate)
         self.show_session = False
         self.rings = None                # (maximum, reliable, estimated) outlines: [(bearing, km)] each
         self.show_rings = True
@@ -101,7 +115,16 @@ class MapView(QWidget):
     def set_points(self, points, home=None):
         self.points = points
         self.home = home
+        moving = False
         for p in points:
+            t = p.get("pos_t")
+            if t:
+                last, usual = self._usual.get(p["id"], (None, None))
+                if last is not None and t > last:
+                    gap = min(t - last, 600.0)
+                    usual = gap if usual is None else 0.7 * usual + 0.3 * gap
+                self._usual[p["id"]] = (t, usual) if last is None or t >= last else (last, usual)
+                moving = moving or bool(p.get("gs"))
             if p["id"] not in self.session:          # start from the track it already has
                 self.session[p["id"]] = {"track": list(p.get("track") or [])}
             entry = self.session[p["id"]]
@@ -110,12 +133,43 @@ class MapView(QWidget):
                 track.append((p["lat"], p["lon"]))
                 del track[:-5000]
             entry["last"] = p
+        if moving and not self._anim.isActive():
+            self._anim.start()
         if self.follow:
             self.fit()
         self.update()
 
+    def live(self, pt, now=None):
+        """Where a point is now: moved on from its last position at its speed along its course, and
+        whether that's a prediction (its updates are overdue). Unchanged without speed and course."""
+        now = time.time() if now is None else now
+        pos_t, gs = pt.get("pos_t"), pt.get("gs")
+        course = pt.get("course", pt.get("heading"))
+        if not pos_t or not gs or course is None:
+            return pt
+        kind = pt.get("kind", "aircraft")
+        since = max(now - pos_t, 0.0)
+        usual = self._usual.get(pt["id"], (None, None))[1] or USUAL.get(kind, 5.0)
+        km = float(gs) * 1.852 / 3600 * min(since, MAX_COAST.get(kind, DROP_AIRCRAFT))
+        lat, lon = destination((pt["lat"], pt["lon"]), float(course), km)
+        return dict(pt, lat=lat, lon=lon, fix=(pt["lat"], pt["lon"]),
+                    predicted=since > max(OVERDUE * usual, MIN_OVERDUE))
+
+    def current(self, now=None):
+        """The points still on the map: an aircraft goes DROP_AIRCRAFT after its last message."""
+        now = time.time() if now is None else now
+        return [pt for pt in self.points if not (pt.get("kind") == "aircraft" and pt.get("msg_t")
+                                                 and now - pt["msg_t"] > DROP_AIRCRAFT)]
+
+    def _animate(self):
+        if any(pt.get("gs") and pt.get("pos_t") for pt in self.current()):
+            self.update()
+        else:
+            self._anim.stop()
+
     def clear_session(self):
         self.session = {}
+        self._usual = {}
         self.selected = None
         self.set_rings(None)
 
@@ -315,17 +369,19 @@ class MapView(QWidget):
             p.setPen(QPen(QColor(255, 255, 255), 2))
             p.setBrush(QColor(30, 110, 255))
             p.drawEllipse(c, 6, 6)
-        current = {pt["id"] for pt in self.points}
+        now = time.time()
+        shown = self.current(now)
+        current = {pt["id"] for pt in shown}
         if self.show_session:
             for key, entry in self.session.items():
                 if key not in current and "last" in entry:
                     self._draw_one(p, dict(entry["last"], track=entry["track"]), faded=True)
-        for pt in self.points:
+        for pt in shown:
             if self.show_session and pt["id"] in self.session:
                 pt = dict(pt, track=self.session[pt["id"]]["track"])
-            self._draw_one(p, pt)
+            self._draw_one(p, self.live(pt, now), now=now)
 
-    def _draw_one(self, p, pt, faded=False):
+    def _draw_one(self, p, pt, faded=False, now=0.0):
         colour = QColor(220, 60, 40) if pt.get("kind") == "aircraft" else QColor(20, 120, 60)
         if faded:
             colour = QColor(colour.red(), colour.green(), colour.blue(), 110)
@@ -334,12 +390,21 @@ class MapView(QWidget):
             p.setPen(QPen(QColor(colour.red(), colour.green(), colour.blue(), 70 if faded else 140), 2))
             p.drawPolyline(QPolygonF([self._screen(a, b) for a, b in track]))
         c = self._screen(pt["lat"], pt["lon"])
+        if pt.get("fix") and pt.get("predicted"):
+            # A predicted position: a dashed line back to the last real one, and the icon flashes.
+            pen = QPen(QColor(colour.red(), colour.green(), colour.blue(), 170), 1.5)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            p.drawLine(self._screen(*pt["fix"]), c)
+        flash_off = pt.get("predicted") and int(now * 2) % 2 == 1
         if pt["id"] == self.selected:
             p.setPen(QPen(QColor(255, 200, 0), 3))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(c, 15, 15)
         p.save()
         p.translate(c)
+        if flash_off:
+            p.setOpacity(0.15)
         if pt.get("heading") is not None:
             p.rotate(float(pt["heading"]))
         p.setPen(QPen(QColor(255, 255, 255, 120 if faded else 255), 1.5))
@@ -390,9 +455,10 @@ class MapView(QWidget):
 
     def point_at(self, pos, radius=14):
         """The id of the marker nearest *pos* (screen), if within *radius* pixels."""
-        candidates = list(self.points)
+        now = time.time()
+        candidates = [self.live(pt, now) for pt in self.current(now)]
         if self.show_session:
-            current = {pt["id"] for pt in self.points}
+            current = {pt["id"] for pt in candidates}
             candidates += [e["last"] for k, e in self.session.items() if k not in current and "last" in e]
         best, best_d = None, radius
         for pt in candidates:
