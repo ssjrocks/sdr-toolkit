@@ -464,6 +464,25 @@ win._listen_tag(rp.view.tags[0])
 results["tags"] = results["tags"] and win.mode.values["freq_mhz"] == 101.3 and win.mode.values["demod"] == "WFM"
 win._receiver_slid(100.2e6)
 results["slide"] = win.mode.center == 100.2e6
+# Decode points: a channel decoded as well, on the spectrum and in the decode area, saved and removed.
+import json as _json  # noqa: E402
+pf = rp.view.center + 300000
+win.add_point(pf, "tones")
+for _ in range(20):
+    time.sleep(0.05)
+    pump(1)
+results["decode_point"] = (len(win.mode.points) == 1 and [p_["freq"] for p_ in rp.view.points] == [pf]
+                           and win.decode_area.points_box.isVisible() and "Decoding 1 channel" in
+                           win.decode_area.points_title.text()
+                           and _json.loads(win.settings.value("receiver/points"))[0]["decoder"] == "tones")
+if shots:
+    win.grab().save(str(shots / "decode_points.png"))
+win.remove_all_points()
+for _ in range(10):
+    time.sleep(0.05)
+    pump(1)
+results["decode_point_removed"] = (not win.mode.points and not rp.view.points
+                                   and not win.decode_area.points_box.isVisible() and not win._saved_points())
 # The step buttons: 80% of what's shown; the waterfall's history moves with the band, not wiped.
 view = rp.view
 before = view.center

@@ -397,6 +397,72 @@ def test_receiver_identify_listens_then_decodes(monkeypatch, tmp_path):
         m.stop()
 
 
+def test_channelizer_gives_each_channel_cleanly():
+    """Two narrow FM signals in one 2.4 MS/s stream, cut out together: each one's tone comes out
+    clean at 48 kHz, with no click where the blocks meet, in odd-sized input blocks."""
+    n = RATE * 2
+    tt = np.arange(n) / RATE
+    x = noise(n, 0.01)
+    for off, tone in ((312345.0, 1000.0), (-498765.0, 1500.0)):
+        x = x + 0.3 * np.exp(1j * (2 * np.pi * off * tt + 2 * np.pi * 2500 * np.cumsum(np.sin(2 * np.pi * tone * tt)) / RATE))
+    ch = dsp.Channelizer(RATE)
+    ch.set("a", 312345.0)
+    ch.set("b", -498765.0)
+    got = {"a": [], "b": []}
+    rng = np.random.default_rng(0)
+    i = 0
+    while i < n:
+        k = int(rng.integers(5000, 200000))
+        for key, y in ch.process(x[i:i + k].astype(np.complex64)).items():
+            got[key].append(dsp.fm_discriminator(ch.channels[key], y, 2500))
+        i += k
+    for key, tone in (("a", 1000.0), ("b", 1500.0)):
+        a = np.concatenate(got[key])[4800:]           # after the filters fill
+        assert abs(len(a) - (n / RATE * 48000 - 4800)) < 1200
+        assert abs(tone_freq(a) - tone) < 3, key
+        ideal = np.sin(2 * np.pi * tone * np.arange(len(a)) / 48000)
+        fit = np.linalg.lstsq(np.c_[ideal, np.cos(2 * np.pi * tone * np.arange(len(a)) / 48000)], a, rcond=None)
+        resid = a - np.c_[ideal, np.cos(2 * np.pi * tone * np.arange(len(a)) / 48000)] @ fit[0]
+        assert np.max(np.abs(resid)) < 0.15, (key, np.max(np.abs(resid)))       # no clicks
+
+
+def test_decode_points_decode_several_channels_at_once(monkeypatch, tmp_path):
+    import signals
+    from scipy.signal import resample_poly
+    page = np.concatenate([np.zeros(11025), signals.pocsag(1234567, "HELLO PAGER 42", 1200), np.zeros(22050)])
+    page = resample_poly(page / np.max(np.abs(page)), 48000, 22050).astype(np.float32)
+    aprs = signals.aprs_packets(48000)
+    aprs = (aprs / np.max(np.abs(aprs))).astype(np.float32)
+    n = max(len(page), len(aprs))
+    page, aprs = (np.concatenate([a, np.zeros(n - len(a), np.float32)]) for a in (page, aprs))
+    x = fm_iq(page, 300000, 4500) + fm_iq(aprs, -400000, 3000)
+    rec = save_iq(tmp_path / "two.cu8", x)
+    m = start_receiver(monkeypatch, input="file", file=str(rec), file_rate=RATE, freq_mhz=101.1, demod="WFM",
+                       bandwidth=180000)
+    try:
+        poll_for(m, 0.3)
+        centre = m.center
+        m.add_point(centre + 300000, "pager")
+        m.add_point(centre - 400000, "aprs")
+        m.add_point(centre + 5e6, "aprs")                     # outside the band: kept, but silent
+        got = lambda ev: {e.data["id"] for e in ev if e.kind == "point_decoded" and (   # noqa: E731
+            e.data["event"].kind == "row" or ">" in (e.data["event"].text or ""))}
+        ev = poll_for(m, 30, until=lambda ev: got(ev) >= {"pager", "aprs"})
+        assert got(ev) >= {"pager", "aprs"}, [(e.data["id"], e.data["event"].text) for e in ev
+                                              if e.kind == "point_decoded"][-6:]
+        rows = [e.data for e in ev if e.kind == "point_decoded" and e.data["event"].kind == "row"]
+        assert rows[0]["freq"] == centre + 300000 and rows[0]["event"].data["message"] == "HELLO PAGER 42"
+        states = {s["freq"]: s for s in m.point_states()}
+        assert states[centre + 300000]["in_view"] and not states[centre + 5e6]["in_view"]
+        assert states[centre + 300000]["heard"] > 0
+        m.remove_point(centre + 300000)
+        poll_for(m, 0.5)
+        assert len(m.points) == 2
+    finally:
+        m.stop()
+    assert m.points == {}
+
+
 def keyed_carrier(text, offset, wpm=20):
     """A carrier keyed on and off (5 ms raised-cosine edges, as a transmitter's) with the
     timing of the Morse generator's text."""

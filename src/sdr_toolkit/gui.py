@@ -433,6 +433,9 @@ class LogWindow(QDialog):
             Path(path).write_text("\n".join(self.lines) + "\n", encoding="utf-8")
 
 
+POINT_NAMES = {"dmr": "DMR", "pager": "Pager", "aprs": "APRS", "tones": "Tones"}
+
+
 class DecodeArea(QWidget):
     """What a decoder makes of the receiver's audio: its own audio waterfall, then text, a table
     or a picture, as on that decoder's own page."""
@@ -478,17 +481,41 @@ class DecodeArea(QWidget):
         self.stack = QStackedWidget()
         for w in (text_page, self.table, self.picture):
             self.stack.addWidget(w)
+        # Decode points: more channels decoded at once, each line marked with its frequency.
+        self.points_title = FitLabel("")
+        self.stop_points_btn = QPushButton("Stop all channels")
+        self.stop_points_btn.clicked.connect(win.remove_all_points)
+        self.points_text = QPlainTextEdit()
+        self.points_text.setReadOnly(True)
+        self.points_text.setFont(mono)
+        self.points_text.setMaximumBlockCount(5000)
+        self.points_box = QWidget()
+        pl = QVBoxLayout(self.points_box)
+        pl.setContentsMargins(0, 4, 0, 0)
+        ph = QHBoxLayout()
+        ph.addWidget(self.points_title, 1)
+        ph.addWidget(self.stop_points_btn)
+        pl.addLayout(ph)
+        pl.addWidget(self.points_text, 1)
+        self.points_box.setVisible(False)
+        self._points: list = []
+        self.main = QWidget()
+        ml = QVBoxLayout(self.main)
+        ml.setContentsMargins(0, 0, 0, 0)
+        ml.addLayout(head)
+        ml.addWidget(self.waterfall)
+        ml.addWidget(self.stack, 1)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 4, 0, 0)
-        lay.addLayout(head)
-        lay.addWidget(self.waterfall)
-        lay.addWidget(self.stack, 1)
+        lay.addWidget(self.main, 3)
+        lay.addWidget(self.points_box, 2)
         self.setVisible(False)
 
     def show_decoder(self, M):
-        """Set up for decoder class M (None hides the area)."""
+        """Set up for decoder class M (None hides its part of the area)."""
         self.M = M
-        self.setVisible(M is not None)
+        self.main.setVisible(M is not None)
+        self.setVisible(M is not None or bool(self._points))
         if M is None:
             return
         self.title.setText(f"<b>Decoding with {html.escape(M.name)}</b>")
@@ -540,6 +567,32 @@ class DecodeArea(QWidget):
         elif e.kind == "log":
             return e.text if e.style != "pos" else None
         return None
+
+    def set_points(self, states):
+        """The decode points (ReceiverMode.point_states()), for the pane's heading."""
+        self._points = states
+        self.points_box.setVisible(bool(states))
+        self.setVisible(self.M is not None or bool(states))
+        now = time.time()
+        parts = [f"{s['freq'] / 1e6:.4f} {POINT_NAMES.get(s['decoder'], s['decoder'])}"
+                 + (" ●" if now - s["heard"] < 5 else "") + ("" if s["in_view"] else " (outside the band)")
+                 + (" (muted)" if s["muted"] else "") for s in states]
+        self.points_title.setText(f"Decoding {len(states)} channel{'s' if len(states) != 1 else ''}: "
+                                  + ", ".join(parts))
+
+    def point_event(self, freq, decoder, e):
+        """One event from a decode point's decoder; returns text for the logs, if any."""
+        if e.kind == "row":
+            text = "  ".join(f"{v}" for k, v in e.data.items() if str(v) != "" and k not in ("time",))
+        elif e.kind in ("line", "log") and e.text and e.style != "pos":
+            text = e.text.strip()
+        else:
+            return None
+        line = f"{freq / 1e6:.4f}  {POINT_NAMES.get(decoder, decoder):<6} {text}"
+        color = {"dim": "gray", "warn": "#c33"}.get(e.style)
+        esc = html.escape(line).replace(" ", "&nbsp;")
+        self.points_text.appendHtml(f"<span style='color:{color}'>{esc}</span>" if color else esc)
+        return line if e.style not in ("warn", "dim") else None
 
     def audio(self, tail, rate, markers):
         if len(tail):
@@ -1111,6 +1164,7 @@ class MainWindow(QMainWindow):
         step = self.mode.values.get("step", 1000) or 1000
         mhz = round(round(hz / step) * step / 1e6, 6)
         menu = QMenu(self)
+        names_all = {M.id: M.name for M in MODES}
         menu.addAction(f"Tune to {mhz:.5f} MHz", lambda: self._receiver_changed("freq_mhz", mhz))
         menu.addAction("Identify the signal here", lambda: (self._receiver_changed("freq_mhz", mhz),
                                                              self.mode.identify() if self.running else None))
@@ -1122,6 +1176,24 @@ class MainWindow(QMainWindow):
             menu.addAction(f"Listen to tag “{t['label']}”", lambda t=t: self._listen_tag(t))
             menu.addAction(f"Remove tag “{t['label']}”", lambda t=t: (self.logbook.delete_tag(t["id"]),
                                                                       self._refresh_tags()))
+        from .modes.receiver import POINT_DECODERS
+        saved = self._saved_points()
+        mine = [p for p in saved if abs(p["freq"] - hz) < max((hi - lo) / 80, 6250)]
+        for p in mine:
+            name = POINT_NAMES.get(p["decoder"], p["decoder"])
+            menu.addAction(f"Stop decoding {p['freq'] / 1e6:.4f} MHz ({name})", lambda p=p: self.remove_point(p["freq"]))
+            if p["decoder"] == "dmr":
+                menu.addAction(("Unmute" if p.get("muted") else "Mute") + f" {p['freq'] / 1e6:.4f} MHz's voice",
+                               lambda p=p: self.mute_point(p["freq"], not p.get("muted")))
+        if not mine:
+            here = menu.addMenu(f"Decode {mhz:.4f} MHz too (at the same time)")
+            for k in POINT_DECODERS:
+                here.addAction(names_all.get(k, k), lambda k=k: self.add_point(mhz * 1e6, k))
+        tagged = [t for t in self.logbook.tags(lo, hi) if t.get("decoder") in POINT_DECODERS
+                  and not any(abs(p["freq"] - t["freq"]) < 1 for p in saved)]
+        if tagged:
+            menu.addAction(f"Decode the {len(tagged)} tagged channel{'s' if len(tagged) != 1 else ''} in view",
+                           lambda: [self.add_point(t["freq"], t["decoder"]) for t in tagged])
         listen = menu.addMenu("Listen as")
         for d in DEMODS:
             listen.addAction(d, lambda d=d: (self._receiver_changed("freq_mhz", mhz), self._receiver_changed("demod", d)))
@@ -1132,6 +1204,71 @@ class MainWindow(QMainWindow):
             dec.addAction(names.get(k, k), lambda k=k: (self._receiver_changed("freq_mhz", mhz),
                                                         self._receiver_changed("decoder", k)))
         menu.exec(pos)
+
+    # ---- decode points -------------------------------------------------
+
+    def _saved_points(self) -> list[dict]:
+        try:
+            return [p for p in json.loads(self.settings.value("receiver/points", "[]") or "[]") if "freq" in p]
+        except (TypeError, ValueError):
+            return []
+
+    def _save_points(self, points):
+        self.settings.setValue("receiver/points", json.dumps(points))
+        self._show_points(force=True)
+
+    def _start_point(self, freq, decoder, muted=False):
+        if self.running and self.mode is not None and self.mode.output == "receiver":
+            M = next((m for m in MODES if m.id == decoder), None)
+            if M is not None:
+                self.mode.add_point(freq, decoder, self._values(M), muted)
+
+    def add_point(self, freq, decoder):
+        points = self._saved_points()
+        if any(abs(p["freq"] - freq) < 1 for p in points):
+            return
+        from .modes.receiver import MAX_POINTS
+        if len(points) >= MAX_POINTS:
+            self.status.setText(f"At most {MAX_POINTS} channels decoded at once")
+            return
+        points.append({"freq": float(freq), "decoder": decoder, "muted": False})
+        self._save_points(points)
+        self._start_point(float(freq), decoder)
+        self.status.setText(f"Decoding {freq / 1e6:.4f} MHz with {POINT_NAMES.get(decoder, decoder)} as well")
+
+    def remove_point(self, freq):
+        self._save_points([p for p in self._saved_points() if abs(p["freq"] - freq) >= 1])
+        if self.running and self.mode is not None and self.mode.output == "receiver":
+            self.mode.remove_point(freq)
+
+    def remove_all_points(self):
+        for p in self._saved_points():
+            self.remove_point(p["freq"])
+
+    def mute_point(self, freq, muted):
+        points = self._saved_points()
+        for p in points:
+            if abs(p["freq"] - freq) < 1:
+                p["muted"] = bool(muted)
+        self._save_points(points)
+        if self.running and self.mode is not None and self.mode.output == "receiver":
+            self.mode.mute_point(freq, muted)
+
+    def _show_points(self, force=False):
+        """The decode points on the spectrum and in the decode area (when something about them changed)."""
+        if self.mode is None or self.mode.output != "receiver":
+            return
+        states = self.mode.point_states() if self.running else []
+        if not states and not self.running:
+            states = [{"freq": p["freq"], "decoder": p["decoder"], "muted": p.get("muted", False), "heard": 0.0,
+                       "in_view": False} for p in self._saved_points()]
+        now = time.time()
+        key = tuple((s["freq"], s["decoder"], s["muted"], s["in_view"], now - s["heard"] < 5) for s in states)
+        if not force and key == getattr(self, "_points_key", None):
+            return
+        self._points_key = key
+        self.receiver_panel.view.points = states
+        self.decode_area.set_points(states)
 
     def _listen_tag(self, t):
         self._receiver_changed("freq_mhz", round(t["freq"] / 1e6, 6))
@@ -1246,6 +1383,8 @@ class MainWindow(QMainWindow):
         self._setup_coverage()
         if self.mode.output == "receiver":
             self._receiver_decoder()
+            for p in self._saved_points():
+                self._start_point(p["freq"], p["decoder"], p.get("muted", False))
         log.info("mode %s started", self.mode.id)
         return True
 
@@ -1400,6 +1539,12 @@ class MainWindow(QMainWindow):
                 if text:
                     self.decoded_log.add(text)
                     self.logbook.add(e.data["id"], text)
+            elif e.kind == "point_decoded":
+                d = e.data
+                text = self.decode_area.point_event(d["freq"], d["id"], d["event"])
+                if text:
+                    self.decoded_log.add(text)
+                    self.logbook.add(d["id"], text)
             elif e.kind == "decoder_audio":
                 self.decode_area.audio(e.data["tail"], e.data["rate"], e.data["markers"])
             elif e.kind == "survey":
@@ -1419,6 +1564,7 @@ class MainWindow(QMainWindow):
                 view.tune, view.mode, view.bandwidth = d["tune"], d["mode"], d["bandwidth"]
                 view.peak_hold = bool(self.mode.values.get("peak_hold", True))
                 view.set_frame(d["db"], d["center"], d["rate"])
+                self._show_points()
                 self.receiver_panel.meter.setText(f"Signal {d['level']:.0f} dBFS" +
                                                   ("" if d["open"] else " · squelched"))
             elif e.kind == "activity":

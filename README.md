@@ -144,6 +144,16 @@ when it ends, before any call is decoded; the decoded voice has its own **Voice*
 spectrum) saves a frequency with a label, demodulator and decoder in the logbook; tags show on the
 spectrum and the survey, and right-clicking one offers to listen with its settings and decoder.
 
+**Decode points** decode several channels at the same time, alongside the one you're listening
+to: right-click the spectrum and choose **Decode … MHz too** (DMR/P25, pagers, APRS or tones), or
+**Decode the tagged channels in view** for tags that have one of those decoders. Each point is a
+cyan line on the spectrum (with ● while it's decoding something); its output appears under the
+decode area, each line marked with its frequency, and in the decoded log. The channels are cut
+out of the dongle's samples together, from one FFT per block, so a dozen cost less CPU than the
+receiver's own demodulator. Points outside the band the dongle sends wait until it's back there;
+they're kept between sessions. DMR voice from every point plays at the Voice volume (mute one
+from its right-click menu); right-click a point to stop it, or **Stop all channels**.
+
 **Survey** sweeps the dongle over its whole tuning range and stitches the slices into one spectrum
 and waterfall. After each retune it throws away the samples of a settle time (150 ms by default,
 250 ms more through a relay, where samples from the old frequency are still on their way), then

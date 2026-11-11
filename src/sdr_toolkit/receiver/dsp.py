@@ -238,3 +238,88 @@ class Demodulator:
         release = 0.5 ** (len(x) / AUDIO_RATE / AGC_RELEASE)
         self._peak = peak if peak > self._peak else max(peak, self._peak * release)
         return x * (0.5 / max(self._peak, 0.5 / AGC_MAX_GAIN))
+
+
+class Channelizer:
+    """Several narrow channels out of the dongle's samples at once, from one FFT per block
+    (overlap-save, half a block of overlap): each channel takes the m bins around its frequency,
+    through its low-pass, and an inverse FFT of m points gives it at 48 kHz directly. Adding
+    a channel costs a small inverse FFT, not another filter over millions of samples a second."""
+
+    def __init__(self, rate, m=1024):
+        self.rate = int(rate)
+        if self.rate % AUDIO_RATE:
+            raise ValueError(f"sample rate {rate} isn't a multiple of {AUDIO_RATE}")
+        self.d = self.rate // AUDIO_RATE
+        self.m = int(m)
+        self.n = self.d * self.m                        # FFT size; each block brings n / 2 new samples
+        self._buf = np.zeros(self.n // 2, np.complex64)  # the previous half block (the overlap)
+        self._new = []
+        self._new_n = 0
+        self._blocks = 0
+        self._filters: dict[float, np.ndarray] = {}
+        self.channels: dict = {}                        # key -> {"offset", "k0", "H", "mixer", "last"}
+
+    def _filter(self, width):
+        """The low-pass for a channel `width` Hz wide, as the m bins around 0 Hz of its spectrum."""
+        H = self._filters.get(width)
+        if H is None:
+            from scipy.signal import firwin
+            taps = min(self.n // 2 + 1, 4 * self.d * 64 + 1)        # short enough for the overlap
+            h = firwin(taps, width / 2, fs=self.rate, window=("kaiser", 7.0))
+            full = np.fft.fft(h, self.n)
+            k = (np.arange(self.m) - self.m // 2) % self.n
+            # The filter's delay (taps // 2 samples) is the same for every channel: undone by the
+            # discard of the first half of each block, which is longer.
+            H = self._filters[width] = (full[k] / self.d).astype(np.complex64)
+        return H
+
+    def set(self, key, offset, width=12500):
+        """A channel `offset` Hz from the dongle's centre (or a new offset for it)."""
+        k0 = int(round(offset / self.rate * self.n))
+        old = self.channels.get(key)
+        ch = {"offset": float(offset), "k0": k0, "H": self._filter(float(width)), "width": float(width),
+              "mixer": Mixer(AUDIO_RATE, offset - k0 * self.rate / self.n),
+              "last": old["last"] if old else 1 + 0j}
+        self.channels[key] = ch
+
+    def remove(self, key):
+        self.channels.pop(key, None)
+
+    def process(self, x) -> dict:
+        """Samples since the last call -> {key: complex baseband at 48 kHz} for each channel."""
+        out = {k: [] for k in self.channels}
+        self._new.append(np.asarray(x, np.complex64))
+        self._new_n += len(x)
+        half = self.n // 2
+        if self._new_n < half:
+            return {k: np.zeros(0, np.complex64) for k in out}
+        data = np.concatenate(self._new)
+        used = (len(data) // half) * half
+        rest = data[used:]
+        for i in range(0, used, half):
+            block = np.concatenate([self._buf, data[i:i + half]])
+            self._buf = data[i:i + half]
+            X = np.fft.fft(block)
+            sign = -1 if self._blocks % 2 else 1
+            for key, ch in self.channels.items():
+                k = (ch["k0"] + np.arange(self.m) - self.m // 2) % self.n
+                y = np.fft.ifft(np.fft.ifftshift(X[k] * ch["H"]))[self.m // 2:]
+                if ch["k0"] % 2 and sign < 0:
+                    y = -y                               # the bin shift's phase from one block to the next
+                out[key].append(y.astype(np.complex64))
+            self._blocks += 1
+        self._new = [rest] if len(rest) else []
+        self._new_n = len(rest)
+        # The mixer takes the last few Hz the bin shift couldn't (a fraction of a bin).
+        return {k: self.channels[k]["mixer"](np.concatenate(v)) if v else np.zeros(0, np.complex64)
+                for k, v in out.items()}
+
+
+def fm_discriminator(ch, y, deviation=5000.0):
+    """A channel's narrow-FM audio, scaled as the receiver's NFM (+-1 at about the deviation)."""
+    if not len(y):
+        return np.zeros(0, np.float32)
+    prev = np.concatenate([[ch["last"]], y[:-1]])
+    ch["last"] = y[-1]
+    return (np.angle(y * np.conj(prev)) * AUDIO_RATE / (2 * np.pi * deviation)).astype(np.float32)

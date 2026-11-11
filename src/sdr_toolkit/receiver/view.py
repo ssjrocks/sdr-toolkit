@@ -101,6 +101,7 @@ class SpectrumView(QWidget):
         self._drag = None
         self._hover = None
         self.tags: list[dict] = []      # {"freq", "label"} shown as markers
+        self.points: list[dict] = []    # decode points (ReceiverMode.point_states())
         self._slide_center = None       # where the band is being slid to, drawn before it arrives
         self._slid_at = 0.0
         self.step_btns = []
@@ -274,6 +275,23 @@ class SpectrumView(QWidget):
                 box = QRectF(xt + 2, BAR + 2, r.width() + 8, r.height() + 2)
                 p.fillRect(box, QColor(255, 210, 60, 220))
                 p.setPen(QColor(20, 20, 20))
+                p.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
+        # Decode points: channels decoded at the same time (● while they're decoding something).
+        now = time.time()
+        names = {"dmr": "DMR", "pager": "Pager", "aprs": "APRS", "tones": "Tones"}
+        for pt in self.points:
+            if lo <= pt["freq"] <= hi:
+                xp = self.x_of(pt["freq"])
+                pen = QPen(QColor(60, 220, 230, 210), 1)
+                pen.setStyle(Qt.PenStyle.DotLine)
+                p.setPen(pen)
+                p.drawLine(QPointF(xp, BAR), QPointF(xp, h))
+                label = names.get(pt["decoder"], pt["decoder"]) + (" ●" if now - pt["heard"] < 5 else "") \
+                    + (" muted" if pt.get("muted") else "")
+                r = p.fontMetrics().boundingRect(label)
+                box = QRectF(xp + 2, top - r.height() - 22, r.width() + 8, r.height() + 2)
+                p.fillRect(box, QColor(60, 220, 230, 220))
+                p.setPen(QColor(10, 20, 30))
                 p.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
         # Tuned frequency
         p.setPen(QPen(QColor(255, 70, 70), 1))

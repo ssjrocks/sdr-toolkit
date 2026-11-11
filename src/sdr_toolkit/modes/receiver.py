@@ -5,6 +5,7 @@ LSB, CW) on the frequency you click, and every setting of the dongle. The dongle
 driven through rtl_tcp (this PC's, or a connected relay's); see receiver/source.py.
 """
 
+import collections
 import logging
 import threading
 import time
@@ -25,6 +26,9 @@ log = logging.getLogger(__name__)
 FRAME = 0.04                    # s between spectrum lines (25 a second)
 RECENT = 0.5                    # s of samples kept for identifying signals
 AUTO_ID = 3.0                   # s between automatic identifications of the tuned signal
+POINT_DECODERS = ("dmr", "pager", "aprs", "tones")    # narrow-FM decoders a decode point can run
+MAX_POINTS = 12
+POINT_WIDTH = 12500             # Hz: each decode point's channel
 
 _radio = tuple(s for s in RADIO_SETTINGS if s.key in ("input", "file", "device"))
 DECODER_NAMES = {"morse": "Morse / CW", "rtty": "RTTY", "psk": "PSK31 / 63 / 125", "navtex": "NAVTEX",
@@ -137,6 +141,11 @@ class ReceiverMode(Mode):
         self.decoder: DecoderHost | None = None
         self._decoder_request = None
         self._decoder_events: list = []
+        self.points: dict = {}          # decode points: freq (Hz) -> {"decoder", "host", "muted", "heard"}
+        self._point_requests: collections.deque = collections.deque()
+        self._point_events: list = []
+        self._chz = None                # their channelizer
+        self._chz_center = None
         self._decoder_note = ""
         self._recent: list = []
         self._recent_n = 0
@@ -247,9 +256,12 @@ class ReceiverMode(Mode):
             if v["fft"] != old["fft"]:
                 self.spectrum = dsp.Spectrum(int(v["fft"]), float(v["average"]))
             self.spectrum.average = float(v["average"])
-            if v.get("voice_volume") != old.get("voice_volume") and self.decoder is not None:
+            if v.get("voice_volume") != old.get("voice_volume"):
                 vol = int(v["voice_volume"])
-                self.decoder.call(lambda mode: getattr(mode, "set_voice_volume", lambda _: None)(vol))
+                if self.decoder is not None:
+                    self.decoder.call(lambda mode: getattr(mode, "set_voice_volume", lambda _: None)(vol))
+                for pt in list(self.points.values()):
+                    self._point_volume(pt)
             if self.survey is not None:                          # takes effect from the next slice
                 self.survey.settle = self._settle()
                 self.survey.dwell = float(v["dwell_ms"]) / 1000
@@ -278,6 +290,8 @@ class ReceiverMode(Mode):
             if not v["mute"] and v["demod"] != "RAW":
                 self.audio.play(audio, float(v["volume"]) / 100)
             self._decoder_step(audio)
+            if self.points or self._point_requests:
+                self._points_step(x, time.time())
             if self._listen is not None:
                 self._listen_step(x)
             self._recent.append(x)
@@ -435,6 +449,80 @@ class ReceiverMode(Mode):
         if self.decoder is not None:
             self.decoder.call(fn)
 
+    # ---- decode points: more channels decoded at once ----------------------
+
+    def add_point(self, freq, decoder, values=None, muted=False):
+        """Decode `freq` (Hz, inside the span) with a narrow-FM decoder as well, at the same time as
+        everything else. Runs on the receiver's thread at its next block."""
+        self._point_requests.append(("add", float(freq), decoder, dict(values or {}), muted))
+
+    def remove_point(self, freq):
+        self._point_requests.append(("remove", float(freq), None, None, None))
+
+    def mute_point(self, freq, muted):
+        self._point_requests.append(("mute", float(freq), None, None, muted))
+
+    def _point_volume(self, pt):
+        vol = 0 if pt["muted"] else int(self.values.get("voice_volume", 100))
+        pt["host"].call(lambda mode: getattr(mode, "set_voice_volume", lambda _: None)(vol))
+
+    def _points_step(self, x, now):
+        rate = int(self.values["rate"])
+        while self._point_requests:
+            what, freq, decoder, values, muted = self._point_requests.popleft()
+            pt = self.points.get(freq)
+            if what == "add" and pt is None and len(self.points) < MAX_POINTS:
+                from . import MODES
+                M = next(m for m in MODES if m.id == decoder)
+                vals = {s.key: s.default for s in M.settings}
+                vals.update(values)
+                if decoder == "dmr":
+                    from .digital_voice import RECEIVER_AUDIO
+                    vals["input"] = RECEIVER_AUDIO
+                    vals["voice_volume"] = 0 if muted else int(self.values.get("voice_volume", 100))
+                try:
+                    host = DecoderHost(M(), vals)
+                except Exception as e:  # missing parts or a bad setting: said, and not added
+                    log.info("decode point %s: %s", decoder, e)
+                    self._point_events.append((freq, decoder, Event("line", f"Couldn't start {M.name}: {e}",
+                                                                     style="warn")))
+                    continue
+                self.points[freq] = {"decoder": decoder, "host": host, "muted": bool(muted), "heard": 0.0}
+                self._chz_center = None                  # place its channel
+            elif what == "remove" and pt is not None:
+                self._point_events += [(freq, pt["decoder"], e) for e in pt["host"].stop()]
+                del self.points[freq]
+                if self._chz is not None:
+                    self._chz.remove(freq)
+            elif what == "mute" and pt is not None:
+                pt["muted"] = bool(muted)
+                self._point_volume(pt)
+        if not self.points:
+            self._chz = None
+            return
+        if self._chz is None or self._chz.rate != rate:
+            self._chz = dsp.Channelizer(rate)
+            self._chz_center = None
+        if self._chz_center != self.center:
+            # Only the points inside the band the dongle sends get a channel (and audio).
+            self._chz_center = self.center
+            for freq in self.points:
+                off = freq - self.center
+                if abs(off) + POINT_WIDTH / 2 <= rate / 2:
+                    self._chz.set(freq, off, POINT_WIDTH)
+                else:
+                    self._chz.remove(freq)
+        for freq, y in self._chz.process(x).items():
+            pt = self.points.get(freq)
+            if pt is not None and len(y):
+                pt["host"].feed(dsp.fm_discriminator(self._chz.channels[freq], y), now)
+
+    def point_states(self) -> list[dict]:
+        """For the window: each decode point, whether it's in the band, and when it last decoded."""
+        rate = int(self.values["rate"])
+        return [{"freq": f, "decoder": pt["decoder"], "muted": pt["muted"], "heard": pt["heard"],
+                 "in_view": abs(f - self.center) + POINT_WIDTH / 2 <= rate / 2} for f, pt in self.points.items()]
+
     def _decoder_step(self, audio):
         req, self._decoder_request = self._decoder_request, None
         if req is not None:
@@ -480,6 +568,16 @@ class ReceiverMode(Mode):
                                                        "markers": d.mode.markers()}))
         pending, self._decoder_events = self._decoder_events, []
         events += [Event("decoded", data={"id": i, "event": e}) for i, e in pending]
+        for freq, pt in list(self.points.items()):
+            evs, _ = pt["host"].drain()
+            if pt["host"].error:
+                evs.append(Event("line", pt["host"].error, style="warn"))
+                pt["host"].error = ""
+            if any(e.kind in ("line", "row", "log") and e.style not in ("dim", "warn") for e in evs):
+                pt["heard"] = time.time()
+            self._point_events += [(freq, pt["decoder"], e) for e in evs]
+        pending, self._point_events = self._point_events, []
+        events += [Event("point_decoded", data={"freq": f, "id": d, "event": e}) for f, d, e in pending]
         frame, self._frame = self._frame, None
         if frame is not None:
             db, center, rate, level, open_ = frame
@@ -540,6 +638,9 @@ class ReceiverMode(Mode):
         if getattr(self, "decoder", None) is not None:
             self.decoder.stop()
             self.decoder = None
+        for pt in getattr(self, "points", {}).values():
+            pt["host"].stop()
+        self.points = {}
         for part in ("audio", "src"):
             obj = getattr(self, part, None)
             if obj is not None:
