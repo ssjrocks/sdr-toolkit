@@ -168,6 +168,8 @@ class SatellitePanel(QWidget):
         self.list.setToolTip("Click a satellite for its passes and radios. Click a heading to sort.")
         # The map, and what it's doing now
         self.map = map_view
+        self.map.keep_session = False       # where satellites were isn't worth keeping: their passes are
+        self.map.tracks_btn.hide()
         self.now_label = FitLabel("Pick a satellite")
         self.now_label.setFont(QFont(self.now_label.font().family(), -1, QFont.Weight.Bold))
         # Tabs

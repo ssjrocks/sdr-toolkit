@@ -84,6 +84,7 @@ class MapView(QWidget):
         self._anim.setInterval(FRAME_MS)
         self._anim.timeout.connect(self._animate)
         self.show_session = False
+        self.keep_session = True         # remember every track this session (not for satellites)
         self.rings = None                # (maximum, reliable, estimated) outlines: [(bearing, km)] each
         self.show_rings = True
         self.selected = None
@@ -117,7 +118,7 @@ class MapView(QWidget):
         self.points = points
         self.home = home
         moving = False
-        for p in points:
+        for p in points if self.keep_session else ():
             t = p.get("pos_t")
             if t:
                 last, usual = self._usual.get(p["id"], (None, None))
@@ -290,7 +291,7 @@ class MapView(QWidget):
     def _place_buttons(self):
         x = self.width() - 8
         for b in reversed(self._buttons):
-            if b.isHidden() and b is self.rings_btn:
+            if b.isHidden() and b in (self.rings_btn, self.tracks_btn):
                 continue
             b.adjustSize()
             x -= b.width()
