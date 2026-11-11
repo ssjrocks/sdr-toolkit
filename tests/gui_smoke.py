@@ -480,8 +480,16 @@ line[600] = -20
 for _ in range(3):
     sv_.set_frame(line, 100e6, 2.4e6)
 sv_.set_frame(np.full(1024, -100.0), 100.6e6, 2.4e6)
-results["waterfall_kept"] = (int(np.argmax(sv_._rows[1])) == 600 - 256 and sv_._rows[1].max() > 200
-                             and sv_._rows[1][-256:].max() == 0)
+row = sv_.rows()[1]
+black = sv_.cmap[0]
+results["waterfall_kept"] = (list(np.flatnonzero(row[:768] != row[0])) == [600 - 256]
+                             and (row[-256:] == black).all())
+for _ in range(30):                                  # the dongle's frames from its new centre
+    time.sleep(0.1)
+    pump(2)
+    if view._slide_center is None:
+        break
+results["step_arrived"] = view._slide_center is None and abs(view.center - win.mode.center) < 1
 if shots:
     win.grab().save(str(shots / "stepped.png"))
 view.step_btns[0].click()

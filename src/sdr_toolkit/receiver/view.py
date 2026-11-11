@@ -41,6 +41,31 @@ def _colour_map():
     return (0xFF000000 | (rgb[:, 0] << 16) | (rgb[:, 1] << 8) | rgb[:, 2]).astype(np.uint32)
 
 
+def polyline(xs, ys) -> QPolygonF:
+    """A QPolygonF filled straight from numpy (a Python loop over thousands of QPointFs costs
+    milliseconds every frame)."""
+    n = len(xs)
+    poly = QPolygonF()
+    poly.resize(n)
+    if n:
+        ptr = poly.data()
+        ptr.setsize(n * 16)
+        pts = np.frombuffer(ptr, np.float64).reshape(n, 2)
+        pts[:, 0] = xs
+        pts[:, 1] = ys
+    return poly
+
+
+def per_column(values, width):
+    """At most two values per pixel column, so a long FFT doesn't mean a long line to draw: each
+    column's strongest bin (signals stay visible however far it's zoomed out)."""
+    n = len(values)
+    if n <= 2 * width:
+        return np.arange(n) + 0.5, values
+    edges = np.linspace(0, n, width + 1).astype(int)
+    return (edges[:-1] + edges[1:]) / 2, np.maximum.reduceat(values, edges[:-1])
+
+
 def fmt_freq(hz: float) -> str:
     if abs(hz) >= 1e6:
         return f"{hz / 1e6:.3f} MHz".replace(".000 MHz", " MHz")
@@ -71,7 +96,8 @@ class SpectrumView(QWidget):
         self.auto_range = True
         self.zoom = 1.0                 # visible fraction of the span
         self.view_center = 0.0          # offset from the dongle's centre (Hz) at the middle of the view
-        self._rows = None               # waterfall: colour indices, newest first
+        self._rows = None               # waterfall: colours (RGB32), a ring with the newest at _head
+        self._head = 0
         self._drag = None
         self._hover = None
         self.tags: list[dict] = []      # {"freq", "label"} shown as markers
@@ -96,19 +122,20 @@ class SpectrumView(QWidget):
             self._slide_center = None           # the dongle has arrived where the bar was slid to
         if self.rate != rate or self._rows is None or self._rows.shape[1] != len(db):
             self.view_center, self.zoom = 0.0, 1.0
-            self._rows = np.zeros((ROWS, len(db)), np.uint8)
+            self._rows = np.full((ROWS, len(db)), self.cmap[0], np.uint32)
+            self._head = 0
             self.peak = None
         elif self.center != center:
             # The dongle moved: move the waterfall's history with it, so it stays at its frequencies.
             shift = int(round((center - self.center) / rate * len(db)))
             if abs(shift) >= len(db):
-                self._rows[:] = 0
+                self._rows[:] = self.cmap[0]
             elif shift:
                 self._rows = np.roll(self._rows, -shift, axis=1)
                 if shift > 0:
-                    self._rows[:, -shift:] = 0
+                    self._rows[:, -shift:] = self.cmap[0]
                 else:
-                    self._rows[:, :-shift] = 0
+                    self._rows[:, :-shift] = self.cmap[0]
             self.peak = None
         self.center, self.rate = float(center), float(rate)
         self.db = db
@@ -119,9 +146,13 @@ class SpectrumView(QWidget):
             self.lo_db += 0.1 * ((floor - 10) - self.lo_db)
             self.hi_db += 0.1 * (max(top + 5, floor + 30) - self.hi_db)
         idx = np.clip((db - self.lo_db) / max(self.hi_db - self.lo_db, 1) * 255, 0, 255).astype(np.uint8)
-        self._rows = np.roll(self._rows, 1, axis=0)
-        self._rows[0] = idx
+        self._head = (self._head - 1) % ROWS        # a ring: only the new row is written
+        self._rows[self._head] = self.cmap[idx]
         self.update()
+
+    def rows(self):
+        """The waterfall's colours, newest row first."""
+        return np.roll(self._rows, -self._head, axis=0)
 
     # ---- geometry --------------------------------------------------------
 
@@ -190,11 +221,15 @@ class SpectrumView(QWidget):
         f0 = self.center + (b0 / n - 0.5) * self.rate
         f1 = self.center + (b1 / n - 0.5) * self.rate
         x0, x1 = self.x_of(f0), self.x_of(f1)
-        # Waterfall
-        rows = self._rows[:, b0:b1]
-        img = np.ascontiguousarray(self.cmap[rows])
-        qimg = QImage(img.data, img.shape[1], img.shape[0], img.shape[1] * 4, QImage.Format.Format_RGB32)
-        p.drawImage(QRectF(x0, top, x1 - x0, h - top), qimg)
+        # Waterfall: the ring's two parts (newest at _head down to the end, then the rest), drawn
+        # straight from its memory.
+        qimg = QImage(self._rows.data, n, ROWS, n * 4, QImage.Format.Format_RGB32)
+        row_h = (h - top) / ROWS
+        first = ROWS - self._head
+        p.drawImage(QRectF(x0, top, x1 - x0, first * row_h), qimg, QRectF(b0, self._head, b1 - b0, first))
+        if self._head:
+            p.drawImage(QRectF(x0, top + first * row_h, x1 - x0, self._head * row_h), qimg,
+                        QRectF(b0, 0, b1 - b0, self._head))
         # Grid and frequency scale
         p.setPen(QPen(QColor(60, 70, 90), 1))
         step = self._grid_step(hi - lo)
@@ -217,12 +252,15 @@ class SpectrumView(QWidget):
         xa, xb = self.x_of(a), self.x_of(b)
         p.fillRect(QRectF(xa, 0, max(xb - xa, 1), h), QColor(255, 255, 255, 28))
         # Spectrum line and peak hold
-        xs = np.linspace(x0, x1, b1 - b0, endpoint=False) + (x1 - x0) / max(b1 - b0, 1) / 2
+        cols = max(int(x1 - x0), 1)
+        scale = (x1 - x0) / (b1 - b0)
         if self.peak_hold and self.peak is not None:
+            at, v = per_column(self.peak[b0:b1], cols)
             p.setPen(QPen(QColor(200, 120, 40, 140), 1))
-            p.drawPolyline(QPolygonF([QPointF(x, self._y(v, top)) for x, v in zip(xs, self.peak[b0:b1])]))
+            p.drawPolyline(polyline(x0 + at * scale, self._y(v, top)))
+        at, v = per_column(self.db[b0:b1], cols)
         p.setPen(QPen(QColor(120, 220, 255), 1))
-        p.drawPolyline(QPolygonF([QPointF(x, self._y(v, top)) for x, v in zip(xs, self.db[b0:b1])]))
+        p.drawPolyline(polyline(x0 + at * scale, self._y(v, top)))
         # Tags
         for t in self.tags:
             if lo <= t["freq"] <= hi:
@@ -673,15 +711,12 @@ class SurveyView(QWidget):
             f += step
         line = self.cap.spectrum(self.lo, self.hi, w)
         p.setPen(QPen(QColor(120, 220, 255), 1))
-        run = []
-        for x, v in enumerate(line):
-            if np.isfinite(v):
-                run.append(QPointF(x, top - (v - self.lo_db) / max(self.hi_db - self.lo_db, 1) * (top - 26)))
-            elif run:
-                p.drawPolyline(QPolygonF(run))
-                run = []
-        if run:
-            p.drawPolyline(QPolygonF(run))
+        ys = top - (line - self.lo_db) / max(self.hi_db - self.lo_db, 1) * (top - 26)
+        have = np.isfinite(line)
+        # One line per stretch that's been measured (NaN where nothing has).
+        edges = np.flatnonzero(np.diff(np.concatenate([[0], have.astype(np.int8), [0]])))
+        for a, b in zip(edges[::2], edges[1::2]):
+            p.drawPolyline(polyline(np.arange(a, b, dtype=np.float64), ys[a:b]))
         for t in self.tags:
             if self.lo <= t["freq"] <= self.hi:
                 xt = self.x_of(t["freq"])

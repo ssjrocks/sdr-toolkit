@@ -265,14 +265,16 @@ class ReceiverMode(Mode):
             x = dsp.cu8(data)
             if self._survey_step(x):
                 continue
+            # Under the lock: apply() changes the demodulator in place (a new mode rebuilds its
+            # filters), and a block caught halfway through that came out broken.
             with self._lock:
                 demod, spectrum = self.demod, self.spectrum
                 v = self.values
-            try:
-                audio = demod.process(x)
-            except Exception:  # a bad block must not end the receiver
-                log.exception("demodulator")
-                continue
+                try:
+                    audio = demod.process(x)
+                except Exception:  # a bad block must not end the receiver
+                    log.exception("demodulator")
+                    continue
             if not v["mute"] and v["demod"] != "RAW":
                 self.audio.play(audio, float(v["volume"]) / 100)
             self._decoder_step(audio)
