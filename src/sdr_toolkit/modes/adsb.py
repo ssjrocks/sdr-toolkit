@@ -63,6 +63,7 @@ class ADSBMode(RadioMode):
         self._last_read = 0.0
         self._known = {}
         self._tracks: dict[str, list] = {}
+        self._pos_t: dict[str, float] = {}
         self._ppm_readings: list[float] = []     # readsb's 30-second clock measurements
         self._ppm_last = None
         self._logged: dict[str, tuple] = {}
@@ -93,6 +94,8 @@ class ADSBMode(RadioMode):
         now = data.get("now", time.time())
         for a in data.get("aircraft", []):
             self._known[a["hex"]] = (now - a.get("seen", 0), a)
+            if "lat" in a and "seen_pos" in a:
+                self._pos_t[a["hex"]] = now - a["seen_pos"]      # when that position was heard
         ttl = self.values["ttl"]
         self._known = {k: v for k, v in self._known.items() if now - v[0] < ttl}
         rows = []
@@ -123,6 +126,7 @@ class ADSBMode(RadioMode):
             flight = a.get("flight", "").strip()
             alt = a.get("alt_baro", a.get("alt_geom", ""))
             points.append({"id": hexid, "lat": a["lat"], "lon": a["lon"], "kind": "aircraft",
+                           "pos_t": self._pos_t.get(hexid, last), "gs": a.get("gs"),
                            "label": f"{flight or hexid.upper()} {alt}" if alt != "" else (flight or hexid.upper()),
                            "heading": a.get("track", a.get("calc_track")), "track": list(track),
                            "name": flight or a.get("r", ""), "alt": alt if isinstance(alt, (int, float)) else None,
@@ -135,13 +139,16 @@ class ADSBMode(RadioMode):
                 log.append(Event("log", f"{hexid.upper()} {flight or '(no callsign yet)'}: {alt} ft, "
                                         f"{a['lat']:.4f}, {a['lon']:.4f}"))
         self._tracks = {k: v for k, v in self._tracks.items() if k in self._known}
+        self._pos_t = {k: v for k, v in self._pos_t.items() if k in self._known}
         here = None
         try:
             here = (float(self.values["lat"]), float(self.values["lon"]))
         except (KeyError, ValueError):
             pass
         return [Event("table", data={"rows": rows}),
-                Event("points", data={"points": points, "home": here})] + log
+                Event("points", data={"points": points, "home": here,
+                                      # every aircraft's latest message, positions or not (the rings' estimate)
+                                      "heard": {h: last for h, (last, _) in self._known.items()}})] + log
 
     def listening_on(self):
         return "1090 MHz"

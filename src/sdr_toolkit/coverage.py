@@ -8,7 +8,12 @@ For each sector:
 - reliable range: how far out an aircraft's position keeps arriving, at least 80% of
   updates within 10 s of the one before. Close in nearly every update is on time;
   towards the edge of reception they get patchy. It's the outer edge of the bins,
-  counted from the centre, where that holds (bins with under 10 updates are skipped).
+  counted from the centre, where that holds (bins with under 10 updates are skipped);
+- estimated range: how far out aircraft still are while they're heard without a position.
+  An aircraft flying away often goes on sending other messages (speed, altitude, its
+  identity) after its last position, and one flying in is often heard before its first: from
+  the nearest position and its ground speed and track, it's dead-reckoned forward to its last
+  message, or back to its first. Only gaps of at least EST_GAP and at most MAX_DR count.
 
 The counts are kept per location (rounded to about 1 km) in the logbook, so the
 rings build up over days.
@@ -21,6 +26,9 @@ BIN_KM = 5.0
 ON_TIME = 10.0          # s: an update this soon after the last one is "on time"
 RELIABLE = 0.8
 MIN_UPDATES = 10
+EST_GAP = 5.0           # s: a gap between messages and positions shorter than this isn't estimated
+MAX_DR = 300.0          # s: dead reckoning past this is too rough (turns, climbs)
+FORGET = 120.0          # s with nothing heard: an aircraft heard again starts afresh
 
 
 def bearing_km(home, pos) -> tuple[float, float]:
@@ -52,12 +60,16 @@ class Coverage:
         self.total = data.get("total", [[] for _ in range(SECTORS)])
         self.on_time = data.get("on_time", [[] for _ in range(SECTORS)])
         self.max_km = data.get("max_km", [0.0] * SECTORS)
+        self.est_km = data.get("est_km", [0.0] * SECTORS)
+        self._heard: dict[str, tuple] = {}       # key -> (first, last) message time of this visit
+        self._fix: dict[str, tuple] = {}         # key -> (t, lat, lon, ground speed kt, track°): its last position
+        self._entry: dict[str, tuple] = {}       # key -> (t, lat, lon) of its first position this visit
         self._last: dict[str, tuple] = {}        # key -> (t, lat, lon) of its last new position
         self._count: dict[str, int] = {}
         self._first: dict[str, tuple] = {}       # an aircraft's first position, counted once it's heard again
 
     def data(self) -> dict:
-        return {"total": self.total, "on_time": self.on_time, "max_km": self.max_km}
+        return {"total": self.total, "on_time": self.on_time, "max_km": self.max_km, "est_km": self.est_km}
 
     def _bin(self, sector, i, table):
         row = table[sector]
@@ -65,11 +77,54 @@ class Coverage:
             row.extend([0] * (i + 1 - len(row)))
         row[i] += 1
 
-    def add(self, key, t, lat, lon) -> bool:
-        """A position update; returns True if it changed anything."""
+    def heard(self, key, t) -> bool:
+        """Any message from an aircraft (its latest at time t). While positions have stopped coming,
+        it's dead-reckoned from its last one. Returns True if the estimated range grew."""
+        first, last = self._heard.get(key, (None, None))
+        if last is None or t - last > FORGET:
+            self._heard[key] = (t, t)                  # a new visit
+            for table in (self._fix, self._entry, self._last):
+                table.pop(key, None)
+            return False
+        self._heard[key] = (first, max(last, t))
+        fix = self._fix.get(key)
+        if fix is None or not fix[3] or fix[4] is None or self._count.get(key, 0) < 2:
+            return False
+        dt = t - fix[0]
+        if not EST_GAP <= dt <= MAX_DR:
+            return False
+        return self._estimate(fix[1:3], fix[4], fix[3], dt)
+
+    def _estimate(self, pos, track, knots, seconds) -> bool:
+        km = knots * 1.852 / 3600 * seconds
+        b, d = bearing_km(self.home, destination(pos, track, km))
+        if d > 800:
+            return False
+        s = int(b // (360 / SECTORS)) % SECTORS
+        if d <= self.est_km[s]:
+            return False
+        self.est_km[s] = d
+        return True
+
+    def add(self, key, t, lat, lon, gs=None, track=None) -> bool:
+        """A position update (at time t, with the aircraft's ground speed in knots and track if known);
+        returns True if it changed anything."""
+        if gs and track is not None:
+            entry, heard = self._entry.get(key), self._heard.get(key)
+            if entry is not None and heard is not None and self._count.get(key, 0) >= 2:
+                # Heard before its first position: dead-reckon that position back to the first message.
+                dt = entry[0] - heard[0]
+                self._entry.pop(key)
+                if EST_GAP <= dt <= MAX_DR:
+                    self._estimate(entry[1:], (track + 180) % 360, gs, dt)
         last = self._last.get(key)
         if last and (last[1], last[2]) == (lat, lon):
+            if gs and track is not None and key in self._fix:
+                self._fix[key] = self._fix[key][:3] + (gs, track)
             return False
+        self._fix[key] = (t, lat, lon, gs, track)
+        if key in self._heard and key not in self._entry and last is None:
+            self._entry[key] = (t, lat, lon)
         self._last[key] = (t, lat, lon)
         b, km = bearing_km(self.home, (lat, lon))
         if km > 800:
@@ -85,7 +140,7 @@ class Coverage:
         self.max_km[s] = max(self.max_km[s], km)
         i = int(km // BIN_KM)
         self._bin(s, i, self.total)
-        if t - last[0] <= ON_TIME:
+        if last is not None and t - last[0] <= ON_TIME:
             self._bin(s, i, self.on_time)
         return True
 
@@ -102,14 +157,16 @@ class Coverage:
         return edge
 
     def outlines(self):
-        """(maximum, reliable): each a list of (bearing, km) per sector, or None if nothing yet."""
+        """(maximum, reliable, estimated): each a list of (bearing, km) per sector, or None if nothing yet."""
         step = 360 / SECTORS
         mx = [(s * step + step / 2, self.max_km[s]) for s in range(SECTORS)]
         rel = [(s * step + step / 2, self.reliable_km(s)) for s in range(SECTORS)]
-        return (mx if any(k for _, k in mx) else None, rel if any(k for _, k in rel) else None)
+        est = [(s * step + step / 2, max(self.est_km[s], self.max_km[s])) for s in range(SECTORS)]
+        return (mx if any(k for _, k in mx) else None, rel if any(k for _, k in rel) else None,
+                est if any(self.est_km) else None)
 
     def summary(self) -> str:
-        mx, rel = self.outlines()
+        mx, rel, est = self.outlines()
         if not mx:
             return ""
         far = max(mx, key=lambda x: x[1])
@@ -117,4 +174,6 @@ class Coverage:
         if rel:
             r = [k for _, k in rel if k]
             text += f", reliable to {sum(r) / len(r):.0f} km on average"
+        if est:
+            text += f", heard to about {max(k for _, k in est):.0f} km (estimated)"
         return text

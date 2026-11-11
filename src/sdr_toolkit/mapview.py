@@ -69,7 +69,7 @@ class MapView(QWidget):
         self.setToolTip("Drag to move, wheel to zoom. Fit shows everything again.")
         self.session: dict = {}          # id -> {"track": [...], "last": point}: everything this session
         self.show_session = False
-        self.rings = None                # (maximum, reliable) outlines: [(bearing, km)] each
+        self.rings = None                # (maximum, reliable, estimated) outlines: [(bearing, km)] each
         self.show_rings = True
         self.selected = None
         self._buttons = []
@@ -90,8 +90,8 @@ class MapView(QWidget):
         self.rings_btn.setText("Range")
         self.rings_btn.setCheckable(True)
         self.rings_btn.setChecked(True)
-        self.rings_btn.setToolTip("Range rings: the furthest positions heard in each direction (red) and how "
-                                  "far reception is reliable (green)")
+        self.rings_btn.setToolTip("Range rings: how far reception is reliable (green), the furthest positions "
+                                  "heard (red) and, estimated, where aircraft were still heard (purple)")
         self.rings_btn.toggled.connect(self._set_show_rings)
         self.rings_btn.setVisible(False)
         self._buttons = [self.rings_btn, self.tracks_btn] + self._buttons
@@ -149,8 +149,9 @@ class MapView(QWidget):
         coords = [(p["lat"], p["lon"]) for p in self.points]
         if self.home:
             coords.append(self.home)
-            if self.rings and self.show_rings and self.rings[0]:
-                coords += [destination(self.home, b, km) for b, km in self.rings[0] if km]
+            if self.rings and self.show_rings:
+                for outline in (self.rings[0], self.rings[2] if len(self.rings) > 2 else None):
+                    coords += [destination(self.home, b, km) for b, km in outline or () if km]
         if not coords:
             return
         if len(coords) == 1:
@@ -275,18 +276,32 @@ class MapView(QWidget):
     def _draw_rings(self, p):
         if not (self.rings and self.show_rings and self.home):
             return
-        maximum, reliable = self.rings
-        for outline, colour in ((maximum, QColor(200, 40, 40, 200)), (reliable, QColor(20, 150, 60, 220))):
+        maximum, reliable = self.rings[:2]
+        estimated = self.rings[2] if len(self.rings) > 2 else None
+        # Top first: green over red over purple, each drawn only where the ones above it aren't.
+        layers = ((reliable, QColor(20, 150, 60, 220), Qt.PenStyle.SolidLine),
+                  (maximum, QColor(200, 40, 40, 200), Qt.PenStyle.DashLine),
+                  (estimated, QColor(140, 60, 200, 200), Qt.PenStyle.DotLine))
+        whole = QPainterPath()
+        whole.addRect(QRectF(self.rect()).adjusted(-20, -20, 20, 20))
+        covered = QPainterPath()
+        for outline, colour, style in layers:
             if not outline or not any(km for _, km in outline):
                 continue
-            poly = QPolygonF([self._screen(*destination(self.home, b, km)) for b, km in outline])
+            area = QPainterPath()
+            area.addPolygon(QPolygonF([self._screen(*destination(self.home, b, km)) for b, km in outline]))
+            area.closeSubpath()
+            p.save()
+            if not covered.isEmpty():
+                p.setClipPath(whole.subtracted(covered))
             pen = QPen(colour, 2)
-            if colour.red() > colour.green():
-                pen.setStyle(Qt.PenStyle.DashLine)
+            pen.setStyle(style)
             p.setPen(pen)
-            p.setBrush(QColor(colour.red(), colour.green(), colour.blue(), 25))
-            p.drawPolygon(poly)
-        text = "red dashed: furthest heard · green: reliable reception"
+            p.setBrush(QColor(colour.red(), colour.green(), colour.blue(), 30))
+            p.drawPath(area)
+            p.restore()
+            covered = covered.united(area)
+        text = "green: reliable · red dashed: furthest position · purple dotted: heard, estimated"
         r = p.fontMetrics().boundingRect(text)
         box = QRectF(6, self.height() - r.height() - 6, r.width() + 8, r.height() + 4)
         p.fillRect(box, QColor(255, 255, 255, 200))

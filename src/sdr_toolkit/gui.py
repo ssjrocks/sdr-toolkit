@@ -1341,7 +1341,7 @@ class MainWindow(QMainWindow):
                 self.raw_log.add(e.text)
             elif e.kind == "points":
                 self.map.set_points(e.data["points"], e.data.get("home"))
-                self._log_points(e.data["points"])
+                self._log_points(e.data["points"], e.data.get("heard"))
             elif e.kind == "table":
                 self._set_rows(e.data["rows"])
                 if self._selected is not None and time.time() - self._last_details >= 1.0:
@@ -1492,13 +1492,17 @@ class MainWindow(QMainWindow):
         logged = self.logbook.craft_info(self.mode.id, self._selected)
         self.details.show_details(self._selected, details, logged, heard=details is not None)
 
-    def _log_points(self, points):
+    def _log_points(self, points, heard=None):
         now = time.time()
+        if self.coverage is not None:
+            for key, t in (heard or {}).items():
+                self.coverage.heard(str(key), t)
         for p in points:
             self.logbook.see(self.mode.id, str(p["id"]), p.get("name", ""), p.get("info"), p["lat"], p["lon"],
                              alt=p.get("alt"), heading=p.get("heading"), label=p.get("label", ""), t=now)
             if self.coverage is not None:
-                self.coverage.add(str(p["id"]), now, p["lat"], p["lon"])
+                self.coverage.add(str(p["id"]), p.get("pos_t", now), p["lat"], p["lon"], p.get("gs"),
+                                  p.get("heading"))
         if now - self._last_flush >= 2.0:
             self._last_flush = now
             self.logbook.flush()
@@ -1507,7 +1511,9 @@ class MainWindow(QMainWindow):
             self.map.set_rings(self.coverage.outlines())
             self.map.rings_btn.setToolTip("Range rings" + getattr(self, "_coverage_source", "") + ": " +
                                           (self.coverage.summary() or "nothing yet") +
-                                          ". Red dashed: furthest heard; green: reliable reception.")
+                                          ". Green: reliable reception; red dashed: furthest position heard; "
+                                          "purple: where aircraft were still heard without a position "
+                                          "(estimated from their speed and track).")
             if now - self._coverage_saved >= 60.0:
                 self._save_coverage()
         if self._selected is not None and now - self._last_details >= 1.0:

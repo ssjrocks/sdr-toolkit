@@ -835,15 +835,59 @@ def test_coverage_rings():
                 continue
             lat, lon = coverage.destination(home, 2.0, km)
             cov.add(f"a{n}", t, lat, lon)
-    mx, rel = cov.outlines()
+    mx, rel, est = cov.outlines()
     north = 0
-    assert 199 < mx[north][1] < 201 and rel[north][1] == 120
+    assert 199 < mx[north][1] < 201 and rel[north][1] == 120 and est is None
     assert mx[18][1] == 0 and rel[18][1] == 0                         # nothing heard to the south
     b, km = coverage.bearing_km(home, coverage.destination(home, 123.0, 77.0))
     assert abs(b - 123) < 0.01 and abs(km - 77) < 0.01
     again = coverage.Coverage(home, cov.data())
     assert again.outlines() == cov.outlines()
     assert "furthest 200 km" in cov.summary()
+
+
+def test_coverage_estimates_where_aircraft_are_heard_without_positions():
+    home = (-33.87, 151.21)
+    cov = coverage.Coverage(home)
+    kt = 450
+    v = kt * 1.852 / 3600                            # km/s (0.23)
+    # Outbound north: positions every second out to 150 km, then 90 s more of other messages.
+    t0 = 1000.0
+    for i in range(20):
+        t = t0 + i
+        lat, lon = coverage.destination(home, 0.5, 145.5 + i * v)
+        cov.heard("out", t)
+        cov.add("out", t, lat, lon, kt, 0.5)
+    last_pos = t
+    for i in range(1, 91):
+        assert cov.heard("out", last_pos + i) in (True, False)
+    mx, rel, est = cov.outlines()
+    assert 149 < mx[0][1] < 150.5
+    assert abs(est[0][1] - (mx[0][1] + 90 * v)) < 0.5   # its last message, about 21 km further on
+    # Inbound from the east: heard for 60 s before its first position at 120 km, flying west.
+    cov.heard("in", 5000.0)
+    for i in range(30):
+        cov.heard("in", 5000.0 + i * 2)
+    for i in range(5):
+        t = 5060.0 + i
+        lat, lon = coverage.destination(home, 90.5, 120 - i * v)
+        cov.heard("in", t)
+        cov.add("in", t, lat, lon, kt, 270.5)
+    mx, rel, est = cov.outlines()
+    assert 119.9 < mx[9][1] < 120.1
+    assert abs(est[9][1] - (120 + 60 * v)) < 0.5        # where it was at its first message
+    # Short gaps, no speed, and too long a silence don't count.
+    cov2 = coverage.Coverage(home)
+    for i in range(5):
+        lat, lon = coverage.destination(home, 180.5, 100 + i * v)
+        cov2.heard("s", 10.0 + i)
+        cov2.add("s", 10.0 + i, lat, lon, kt, 180.5)
+    cov2.heard("s", 16.0)                                  # 2 s after its last position
+    cov2.heard("s", 14.0 + coverage.MAX_DR + 5)            # longer than dead reckoning is good for
+    assert cov2.outlines()[2] is None
+    again = coverage.Coverage(home, cov.data())
+    assert again.outlines() == cov.outlines()
+    assert "heard to about" in cov.summary()
 
 
 # ---- Details: photos and the aircraft database

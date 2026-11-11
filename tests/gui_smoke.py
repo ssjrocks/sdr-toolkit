@@ -310,6 +310,28 @@ win._coverage_drawn = 0
 win.handle([gui.Event("points", data={"points": [], "home": here})])
 results["rings"] = (win.map.rings is not None and win.map.rings_btn.isVisible() is not None
                     and not win.map.rings_btn.isHidden() and "furthest 100 km" in win.map.rings_btn.toolTip())
+# The estimated range: aircraft between north and east, positions every second to 70 km, patchy to
+# 100 km, then two minutes of other messages (450 kt: 28 km more).
+for n, brg in enumerate(range(5, 95, 10)):
+    key, t, km = f"est{n}", 10000.0 * (n + 1), 1.0
+    win.coverage.heard(key, t)
+    while km < 100:
+        t += 1
+        km += 450 * 1.852 / 3600
+        win.coverage.heard(key, t)
+        if km < 70 or int(t) % 20 == 0:
+            lat, lon = coverage.destination(here, brg, km)
+            win.coverage.add(key, t, lat, lon, 450, brg)
+    for i in range(1, 121):
+        win.coverage.heard(key, t + i)
+win._coverage_drawn = 0
+win.handle([gui.Event("points", data={"points": [], "home": here})])
+mx, rel, est = win.map.rings
+results["rings_estimated"] = (est is not None and "heard to about" in win.map.rings_btn.toolTip()
+                              and 125 < est[4][1] < 131 and 95 < mx[4][1] < 101 and 60 < rel[4][1] <= 70)
+if shots:
+    win.map.refit()
+    win.map.grab().save(str(shots / "rings.png"))
 win._save_coverage()
 results["rings_saved"] = bool(win.logbook.load_coverage("adsb", coverage.site_key(here)))
 # Connect relay: by address to a relay playing a recording, then disconnect.

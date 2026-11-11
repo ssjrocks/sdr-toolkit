@@ -90,7 +90,11 @@ those sites.
 
 **ADS-B range rings** show how far your station hears in each direction: the furthest position
 heard (red, dashed) and how far reception is reliable (green: at least 80% of an aircraft's
-position updates still arrive within 10 s of the one before). They build up over days, from the
+position updates still arrive within 10 s of the one before). Purple (dotted) is an estimate of
+the real reception range: an aircraft flying away often goes on sending other messages after its
+last position, and one flying in is often heard before its first, so it's dead-reckoned from that
+position, its ground speed and track to its last message (or back to its first), for gaps of 5 s
+to 5 minutes. Green is drawn over red, and red over purple. They build up over days, from the
 live dongle only (this PC's, or a relay on this network, each with its own rings), and are kept
 per location in the logbook. **Range** turns them off.
 
