@@ -12,6 +12,13 @@ from .process import looks_like_error
 from .radio import LOCATION_SETTINGS, RADIO_SETTINGS, RadioMode
 
 
+RATE_WINDOW = 30.0          # s of messages a rate is worked out over
+# What an airborne ADS-B (1090ES) transponder sends a second: 2 positions, 2 velocities, about one
+# all-call reply (DF11) and about 1.2 identity and status messages. Ground radars' interrogations
+# add replies, so an aircraft near one can send more (it shows 0% missed).
+SQUITTERS = 6.2
+
+
 class ADSBMode(RadioMode):
     id = "adsb"
     name = "ADS-B aircraft (1090 MHz)"
@@ -21,7 +28,7 @@ class ADSBMode(RadioMode):
     map = True
     columns = (("hex", "ICAO"), ("flight", "Callsign"), ("squawk", "Squawk"), ("alt", "Altitude ft"),
                ("gs", "Speed kt"), ("track", "Track°"), ("pos", "Position"), ("dist", "Distance"),
-               ("rssi", "dBFS"), ("msgs", "Msgs"), ("seen", "Seen"))
+               ("rssi", "dBFS"), ("msgs", "Msgs"), ("rate", "Msg/s"), ("missed", "Missed"), ("seen", "Seen"))
     requires = ("readsb",)
     key_column = "hex"
     iq_rate = 2400000
@@ -64,6 +71,7 @@ class ADSBMode(RadioMode):
         self._known = {}
         self._tracks: dict[str, list] = {}
         self._pos_t: dict[str, float] = {}
+        self._counts: dict[str, list] = {}       # hex -> [(time, readsb's message count)], the last RATE_WINDOW s
         self._ppm_readings: list[float] = []     # readsb's 30-second clock measurements
         self._ppm_last = None
         self._logged: dict[str, tuple] = {}
@@ -94,6 +102,12 @@ class ADSBMode(RadioMode):
         now = data.get("now", time.time())
         for a in data.get("aircraft", []):
             self._known[a["hex"]] = (now - a.get("seen", 0), a)
+            if "messages" in a:
+                hist = self._counts.setdefault(a["hex"], [])
+                if not hist or hist[-1][1] != a["messages"]:
+                    hist.append((now - a.get("seen", 0), a["messages"]))
+                while len(hist) > 2 and hist[-1][0] - hist[1][0] >= RATE_WINDOW:
+                    hist.pop(0)
             if "lat" in a and "seen_pos" in a:
                 self._pos_t[a["hex"]] = now - a["seen_pos"]      # when that position was heard
         ttl = self.values["ttl"]
@@ -109,7 +123,10 @@ class ADSBMode(RadioMode):
                     dist += f" at {a['r_dir']:.0f}°"
             alt = a.get("alt_baro", a.get("alt_geom", ""))
             track = a.get("track", a.get("calc_track"))
+            rate, missed = self.reception(hexid, a, now)
             rows.append({"hex": hexid.upper(), "flight": a.get("flight", "").strip(), "squawk": a.get("squawk", ""),
+                         "rate": f"{rate:.1f}" if rate is not None else "",
+                         "missed": f"{missed:.0f}%" if missed is not None else "",
                          "alt": alt, "gs": round(a["gs"]) if "gs" in a else "",
                          "track": round(track) if track is not None else "", "pos": pos, "dist": dist,
                          "rssi": a.get("rssi", ""), "msgs": a.get("messages", ""),
@@ -141,6 +158,7 @@ class ADSBMode(RadioMode):
                                         f"{a['lat']:.4f}, {a['lon']:.4f}"))
         self._tracks = {k: v for k, v in self._tracks.items() if k in self._known}
         self._pos_t = {k: v for k, v in self._pos_t.items() if k in self._known}
+        self._counts = {k: v for k, v in self._counts.items() if k in self._known}
         here = None
         try:
             here = (float(self.values["lat"]), float(self.values["lon"]))
@@ -150,6 +168,19 @@ class ADSBMode(RadioMode):
                 Event("points", data={"points": points, "home": here,
                                       # every aircraft's latest message, positions or not (the rings' estimate)
                                       "heard": {h: last for h, (last, _) in self._known.items()}})] + log
+
+    def reception(self, hexid, a, now):
+        """Messages a second from one aircraft over the last RATE_WINDOW s (counted up to its latest
+        message, and on to now once it's gone quiet), and the share of an ADS-B transponder's
+        SQUITTERS a second that didn't arrive (ADS-B aircraft only; None until there's enough)."""
+        hist = self._counts.get(hexid, [])
+        if len(hist) < 2 or hist[-1][0] - hist[0][0] < 5:
+            return None, None
+        (t0, n0), (t1, n1) = hist[0], hist[-1]
+        rate = (n1 - n0) / max(max(t1, now - 1) - t0, 1e-9)
+        if not str(a.get("type", "adsb")).startswith("adsb") or a.get("alt_baro") == "ground":
+            return rate, None                    # Mode S only, or on the ground: sends less, no estimate
+        return rate, max(0.0, 1 - rate / SQUITTERS) * 100
 
     def listening_on(self):
         return "1090 MHz"

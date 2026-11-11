@@ -83,6 +83,9 @@ if DONGLE:
 shots = Path(sys.argv[1]) if len(sys.argv) > 1 else None
 
 app = QApplication([])
+from sdr_toolkit.modes.satellites import SatelliteMode  # noqa: E402
+SatelliteMode.folder = Path(__file__).resolve().parent / "data" / "satellites"   # no downloads either
+SatelliteMode.offline = True
 gui.MapView.online = False     # no tile downloads from tests
 _real_init = gui.MapView.__init__
 gui.MapView.__init__ = lambda self, *a, **k: _real_init(self, *a, **{**k, "online": False})
@@ -390,6 +393,51 @@ for i, text in enumerate(["b", "c", "a"]):
 lt.sortByColumn(0, _Qt.SortOrder.AscendingOrder)
 drop_oldest(lt)
 results["table_drop_oldest"] = [lt.item(r, 0).text() for r in range(lt.rowCount())] == ["a", "c"]
+# Satellite tracker: the list, a satellite's passes and radios, where it is, and listening to one
+# (Spectrum & receiver tuned there, following its Doppler shift).
+win.settings.setValue("radio/lat", "-27.47")
+win.settings.setValue("radio/lon", "153.03")
+win.tree.setCurrentItem(win._items["satellites"])
+sp = win.satellite_panel
+for _ in range(100):
+    time.sleep(0.1)
+    pump(1)
+    if sp.catalogue and len(sp.next_passes) == len(sp.catalogue):
+        break
+names = {sp.list.item(r, 0).text() for r in range(sp.list.rowCount())}
+results["sat_list"] = {"ISS", "FOX-1B"} <= names and "METEOR M2-3" not in names      # weather isn't "fun"
+sp.category.setCurrentIndex(sp.category.findData(""))
+results["sat_list"] = results["sat_list"] and sp.list.rowCount() == 5 and sp.coming.rowCount() > 0
+sp.select(25544)
+sp.tick()
+pt = win.satellite_panel.map.points
+results["sat_detail"] = (sp.pass_table.rowCount() > 5 and sp.radio_table.rowCount() > 20 and sp.sky.path is not None
+                         and pt and pt[0]["kind"] == "satellite" and len(pt[0]["track"]) > 100
+                         and sp.map.footprints and "ISS" in sp.now_label.text())
+sp.best.setChecked(True)
+highs = [float(sp.pass_table.item(r, 2).text().split("°")[0]) for r in range(sp.pass_table.rowCount())]
+results["sat_best_passes"] = highs == sorted(highs, reverse=True)
+if shots:
+    win.grab().save(str(shots / "satellites.png"))
+    sp.tabs.setCurrentIndex(2)
+    app.processEvents()
+    win.grab().save(str(shots / "satellite_radio.png"))
+    sp.tabs.setCurrentIndex(3)
+    app.processEvents()
+    win.grab().save(str(shots / "satellite_sky.png"))
+aprs_row = next(r for r in range(sp.radio_table.rowCount())
+                if sp.selected.radios[sp.radio_table.item(r, 0).data(_Qt.ItemDataRole.UserRole)].downlink == 145825000
+                and sp.selected.radios[sp.radio_table.item(r, 0).data(_Qt.ItemDataRole.UserRole)].alive)
+sp.radio_table.selectRow(aprs_row)
+sp._listen()
+pump(5)
+f = float(win.mode.values.get("freq_mhz", 0))
+results["sat_listen"] = (win.mode.id == "receiver" and abs(f - 145.825) < 0.004 and win.mode.values["decoder"] == "aprs"
+                         and win.mode.values["demod"] == "NFM" and win._doppler_timer.isActive())
+win._receiver_changed("freq_mhz", 101.1)
+win._doppler_step()
+results["sat_listen"] = results["sat_listen"] and not win._doppler_timer.isActive()
+win._receiver_changed("decoder", "")
 # Connect relay: by address to a relay playing a recording, then disconnect.
 relay_src = Path(__file__).resolve().parents[2] / "sdr-tools-relay" / "src"
 if relay_src.is_dir():

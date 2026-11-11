@@ -1,0 +1,130 @@
+[
+{
+"sat_id": "XSKZ-5603-1870-9019-3066",
+"norad_cat_id": 25544,
+"norad_follow_id": null,
+"name": "ISS",
+"names": "ZARYA, RS0ISS, NA1SS",
+"image": "satellites/ISS.jpg",
+"status": "in orbit",
+"decayed": null,
+"launched": "1998-11-20T00:00:00Z",
+"deployed": null,
+"website": "https://www.nasa.gov/mission_pages/station/main/index.html",
+"operator": "None",
+"countries": "RU,US",
+"telemetries": [
+{
+"decoder": "iss"
+}
+],
+"updated": "2025-08-01T05:17:04.759872Z",
+"citation": "dl7ndr",
+"is_frequency_violator": false,
+"associated_satellites": [],
+"reception_status": "Unknown",
+"reception_evidence": {
+"urls": []
+}
+},
+{
+"sat_id": "IRES-5964-9687-1982-0089",
+"norad_cat_id": 27607,
+"norad_follow_id": null,
+"name": "SAUDISAT 1C",
+"names": "SO-50",
+"image": "satellites/saudisat-so-50.jpg",
+"status": "in orbit",
+"decayed": null,
+"launched": "2002-12-20T00:00:00Z",
+"deployed": null,
+"website": "",
+"operator": "None",
+"countries": "SA",
+"telemetries": [],
+"updated": "2022-08-01T16:54:58.241438Z",
+"citation": "CITATION NEEDED - https://xkcd.com/285/",
+"is_frequency_violator": false,
+"associated_satellites": [],
+"reception_status": "Unknown",
+"reception_evidence": {
+"urls": []
+}
+},
+{
+"sat_id": "LSCG-5988-6402-6624-6585",
+"norad_cat_id": 33591,
+"norad_follow_id": null,
+"name": "NOAA 19",
+"names": "NOAA-N Prime",
+"image": "satellites/NOAA-19_5rtz25e.jpg",
+"status": "in orbit",
+"decayed": null,
+"launched": "2009-02-06T00:00:00Z",
+"deployed": null,
+"website": "https://nssdc.gsfc.nasa.gov/nmc/spacecraft/display.action?id=2009-005A",
+"operator": "None",
+"countries": "US",
+"telemetries": [],
+"updated": "2022-05-30T10:58:26.728723Z",
+"citation": "CITATION NEEDED - https://xkcd.com/285/",
+"is_frequency_violator": false,
+"associated_satellites": [],
+"reception_status": "Unknown",
+"reception_evidence": {
+"urls": []
+}
+},
+{
+"sat_id": "PMAW-9203-2442-8666-3249",
+"norad_cat_id": 43017,
+"norad_follow_id": null,
+"name": "FOX-1B",
+"names": "AO-91, RADFXSAT",
+"image": "satellites/RadFxSat_Flight-300x300.jpg",
+"status": "in orbit",
+"decayed": null,
+"launched": "2017-11-18T00:00:00Z",
+"deployed": null,
+"website": "https://www.amsat.org/two-way-satellites/ao-91/",
+"operator": "None",
+"countries": "US",
+"telemetries": [
+{
+"decoder": "fox"
+}
+],
+"updated": "2026-06-26T07:30:13.128226Z",
+"citation": "https://www.amsat.org/two-way-satellites/ao-91/",
+"is_frequency_violator": false,
+"associated_satellites": [],
+"reception_status": "Unknown",
+"reception_evidence": {
+"urls": []
+}
+},
+{
+"sat_id": "TLCE-8079-2988-7210-7028",
+"norad_cat_id": 57166,
+"norad_follow_id": null,
+"name": "METEOR M2-3",
+"names": "METEOR 2 2-3, METEOR-M N2-3",
+"image": "",
+"status": "in orbit",
+"decayed": null,
+"launched": "2023-06-27T11:34:00Z",
+"deployed": null,
+"website": "",
+"operator": "None",
+"countries": "RU",
+"telemetries": [],
+"updated": "2023-06-29T16:21:51.512703Z",
+"citation": "space-track.org",
+"is_frequency_violator": false,
+"associated_satellites": [],
+"reception_status": "Unknown",
+"reception_evidence": {
+"urls": []
+}
+}
+]

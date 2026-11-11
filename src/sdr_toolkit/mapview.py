@@ -79,6 +79,7 @@ class MapView(QWidget):
         self.setToolTip("Drag to move, wheel to zoom. Fit shows everything again.")
         self.session: dict = {}          # id -> {"track": [...], "last": point}: everything this session
         self._usual: dict = {}           # id -> (last position time, its usual update interval)
+        self.footprints: list = []       # (lat, lon, radius km): a satellite's coverage
         self._anim = QTimer(self)
         self._anim.setInterval(FRAME_MS)
         self._anim.timeout.connect(self._animate)
@@ -362,8 +363,36 @@ class MapView(QWidget):
         p.setPen(QColor(40, 40, 40))
         p.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
 
+    def _lines(self, coords):
+        """Screen lines through (lat, lon)s, broken where they cross the date line (the map repeats
+        east-west, so a jump of over half a world is the other side of it)."""
+        world = TILE * 2 ** self.zoom
+        runs, run, last = [], [], None
+        for a, b in coords:
+            q = self._screen(a, b)
+            if last is not None and abs(q.x() - last.x()) > world / 2:
+                runs.append(run)
+                run = []
+            run.append(q)
+            last = q
+        runs.append(run)
+        return [QPolygonF(r) for r in runs if len(r) > 1]
+
+    def _draw_footprints(self, p):
+        for lat, lon, km in self.footprints:
+            ring = [destination((lat, lon), b, km) for b in range(0, 361, 4)]
+            lines = self._lines(ring)
+            p.setPen(QPen(QColor(255, 190, 40, 200), 1.5))
+            if len(lines) == 1:
+                p.setBrush(QColor(255, 190, 40, 35))
+                p.drawPolygon(lines[0])
+            else:
+                for line in lines:
+                    p.drawPolyline(line)
+
     def _draw_points(self, p):
         self._draw_rings(p)
+        self._draw_footprints(p)
         if self.home:
             c = self._screen(*self.home)
             p.setPen(QPen(QColor(255, 255, 255), 2))
@@ -382,13 +411,15 @@ class MapView(QWidget):
             self._draw_one(p, self.live(pt, now), now=now)
 
     def _draw_one(self, p, pt, faded=False, now=0.0):
-        colour = QColor(220, 60, 40) if pt.get("kind") == "aircraft" else QColor(20, 120, 60)
+        colour = {"aircraft": QColor(220, 60, 40), "satellite": QColor(250, 170, 20)}.get(pt.get("kind"),
+                                                                                       QColor(20, 120, 60))
         if faded:
             colour = QColor(colour.red(), colour.green(), colour.blue(), 110)
         track = pt.get("track") or []
         if len(track) > 1:
             p.setPen(QPen(QColor(colour.red(), colour.green(), colour.blue(), 70 if faded else 140), 2))
-            p.drawPolyline(QPolygonF([self._screen(a, b) for a, b in track]))
+            for line in self._lines(track):
+                p.drawPolyline(line)
         c = self._screen(pt["lat"], pt["lon"])
         if pt.get("fix") and pt.get("predicted"):
             # A predicted position: a dashed line back to the last real one, and the icon flashes.
@@ -412,6 +443,11 @@ class MapView(QWidget):
         if pt.get("kind") == "aircraft":
             shape = QPolygonF([QPointF(0, -10), QPointF(7, 8), QPointF(0, 4), QPointF(-7, 8)])
             p.drawPolygon(shape)
+        elif pt.get("kind") == "satellite":
+            p.drawRect(QRectF(-4, -4, 8, 8))                 # the body, and its solar panels
+            p.setBrush(QBrush(QColor(60, 110, 200)))
+            p.drawRect(QRectF(-14, -3, 8, 6))
+            p.drawRect(QRectF(6, -3, 8, 6))
         else:
             path = QPainterPath()
             path.moveTo(0, -10)

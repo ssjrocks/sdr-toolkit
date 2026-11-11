@@ -612,7 +612,9 @@ class ReceiverMode(Mode):
         return events
 
     def _status(self):
-        s, v = self.src, self.values
+        s, v = getattr(self, "src", None), self.values
+        if s is None:                        # not started (no dongle or recording)
+            return []
         problem = s.error or self.audio.error
         quiet = time.monotonic() - s.last_data
         if not problem and quiet > 5:

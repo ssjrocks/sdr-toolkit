@@ -707,6 +707,30 @@ def test_adsb_map_points(tmp_path):
     assert any("QFA123" in e.text for e in ev if e.kind == "log")
 
 
+def test_adsb_message_rate_and_missed_share(tmp_path):
+    import json
+    m = BY_ID["adsb"]()
+    m.values = dict(m.values, ttl=60, units="km", lat="", lon="")
+    m._dir = tmp_path
+    for attr, value in (("_known", {}), ("_tracks", {}), ("_pos_t", {}), ("_counts", {}), ("_logged", {}),
+                        ("_ppm_readings", []), ("_ppm_last", None)):
+        setattr(m, attr, value)
+    t0 = 1_800_000_000.0
+    for i in range(41):                                   # 40 s of readsb's aircraft.json, a second apart
+        now = t0 + i
+        (tmp_path / "aircraft.json").write_text(json.dumps({"now": now, "messages": 0, "aircraft": [
+            {"hex": "7c0001", "type": "adsb_icao", "messages": int(3.1 * i), "seen": 0.1, "alt_baro": 30000},
+            {"hex": "7c0002", "type": "adsb_icao", "messages": 7 * i, "seen": 0.1, "alt_baro": 3000},
+            {"hex": "7c0003", "type": "mode_s", "messages": 2 * i, "seen": 0.2}]}))
+        ev = m._read_json()
+    rows = {r["hex"]: r for e in ev if e.kind == "table" for r in e.data["rows"]}
+    assert abs(float(rows["7C0001"]["rate"]) - 3.1) < 0.15 and rows["7C0001"]["missed"] in ("49%", "50%", "51%")
+    assert rows["7C0002"]["missed"] == "0%"                # radar replies on top: more than it squitters
+    assert rows["7C0003"]["rate"] == "2.0" and rows["7C0003"]["missed"] == ""     # Mode S only: no estimate
+    cols = [k for k, _ in m.columns]
+    assert cols.index("rate") == cols.index("msgs") + 1 and cols.index("missed") == cols.index("rate") + 1
+
+
 def test_table_sort_order():
     from sdr_toolkit.widgets import sort_key
     cells = ["10 s", "", "abc", "9 s", "-82.1", "7C1234", "3", "12.5 km at 30°", "Zulu", "2026-11-11 08:00"]

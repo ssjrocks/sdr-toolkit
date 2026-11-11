@@ -10,6 +10,7 @@ dependencies = [
     "pyqt6>=6.7",
     "pillow>=10",
     "cryptography>=41",
+    "sgp4>=2.23",
 ]
 
 [project.scripts]

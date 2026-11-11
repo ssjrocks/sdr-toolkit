@@ -95,6 +95,12 @@ the last position heard; it goes on moving while other messages (speed, altitude
 and an aircraft leaves the map 60 s after its last message of any kind. Ships coast on for up to
 10 minutes, as their reports are further apart.
 
+**The ADS-B table** shows each aircraft's **Msg/s** (messages heard a second over the last
+30 s) and **Missed**: the share of what an airborne ADS-B transponder sends (about 6.2 a second:
+2 positions, 2 velocities, an all-call reply and identity/status messages) that didn't arrive.
+Aircraft near a ground radar answer its interrogations too, so they can show 0%; Mode S-only and
+taxiing aircraft send less, so they get no estimate.
+
 **ADS-B range rings** show how far your station hears in each direction: the furthest position
 heard (red, dashed) and how far reception is reliable (green: at least 80% of an aircraft's
 position updates still arrive within 10 s of the one before). Purple (dotted) is an estimate of
@@ -234,6 +240,18 @@ needs new outside parts offers to install them after the restart.
 its heading, and the other way on a second click. Numbers sort as numbers, units and all ("9 s"
 before "10 s"), and live tables stay sorted, with the same row selected, as they update.
 
+**Satellite tracker** (its own group) works like N2YO for the satellites you can hear: weather,
+amateur and space-station satellites, from the SatNOGS DB (the community's database of satellite
+radios and their orbits) and CelesTrak's group lists, cached for a day (orbits) or a week. Pick a
+satellite for its passes over you (the next days, or **best first**: the highest), which ones you
+can see with your eyes (lit by the Sun against a dark sky), where it is now on the map with its
+ground track and footprint, a sky plot of the pass, and every radio it carries: frequency, mode,
+baud rate, whether it's still heard, and what you can do with it here (listen in NFM or SSB,
+decode APRS, SSTV or Morse) or what it needs instead (SatDump for weather pictures, gr-satellites
+for telemetry). **Listen** opens Spectrum & receiver tuned to it and follows its Doppler shift
+(up to ±3.5 kHz on 2 m, ±10 kHz on 70 cm) through the pass. **Coming over** lists every pass in
+the next 12 hours. Set your location in Settings first; it's shared with the RTL-SDR modes.
+
 ## Notes per mode
 
 - **FT8/FT4** cut the recording into UTC slots, so the PC clock must be right (Ubuntu keeps it
@@ -252,7 +270,12 @@ before "10 s"), and live tables stay sorted, with the same row selected, as they
 ```bash
 python3 -m pytest tests                               # every mode, through the mode interface
 QT_QPA_PLATFORM=offscreen python3 tests/gui_smoke.py  # the window: every mode runs, 3 decode
+uv run --with pytest --with skyfield python -m pytest tests/test_satellites.py   # needs sgp4 (the app's env)
 ```
+
+The satellite tests check orbits, passes and Doppler against [Skyfield](https://rhodesmill.org/skyfield/)
+(positions within 0.02°, rises and peaks within 3 s), and read a few satellites cut from the SatNOGS DB
+(`tests/data/satellites`) instead of downloading.
 
 What the tests check, and against what:
 

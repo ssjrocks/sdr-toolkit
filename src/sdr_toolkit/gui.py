@@ -46,6 +46,7 @@ from PyQt6.QtWidgets import (
 )
 
 from . import APP_ID, APP_NAME, __version__, aircraftdb, appreports, coverage, deps, updater
+from .satellites.view import SatellitePanel
 from .widgets import ORDER, FitLabel, SortItem, drop_oldest, filling, sortable, unsorted
 from .capture import AudioCapture, list_outputs
 from .logbook import Logbook
@@ -727,6 +728,13 @@ class MainWindow(QMainWindow):
         self._guesses: list = []
         self._tags_view = None
         self.output.addWidget(self.receiver_panel)
+        self.satellite_panel = SatellitePanel(MapView())
+        self.satellite_panel.listen.connect(self.listen_satellite)
+        self.output.addWidget(self.satellite_panel)
+        self._doppler = None                 # the satellite Spectrum & receiver is following
+        self._doppler_timer = QTimer(self)
+        self._doppler_timer.setInterval(1000)
+        self._doppler_timer.timeout.connect(self._doppler_step)
         self.decoded_log = LogWindow(self, "Decoded log", "Everything decoded appears here, with the time.")
         self.raw_log = LogWindow(self, "Raw data", "The decoder's raw output appears here.")
         self.title = QLabel("")
@@ -940,7 +948,7 @@ class MainWindow(QMainWindow):
         self.raw_log.setWindowTitle(f"Raw data: {self.mode.name}")
         self.decoded_log.setWindowTitle(f"Decoded log: {self.mode.name}")
         # Radio modes read the RTL-SDR or a recording, not the speakers.
-        radio = self._is_radio()
+        radio = self._is_radio() or getattr(self.mode, "source", "audio") == "none"
         self.level_label.setText("")
         self.source_combo.setEnabled(not radio)
         self.waterfall.setVisible(not radio)
@@ -973,6 +981,9 @@ class MainWindow(QMainWindow):
         elif m.output == "receiver":
             self.receiver_panel.show_values(m.values)
             self.output.setCurrentWidget(self.receiver_panel)
+        elif m.output == "satellites":
+            self._satellite_settings()
+            self.output.setCurrentWidget(self.satellite_panel)
         elif m.output == "image":
             self.output.setCurrentWidget(self.picture)
         else:
@@ -995,6 +1006,8 @@ class MainWindow(QMainWindow):
             self.mode.values = values
         self.waterfall.markers = self.mode.markers()
         self.waterfall.update()
+        if self.mode.output == "satellites":
+            self._satellite_settings()
         if self.mode.output == "receiver":
             if key == "demod":                 # each mode starts at its usual bandwidth
                 from .receiver.dsp import MODES
@@ -1213,6 +1226,61 @@ class MainWindow(QMainWindow):
                                                         self._receiver_changed("decoder", k)))
         menu.exec(pos)
 
+    # ---- satellites -----------------------------------------------------
+
+    def _satellite_settings(self):
+        from .modes.radio import home
+        v = self.mode.values
+        self.satellite_panel.set_settings(home(v), v.get("min_el", 10), v.get("days", 5), v.get("only_hear", True))
+
+    def listen_satellite(self, sat, radio):
+        """A satellite's downlink in Spectrum & receiver, followed through its Doppler shift."""
+        from .satellites import orbit
+        here = self.satellite_panel.home
+        self.tree.setCurrentItem(self._items["receiver"])        # starts the receiver
+        if self.mode is None or self.mode.output != "receiver":
+            return
+        if radio.decoder:
+            self._receiver_changed("decoder", radio.decoder)     # sets its usual demodulator...
+        else:
+            self._receiver_changed("decoder", "")
+        self._receiver_changed("demod", radio.demod)             # ...and then the satellite's
+        self._receiver_changed("bandwidth", int(radio.bandwidth))
+        self._doppler = {"sat": orbit.satrec(sat.line1, sat.line2), "f0": radio.downlink, "name": sat.name,
+                         "home": here, "last": None}
+        self._doppler_step()
+        self._doppler_timer.start()
+
+    def _doppler_step(self):
+        d = self._doppler
+        if d is None or self.mode is None or self.mode.output != "receiver":
+            self._stop_doppler()
+            return
+        if d["last"] is not None and abs(float(self.mode.values.get("freq_mhz", 0)) - d["last"]) > 1e-6:
+            self._stop_doppler(f"Stopped following {d['name']}: you tuned elsewhere")
+            return
+        mhz = d["f0"] / 1e6
+        text = f"Listening to {d['name']} on {mhz:.4f} MHz"
+        if d["home"] is not None:
+            from .satellites import orbit
+            tr = orbit.track(d["sat"], [time.time()], d["home"])
+            f = orbit.doppler(d["f0"], float(tr.rate[0]))
+            mhz = round(f / 1e6, 6)
+            state = f"up {tr.el[0]:.0f}°" if tr.el[0] > 0 else "below the horizon"
+            text += f", heard {(f - d['f0']) / 1000:+.1f} kHz off (Doppler, {state})"
+        else:
+            text += " (set your location to follow its Doppler shift)"
+        if d["last"] != mhz:
+            d["last"] = mhz
+            self._receiver_changed("freq_mhz", mhz)
+        self.status.setText(text)
+
+    def _stop_doppler(self, why=""):
+        self._doppler = None
+        self._doppler_timer.stop()
+        if why:
+            self.status.setText(why)
+
     # ---- decode points -------------------------------------------------
 
     def _saved_points(self) -> list[dict]:
@@ -1347,6 +1415,8 @@ class MainWindow(QMainWindow):
         if self._is_radio():
             src = "the RTL-SDR" if self.mode.values.get("input") == "rtl" else "the recording"
             self.status.setText(f"{self.mode.name}: reading {src}")
+        elif getattr(self.mode, "source", "audio") == "none":
+            pass                                     # no audio and no dongle (the satellite tracker)
         elif not self._start_capture():
             self._stop_mode()
             return
@@ -1458,7 +1528,7 @@ class MainWindow(QMainWindow):
 
     def tick(self):
         audio = np.zeros(0, np.float32)
-        if not self._is_radio():
+        if getattr(self.mode, "source", "audio") == "audio":
             if self.capture is None:
                 return
             if self.capture.rate != self.mode.rate:
@@ -1547,6 +1617,10 @@ class MainWindow(QMainWindow):
                 if text:
                     self.decoded_log.add(text)
                     self.logbook.add(e.data["id"], text)
+            elif e.kind == "sat_catalogue":
+                self.satellite_panel.set_catalogue(e.data["catalogue"])
+            elif e.kind == "sat_next":
+                self.satellite_panel.set_next(e.data["passes"])
             elif e.kind == "point_decoded":
                 d = e.data
                 text = self.decode_area.point_event(d["freq"], d["id"], d["event"])
