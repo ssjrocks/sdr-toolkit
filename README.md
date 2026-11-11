@@ -126,12 +126,16 @@ Drag the grab bar along the top of the spectrum to slide the dongle's span along
 frequency you're listening to stays put while it's in view); the dongle follows a few times a
 second, and the bar shows the frequencies at its ends. Its ◀ ▶ buttons step 80% of what's on
 screen. Clicking anywhere in the spectrum, right up to its edges, tunes there without moving the
-band. **Identify** measures the signal
-you're tuned to (its width, whether its envelope is constant, FSK levels and baud rate, deviation,
-a carrier, AFSK tones, how much of the time it's keyed) and checks it against an Australian band
-plan, then offers its guesses, best first, each with the demodulator, bandwidth and decoder that
-suit it; with **Identify automatically** on it does this by itself every few seconds when something is
-there. It's a guess: weak signals and unusual ones often come out as "2-level FSK" or "narrow FM".
+band. **Identify** works like Shazam for signal types: it records 8 s of the channel you're tuned to
+and puts it through the decoders: DSD-FME (DMR, P25, NXDN, D-Star, YSF), multimon-ng (POCSAG and
+FLEX pagers), direwolf (APRS, and AIS near 162 MHz), the CTCSS / DCS / DTMF decoder and, in the
+ISM bands, rtl_433; broadcast FM is recognised by its 19 kHz stereo pilot (and RDS carrier). What
+decodes is the answer, marked ✓ with what was decoded (say "DMR signal: slot 1, colour code 1"),
+with the demodulator and decoder to use. After it come guesses from the signal's measurements (its
+width, constant or varying envelope, FSK levels and baud rate, deviation, carrier, AFSK tones,
+keying) checked against an Australian band plan. With **Identify automatically** on, the
+measured guess is made every few seconds when something is there (no decoding). A guess is only a
+guess: weak and unusual signals often come out as "2-level FSK" or "narrow FM".
 When it can't tell, pick a decoder from **Decode with**: Morse, RTTY, PSK31, NAVTEX, FT8/FT4,
 SSTV, weather fax, APRS, pagers, DTMF/CTCSS/DCS tones or DMR/P25 (DSD-FME) run on the receiver's
 audio, with their own audio waterfall and output below the spectrum. DMR/P25 shows a line as soon as

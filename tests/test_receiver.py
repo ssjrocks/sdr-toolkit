@@ -165,12 +165,14 @@ def start_receiver(monkeypatch, **values):
     return m
 
 
-def poll_for(m, seconds):
+def poll_for(m, seconds, until=None):
     ev = []
     end = time.time() + seconds
     while time.time() < end:
         time.sleep(0.05)
         ev += m.poll()
+        if until is not None and until(ev):
+            break
     return ev
 
 
@@ -317,6 +319,80 @@ def test_receiver_voice_volume_reaches_the_decoder(monkeypatch, tmp_path):
         m.apply(dict(m.values, voice_volume=25))
         poll_for(m, 0.5)
         assert got == [25]
+    finally:
+        m.stop()
+
+
+# ---- Identify by decoding (trials.py) ------------------------------------------------------------
+
+def _channel(audio, rate_in, deviation, seconds=8.0, seed=0):
+    """A 240 kHz channel recording, FM-modulated with audio (padded to `seconds`), as Identify makes."""
+    from scipy.signal import resample_poly
+    a = resample_poly(np.asarray(audio, float) / max(np.max(np.abs(audio)), 1e-9), 48000, rate_in)
+    a = np.concatenate([a, np.zeros(max(int(48000 * seconds) - len(a), 0))])[: int(48000 * seconds)]
+    x = fm_iq(a.astype(np.float32), 0, deviation, rate=240000)
+    return x.astype(np.complex64)
+
+
+def _identified(x, mhz, width):
+    from sdr_toolkit.receiver import trials
+    found, tried = trials.run(x, 240000, mhz, width)
+    return [g.name for g in found], tried
+
+
+def test_identify_decodes_dmr():
+    from sdr_toolkit.modes.digital_voice import dsd_fme
+    if dsd_fme() is None:
+        pytest.skip("DSD-FME isn't built")
+    import signals
+    names, tried = _identified(_channel(signals.dmr_bursts(48000, 6.0), 48000, 1944), 438.8, 9000)
+    assert "DMR digital radio (decoded)" in names, (names, tried)
+
+
+def test_identify_decodes_a_pager_aprs_and_ctcss():
+    import signals
+    a = np.concatenate([np.zeros(11025), signals.pocsag(1234567, "HELLO PAGER 42", 1200)])
+    names, tried = _identified(_channel(a, 22050, 4500), 148.8, 12000)
+    assert "POCSAG1200 pager (decoded)" in names, (names, tried)
+    names, _ = _identified(_channel(signals.aprs_packets(48000), 48000, 3000), 145.175, 12000)
+    assert "APRS / AX.25 packet (decoded)" in names, names
+    names, _ = _identified(_channel(signals.ctcss_voice(88.5, 6), 8000, 2500), 476.5, 9000)
+    assert any(n.startswith("Analogue FM with CTCSS 88.5 Hz") for n in names), names
+
+
+def test_identify_broadcast_fm_by_its_pilot():
+    from sdr_toolkit.receiver import trials
+    r = 240000
+    tt = np.arange(int(r * 3)) / r
+    for pilot in (True, False):
+        mpx = 0.9 * np.sin(2 * np.pi * 1000 * tt) + (0.1 * np.sin(2 * np.pi * 19000 * tt) if pilot else 0)
+        x = (0.5 * np.exp(1j * 2 * np.pi * 75000 * np.cumsum(mpx) / r)).astype(np.complex64) + noise(len(tt), 0.01)
+        g = trials.broadcast_fm(x, r)
+        assert (g is not None and g.name.startswith("FM broadcast, stereo")) == pilot
+
+
+def test_identify_decodes_nothing_in_noise():
+    names, tried = _identified(noise(240000 * 8, 0.1).astype(np.complex64), 460.0, 12000)
+    assert names == [] and "multimon-ng (pagers)" in tried
+
+
+def test_receiver_identify_listens_then_decodes(monkeypatch, tmp_path):
+    import signals
+    a = np.concatenate([np.zeros(11025), signals.pocsag(1234567, "HELLO PAGER 42", 1200), np.zeros(22050 * 9)])
+    from scipy.signal import resample_poly
+    audio = resample_poly(a / np.max(np.abs(a)), 48000, 22050).astype(np.float32)
+    rec = save_iq(tmp_path / "pager.cu8", fm_iq(audio, 600000, 4500))
+    m = start_receiver(monkeypatch, input="file", file=str(rec), file_rate=RATE, freq_mhz=145.175, demod="NFM",
+                       bandwidth=12500, auto_id=False)
+    try:
+        poll_for(m, 0.5)
+        m.identify()
+        ev = poll_for(m, 45, until=lambda ev: any(e.kind == "identified" for e in ev))
+        stages = {e.data["stage"] for e in ev if e.kind == "identifying"}
+        found = next(e.data for e in ev if e.kind == "identified")
+        assert stages >= {"listening", "trying"} and not found["auto"]
+        assert found["verified"] and found["verified"][0].name == "POCSAG1200 pager (decoded)", found["tried"]
+        assert found["guesses"][0] is found["verified"][0]
     finally:
         m.stop()
 

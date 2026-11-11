@@ -967,14 +967,41 @@ class MainWindow(QMainWindow):
 
     # ---- identifying, tagging, sliding ---------------------------------
 
+    def _show_identifying(self, state):
+        """Identify's progress on its button: listening to the channel, then trying the decoders."""
+        b = self.receiver_panel.identify_btn
+        stage = state["stage"]
+        if stage == "listening":
+            b.setText(f"Listening… {state['left']:.0f} s")
+            b.setEnabled(False)
+            self.status.setText(f"Identify: recording {state['freq'] / 1e6:.4f} MHz for the decoders")
+        elif stage == "trying":
+            b.setText(f"Decoding… {state['done']}/{state['total']}" if state["total"] else "Decoding…")
+            b.setEnabled(False)
+        else:
+            b.setText("Identify")
+            b.setEnabled(True)
+            self.status.setText("Identify stopped: the frequency changed while it was listening")
+
     def _show_guesses(self, found):
         self._guesses = found["guesses"]
+        self._verified = found.get("verified", [])
+        self._tried = found.get("tried", [])
+        if not found["auto"]:
+            self.receiver_panel.identify_btn.setText("Identify")
+            self.receiver_panel.identify_btn.setEnabled(True)
         g = self._guesses[0] if self._guesses else None
         btn = self.receiver_panel.looks
         if g is not None:
-            btn.setText(f"Looks like: {g.name} ({g.confidence:.0%}) at {found['freq'] / 1e6:.4f} MHz")
+            what = "Identified" if self._verified else "Looks like"
+            btn.setText(f"{what}: {g.name} ({g.confidence:.0%}) at {found['freq'] / 1e6:.4f} MHz")
             btn.setToolTip(f"{g.why}\nClick for all guesses and what to do.")
         if not found["auto"]:
+            if self._verified:
+                self.status.setText(f"Identified {found['freq'] / 1e6:.4f} MHz: {self._verified[0].name}")
+            elif self._tried:
+                self.status.setText(f"No decoder recognised {found['freq'] / 1e6:.4f} MHz "
+                                    f"(tried {', '.join(self._tried)}); the guesses are from its measurements")
             self._guess_menu(btn)
 
     def _apply_guess(self, g):
@@ -994,8 +1021,14 @@ class MainWindow(QMainWindow):
             return
         menu = QMenu(self)
         names = {M.id: M.name for M in MODES}
-        for g in self._guesses[:5]:
-            head = menu.addAction(f"{g.name} — {g.confidence:.0%}")
+        verified = getattr(self, "_verified", [])
+        tried = getattr(self, "_tried", [])
+        if tried and not verified:
+            note = menu.addAction(f"No decoder recognised it (tried {', '.join(tried)}). From its measurements:")
+            note.setEnabled(False)
+            menu.addSeparator()
+        for g in self._guesses[:5 + len(verified)]:
+            head = menu.addAction(f"✓ {g.name}" if g in verified else f"{g.name} — {g.confidence:.0%}")
             head.setEnabled(False)
             f = head.font()
             f.setBold(True)
@@ -1375,6 +1408,8 @@ class MainWindow(QMainWindow):
                                                           d["steps"], (d["min"], d["max"]))
             elif e.kind == "identified":
                 self._show_guesses(e.data)
+            elif e.kind == "identifying":
+                self._show_identifying(e.data)
             elif e.kind == "spectrum":
                 d = e.data
                 view = self.receiver_panel.view

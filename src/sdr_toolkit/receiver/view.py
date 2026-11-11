@@ -403,7 +403,9 @@ class ReceiverPanel(QWidget):
         from .decode import DECODERS
         self.identify_btn = QToolButton()
         self.identify_btn.setText("Identify")
-        self.identify_btn.setToolTip("Guess once what the signal you're tuned to is, and offer what to do with it. "
+        self.identify_btn.setToolTip("Listen to the signal you're tuned to for 8 s and try the decoders on it "
+                                     "(DMR/P25, pagers, APRS, AIS, CTCSS/DCS, ISM devices, FM broadcast's pilot); "
+                                     "what decodes is the answer, the rest are guesses from its measurements. "
                                      "Guessing by itself every few seconds is the Identify automatically setting.")
         self.identify_btn.clicked.connect(self.identify.emit)
         self.looks = FitButton("Looks like: …")       # a long guess mustn't widen the window

@@ -13,7 +13,7 @@ import numpy as np
 
 from ..receiver import dsp
 from ..receiver.audio import AudioOut
-from ..receiver import identify
+from ..receiver import identify, trials
 from ..receiver.decode import DECODERS, DecoderHost
 from ..receiver.survey import Survey
 from ..receiver.source import (SET_AGC, SET_BIAS_TEE, SET_DIRECT_SAMPLING, SET_FREQ, SET_GAIN, SET_GAIN_MODE,
@@ -141,6 +141,9 @@ class ReceiverMode(Mode):
         self._recent: list = []
         self._recent_n = 0
         self._identify_busy = False
+        self._listen = None              # Identify's recording of the channel, while it's made
+        self._identify_state = None      # what Identify is doing, for the window
+        self._identify_shown = 0.0
         self._last_auto = 0.0
         self._identified = None
         self.survey: Survey | None = None
@@ -273,6 +276,8 @@ class ReceiverMode(Mode):
             if not v["mute"] and v["demod"] != "RAW":
                 self.audio.play(audio, float(v["volume"]) / 100)
             self._decoder_step(audio)
+            if self._listen is not None:
+                self._listen_step(x)
             self._recent.append(x)
             self._recent_n += len(x)
             while self._recent_n - len(self._recent[0]) > int(v["rate"]) * RECENT and len(self._recent) > 1:
@@ -289,25 +294,63 @@ class ReceiverMode(Mode):
     # ---- identifying the tuned signal ---------------------------------------
 
     def identify(self, auto=False):
-        """Measure the tuned signal and guess what it is (in the background); the answer comes as an
-        "identified" event."""
+        """Find out what the tuned signal is (in the background); the answer comes as an "identified"
+        event. Automatically, it's measured and guessed at (identify.py). From the button, the
+        channel is also recorded for a few seconds and put through the decoders (trials.py): what
+        decodes comes first, proven."""
         if self._identify_busy or not self._recent:
             return
         x = np.concatenate(list(self._recent))
         rate, tune, center = int(self.values["rate"]), float(self.values["freq_mhz"]) * 1e6, self.center
         self._identify_busy = True
+        if auto:
+            threading.Thread(target=self._guess, args=(x, rate, tune, center, True), daemon=True,
+                             name="identify").start()
+            return
+        out = trials.capture_rate(rate)
+        self._listen = {"tune": tune, "center": center, "rate": rate, "x": x, "out": out, "chunks": [], "n": 0,
+                        "mixer": dsp.Mixer(rate, tune - center),
+                        "dec": dsp.Decimator(rate, rate // out, out * 0.45) if out != rate else None}
+        self._identify_state = {"stage": "listening", "left": trials.LISTEN, "freq": tune}
 
-        def run():
-            try:
-                m = identify.measure(x, rate, tune - center)
-                g = identify.guesses(m, tune / 1e6)
-                self._identified = {"freq": tune, "auto": auto, "measurement": m, "guesses": g}
-            except Exception:  # a guess failing mustn't touch the receiver
-                log.exception("identify")
-            finally:
-                self._identify_busy = False
+    def _guess(self, x, rate, tune, center, auto, iq=None, iq_rate=0):
+        try:
+            m = identify.measure(x, rate, tune - center)
+            g = identify.guesses(m, tune / 1e6)
+            found = {"freq": tune, "auto": auto, "measurement": m, "guesses": g, "verified": [], "tried": []}
+            if iq is not None:
+                def progress(done, total):
+                    self._identify_state = {"stage": "trying", "done": done, "total": total, "freq": tune}
+                self._identify_state = {"stage": "trying", "done": 0, "total": 0, "freq": tune}
+                verified, tried = trials.run(iq, iq_rate, tune / 1e6, m.bandwidth, progress)
+                found.update(verified=verified, tried=tried, guesses=verified + g)
+            self._identified = found
+        except Exception:  # identifying failing mustn't touch the receiver
+            log.exception("identify")
+        finally:
+            self._identify_busy = False
+            self._identify_state = None
 
-        threading.Thread(target=run, daemon=True, name="identify").start()
+    def _listen_step(self, x):
+        """Runs on the receiver's thread: the channel for Identify's decoders, until it's long enough."""
+        ls = self._listen
+        if float(self.values["freq_mhz"]) * 1e6 != ls["tune"] or self.center != ls["center"]:
+            self._listen = None                              # retuned meanwhile: start again
+            self._identify_busy = False
+            self._identify_state = {"stage": "cancelled", "freq": ls["tune"]}
+            return
+        y = ls["mixer"](x)
+        if ls["dec"] is not None:
+            y = ls["dec"](y)
+        ls["chunks"].append(y.astype(np.complex64))
+        ls["n"] += len(y)
+        left = trials.LISTEN - ls["n"] / ls["out"]
+        self._identify_state = {"stage": "listening", "left": max(left, 0.0), "freq": ls["tune"]}
+        if left <= 0:
+            self._listen = None
+            iq = np.concatenate(ls["chunks"])
+            threading.Thread(target=self._guess, args=(ls["x"], ls["rate"], ls["tune"], ls["center"], False, iq,
+                                                       ls["out"]), daemon=True, name="identify").start()
 
     def set_center(self, hz):
         """The grab bar: slide the dongle along the band. The tuned frequency stays if it's still in
@@ -456,6 +499,12 @@ class ReceiverMode(Mode):
         found, self._identified = self._identified, None
         if found is not None:
             events.append(Event("identified", data=found))
+        state = self._identify_state
+        if state is not None and time.time() - self._identify_shown >= 0.25:
+            self._identify_shown = time.time()
+            events.append(Event("identifying", data=dict(state)))
+            if state["stage"] == "cancelled":
+                self._identify_state = None
         now = time.time()
         if now - self._last_activity >= 1.0:
             self._last_activity = now

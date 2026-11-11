@@ -447,6 +447,14 @@ win.decode_area.handle(gui.Event("live", "RYRYRY " * 600))
 rp.looks.setText("Looks like: " + "a very long guess " * 80)
 pump(5)
 results["decode_long_text_fits"] = win.width() == width and win.minimumSizeHint().width() <= least
+# Identify's progress on its button, and back when stopped.
+ib = rp.identify_btn
+win.handle([gui.Event("identifying", data={"stage": "listening", "left": 5.2, "freq": 101.1e6})])
+listening = ib.text() == "Listening… 5 s" and not ib.isEnabled()
+win.handle([gui.Event("identifying", data={"stage": "trying", "done": 2, "total": 4, "freq": 101.1e6})])
+trying = ib.text() == "Decoding… 2/4"
+win.handle([gui.Event("identifying", data={"stage": "cancelled", "freq": 101.1e6})])
+results["identify_progress"] = listening and trying and ib.text() == "Identify" and ib.isEnabled()
 results["decode_area"] = (win.decode_area.isVisible() and win.decode_area.M.id == "tones"
                           and win.mode.decoder is not None and win.mode.values["demod"] == "NFM")
 win.logbook.add_tag(101.3e6, "Test station", "WFM", 180000, "")
