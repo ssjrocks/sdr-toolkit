@@ -230,6 +230,10 @@ The app looks for a new release on GitHub at most every 12 hours, and **Check fo
 if it matches the release's SHA-256), installs it into the app's venv and restarts. A version that
 needs new outside parts offers to install them after the restart.
 
+**Tables** (aircraft, ships, pagers, sensors, the logbook, relays) sort by a column when you click
+its heading, and the other way on a second click. Numbers sort as numbers, units and all ("9 s"
+before "10 s"), and live tables stay sorted, with the same row selected, as they update.
+
 ## Notes per mode
 
 - **FT8/FT4** cut the recording into UTC slots, so the PC clock must be right (Ubuntu keeps it

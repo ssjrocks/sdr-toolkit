@@ -37,7 +37,6 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QTableWidget,
-    QTableWidgetItem,
     QTabWidget,
     QToolButton,
     QTreeWidget,
@@ -47,7 +46,7 @@ from PyQt6.QtWidgets import (
 )
 
 from . import APP_ID, APP_NAME, __version__, aircraftdb, appreports, coverage, deps, updater
-from .widgets import FitLabel
+from .widgets import ORDER, FitLabel, SortItem, drop_oldest, filling, sortable, unsorted
 from .capture import AudioCapture, list_outputs
 from .logbook import Logbook
 from .mapview import MapView
@@ -468,10 +467,11 @@ class DecodeArea(QWidget):
         self.text.setMaximumBlockCount(5000)
         self.live = FitLabel("", keep_end=True)   # a long message mustn't widen the window
         self.live.setFont(mono)
-        self.table = QTableWidget(0, 0)
+        self.table = sortable(QTableWidget(0, 0))
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.setFont(mono)
+        self._arrivals = 0
         self.picture = PictureView()
         text_page = QWidget()
         tl = QVBoxLayout(text_page)
@@ -527,6 +527,7 @@ class DecodeArea(QWidget):
         if M.output == "table":
             self.table.clear()
             self.table.setRowCount(0)
+            unsorted(self.table)
             self.table.setColumnCount(len(M.columns))
             self.table.setHorizontalHeaderLabels([h for _, h in M.columns])
             self.table.horizontalHeader().setStretchLastSection(True)
@@ -552,12 +553,17 @@ class DecodeArea(QWidget):
             self.live.setText(e.text)
         elif e.kind == "row":
             t = self.table
-            r = t.rowCount()
-            t.insertRow(r)
-            for c, (key, _) in enumerate(M.columns):
-                t.setItem(r, c, QTableWidgetItem(str(e.data.get(key, ""))))
-            if t.rowCount() > 2000:
-                t.removeRow(0)
+            with filling(t):
+                r = t.rowCount()
+                t.insertRow(r)
+                for c, (key, _) in enumerate(M.columns):
+                    item = SortItem(str(e.data.get(key, "")))
+                    if c == 0:
+                        self._arrivals += 1
+                        item.setData(ORDER, self._arrivals)
+                    t.setItem(r, c, item)
+                if t.rowCount() > 2000:
+                    drop_oldest(t)
             t.scrollToBottom()
             return "  ".join(f"{h}: {e.data[k]}" for k, h in M.columns if str(e.data.get(k, "")) != "")
         elif e.kind == "image":
@@ -686,7 +692,8 @@ class MainWindow(QMainWindow):
         tl.setContentsMargins(0, 0, 0, 0)
         tl.addWidget(self.text, 1)
         tl.addWidget(self.live)
-        self.table = QTableWidget(0, 0)
+        self.table = sortable(QTableWidget(0, 0))
+        self._arrivals = 0
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
@@ -955,6 +962,7 @@ class MainWindow(QMainWindow):
         if m.output == "table":
             self.table.clear()
             self.table.setRowCount(0)
+            unsorted(self.table)
             self.table.setColumnCount(len(m.columns))
             self.table.setHorizontalHeaderLabels([h for _, h in m.columns])
             hh = self.table.horizontalHeader()
@@ -1578,31 +1586,50 @@ class MainWindow(QMainWindow):
     def _set_rows(self, rows):
         """Replace the whole table (a list that updates in place, like aircraft)."""
         t = self.table
-        t.setRowCount(len(rows))
-        for r, data in enumerate(rows):
-            for c, (key, _) in enumerate(self.mode.columns):
+        with filling(t):                          # re-sorted afterwards, if a column is chosen
+            t.setRowCount(len(rows))
+            for r, data in enumerate(rows):
+                for c, (key, _) in enumerate(self.mode.columns):
+                    item = t.item(r, c)
+                    text = str(data.get(key, ""))
+                    if item is None:
+                        t.setItem(r, c, SortItem(text))
+                    elif item.text() != text:
+                        item.setText(text)
+        # Rows are rewritten in the mode's order and then sorted: keep the selected one selected.
+        col = getattr(self.mode, "key_column", "")
+        c = next((i for i, (k, _) in enumerate(self.mode.columns) if k == col), None)
+        if self._selected is not None and c is not None:
+            for r in range(t.rowCount()):
                 item = t.item(r, c)
-                text = str(data.get(key, ""))
-                if item is None:
-                    t.setItem(r, c, QTableWidgetItem(text))
-                elif item.text() != text:
-                    item.setText(text)
+                if item is not None and self._craft_key(item.text()) == self._selected:
+                    if t.currentRow() != r:
+                        sm = t.selectionModel()
+                        sm.blockSignals(True)
+                        t.selectRow(r)
+                        sm.blockSignals(False)
+                        t.viewport().update()
+                    break
 
     def _add_row(self, data):
         t = self.table
         bar = t.verticalScrollBar()
         follow = bar.value() >= bar.maximum() - 2
-        r = t.rowCount()
-        t.insertRow(r)
         style = data.get("_style")
         brush = {"cq": QBrush(QColor(60, 160, 90, 70)), "highlight": QBrush(QColor(255, 200, 0, 110))}.get(style)
-        for c, (key, _) in enumerate(self.mode.columns):
-            item = QTableWidgetItem(str(data.get(key, "")))
-            if brush:
-                item.setBackground(brush)
-            t.setItem(r, c, item)
-        if t.rowCount() > 5000:
-            t.removeRow(0)
+        with filling(t):
+            r = t.rowCount()
+            t.insertRow(r)
+            for c, (key, _) in enumerate(self.mode.columns):
+                item = SortItem(str(data.get(key, "")))
+                if brush:
+                    item.setBackground(brush)
+                if c == 0:
+                    self._arrivals += 1
+                    item.setData(ORDER, self._arrivals)
+                t.setItem(r, c, item)
+            if t.rowCount() > 5000:
+                drop_oldest(t)
         if follow:
             t.scrollToBottom()
 

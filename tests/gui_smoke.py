@@ -286,7 +286,8 @@ results["logbook"] = bool(crafted and crafted[0]["key"] == "503123456" and craft
 win.show_logbook()
 app.processEvents()
 lw = win._logbook_window
-results["logbook_window"] = lw.spotted.rowCount() == 1 and lw.spotted.item(0, 2).text() == "TEST SHIP"
+results["logbook_window"] = (lw.spotted.rowCount() == 1 and lw.spotted.item(0, 2).text() == "TEST SHIP"
+                             and lw.spotted.isSortingEnabled() and lw.received.isSortingEnabled())
 lw.close()
 # The ship leaves: "All tracks" keeps it on the map where it was last heard, and it can still be picked.
 win.handle([gui.Event("points", data={"points": [], "home": None})])
@@ -361,6 +362,34 @@ win.map.show_rings = True
 win.handle([gui.Event("points", data={"points": [], "home": here})])
 win._save_coverage()
 results["rings_saved"] = bool(win.logbook.load_coverage("adsb", coverage.site_key(here)))
+# Tables sort by a clicked column, numbers as numbers, and stay sorted (and selected) as they refresh.
+from PyQt6.QtCore import Qt as _Qt  # noqa: E402
+t = win.table
+cols = [k for k, _ in win.mode.columns]
+seen_col = cols.index("seen")
+win._set_rows([{"hex": "AA0001", "seen": "10 s"}, {"hex": "AA0002", "seen": "9 s"}, {"hex": "AA0003", "seen": "120 s"}])
+before = [t.item(r, 0).text() for r in range(3)]
+t.sortByColumn(seen_col, _Qt.SortOrder.AscendingOrder)  # what a click on its heading does
+win._selected = "aa0001"
+win._set_rows([{"hex": "AA0001", "seen": "11 s"}, {"hex": "AA0002", "seen": "1 s"}, {"hex": "AA0003", "seen": "121 s"}])
+after = [t.item(r, 0).text() for r in range(3)]
+results["table_sorting"] = (before == ["AA0001", "AA0002", "AA0003"] and after == ["AA0002", "AA0001", "AA0003"]
+                            and t.currentRow() == 1 and t.isSortingEnabled())
+win._selected = None
+t.sortByColumn(-1, _Qt.SortOrder.AscendingOrder)
+win._set_rows([])
+from sdr_toolkit.widgets import ORDER, SortItem, drop_oldest, filling, sortable  # noqa: E402
+from PyQt6.QtWidgets import QTableWidget  # noqa: E402
+lt = sortable(QTableWidget(0, 1))
+for i, text in enumerate(["b", "c", "a"]):
+    with filling(lt):
+        lt.insertRow(lt.rowCount())
+        it = SortItem(text)
+        it.setData(ORDER, i)
+        lt.setItem(lt.rowCount() - 1, 0, it)
+lt.sortByColumn(0, _Qt.SortOrder.AscendingOrder)
+drop_oldest(lt)
+results["table_drop_oldest"] = [lt.item(r, 0).text() for r in range(lt.rowCount())] == ["a", "c"]
 # Connect relay: by address to a relay playing a recording, then disconnect.
 relay_src = Path(__file__).resolve().parents[2] / "sdr-tools-relay" / "src"
 if relay_src.is_dir():

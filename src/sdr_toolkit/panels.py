@@ -26,7 +26,6 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSlider,
     QTableWidget,
-    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -34,6 +33,7 @@ from PyQt6.QtWidgets import (
 
 from . import photos
 from .mapview import MapView
+from .widgets import SortItem, filling, sortable
 
 CRAFT_MODES = {"adsb": "ADS-B aircraft", "ais": "AIS ships"}
 
@@ -271,7 +271,7 @@ class LogbookWindow(QDialog):
         lay.addLayout(btns)
 
     def _table(self, headings):
-        t = QTableWidget(0, len(headings))
+        t = sortable(QTableWidget(0, len(headings)))
         t.setHorizontalHeaderLabels(headings)
         t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -302,10 +302,11 @@ class LogbookWindow(QDialog):
         self.note.setText(f"{n['entries']} received, {n['craft']} aircraft/ships, {n['positions']} positions")
 
     def _fill(self, table, rows):
-        table.setRowCount(len(rows))
-        for r, row in enumerate(rows):
-            for c, value in enumerate(row):
-                table.setItem(r, c, QTableWidgetItem(str(value)))
+        with filling(table):
+            table.setRowCount(len(rows))
+            for r, row in enumerate(rows):
+                for c, value in enumerate(row):
+                    table.setItem(r, c, SortItem(str(value)))
 
     def export(self):
         table = self.tabs.currentWidget()
@@ -472,6 +473,7 @@ class RelayDialog(QDialog):
         self.net = QTableWidget(0, 5)
         for t, heads in ((self.lan, ("Name", "Address", "Dongle", "")),
                          (self.net, ("Name", "Location", "Address", "Dongle", ""))):
+            sortable(t)
             t.setHorizontalHeaderLabels(heads)
             t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -523,13 +525,14 @@ class RelayDialog(QDialog):
                           self.fetch if self.tabs.currentIndex() == 1 else lambda: None)
 
     def _fill(self, table, rows, data):
-        table.setRowCount(len(rows))
-        for r, row in enumerate(rows):
-            for c, text in enumerate(row):
-                item = QTableWidgetItem(str(text))
-                if c == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, data[r])
-                table.setItem(r, c, item)
+        with filling(table):
+            table.setRowCount(len(rows))
+            for r, row in enumerate(rows):
+                for c, text in enumerate(row):
+                    item = SortItem(str(text))
+                    if c == 0:
+                        item.setData(Qt.ItemDataRole.UserRole, data[r])
+                    table.setItem(r, c, item)
         table.resizeColumnsToContents()
         if rows:
             table.selectRow(0)

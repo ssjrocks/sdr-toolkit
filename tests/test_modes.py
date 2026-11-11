@@ -707,6 +707,13 @@ def test_adsb_map_points(tmp_path):
     assert any("QFA123" in e.text for e in ev if e.kind == "log")
 
 
+def test_table_sort_order():
+    from sdr_toolkit.widgets import sort_key
+    cells = ["10 s", "", "abc", "9 s", "-82.1", "7C1234", "3", "12.5 km at 30°", "Zulu", "2026-11-11 08:00"]
+    assert sorted(cells, key=sort_key) == ["-82.1", "3", "9 s", "10 s", "12.5 km at 30°", "2026-11-11 08:00",
+                                           "7C1234", "abc", "Zulu", ""]
+
+
 def test_map_projection_and_fit():
     from PyQt6.QtWidgets import QApplication
     from sdr_toolkit.mapview import MapView, from_world, to_world
