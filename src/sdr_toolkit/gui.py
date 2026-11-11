@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QStackedWidget,
@@ -46,6 +47,7 @@ from PyQt6.QtWidgets import (
 )
 
 from . import APP_ID, APP_NAME, __version__, aircraftdb, appreports, coverage, deps, updater
+from .widgets import FitLabel
 from .capture import AudioCapture, list_outputs
 from .logbook import Logbook
 from .mapview import MapView
@@ -441,6 +443,8 @@ class DecodeArea(QWidget):
         self.M = None
         mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         self.title = QLabel()
+        self.title.setWordWrap(True)                  # rich text: wrapped rather than cut
+        self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.settings_btn = QPushButton("Decoder settings…")
         self.settings_btn.clicked.connect(win.decoder_settings)
         self.stop_btn = QPushButton("Stop decoding")
@@ -459,7 +463,7 @@ class DecodeArea(QWidget):
         self.text.setReadOnly(True)
         self.text.setFont(mono)
         self.text.setMaximumBlockCount(5000)
-        self.live = QLabel("")
+        self.live = FitLabel("", keep_end=True)   # a long message mustn't widen the window
         self.live.setFont(mono)
         self.table = QTableWidget(0, 0)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -621,7 +625,7 @@ class MainWindow(QMainWindow):
         self.text.setReadOnly(True)
         self.text.setFont(mono)
         self.text.setMaximumBlockCount(20000)
-        self.live = QLabel("")
+        self.live = FitLabel("", keep_end=True)   # a long message mustn't widen the window
         self.live.setFont(mono)
         self.live.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         text_page = QWidget()
@@ -764,7 +768,7 @@ class MainWindow(QMainWindow):
         cl.addLayout(top)
         cl.addWidget(split, 1)
         self.setCentralWidget(central)
-        self.status = QLabel("")
+        self.status = FitLabel("")
         self.statusBar().addWidget(self.status, 1)
         self.level_label = QLabel("")
         self.statusBar().addPermanentWidget(self.level_label)

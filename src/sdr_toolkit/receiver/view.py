@@ -1,5 +1,7 @@
 """The receiver's screen: a toolbar, the spectrum and the waterfall."""
 
+import time
+
 import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
@@ -17,9 +19,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ..widgets import FitButton
 from .dsp import MODES
 
-BAR = 16                         # px: the grab bar along the top (drag to slide the band)
+BAR = 18                         # px: the grab bar along the top (drag to slide the band)
+ARROW = 30                       # px: the step buttons at its ends
+SLIDE_EVERY = 0.15               # s between retunes while the bar is dragged
+STEP = 0.8                       # of the span on screen, per step button press
 STEPS = ((100, "100 Hz"), (1000, "1 kHz"), (5000, "5 kHz"), (6250, "6.25 kHz"), (10000, "10 kHz"),
          (12500, "12.5 kHz"), (25000, "25 kHz"), (100000, "100 kHz"), (200000, "200 kHz"), (1000000, "1 MHz"))
 ROWS = 400
@@ -70,16 +76,39 @@ class SpectrumView(QWidget):
         self._hover = None
         self.tags: list[dict] = []      # {"freq", "label"} shown as markers
         self._slide_center = None       # where the band is being slid to, drawn before it arrives
+        self._slid_at = 0.0
+        self.step_btns = []
+        for sign, text, tip in ((-1, "◀", "Step down the band"), (1, "▶", "Step up the band")):
+            b = QToolButton(self)
+            b.setText(text)
+            b.setToolTip(f"{tip} ({STEP:.0%} of what's shown; hold to keep going)")
+            b.setAutoRepeat(True)
+            b.setAutoRepeatDelay(400)
+            b.setAutoRepeatInterval(300)
+            b.setCursor(Qt.CursorShape.ArrowCursor)
+            b.clicked.connect(lambda _=False, sign=sign: self.step(sign))
+            self.step_btns.append(b)
 
     # ---- data ----------------------------------------------------------
 
     def set_frame(self, db, center, rate):
         if self._slide_center is not None and self._drag is None and abs(center - self._slide_center) < 1:
             self._slide_center = None           # the dongle has arrived where the bar was slid to
-        if self.center != center or self.rate != rate or self._rows is None or self._rows.shape[1] != len(db):
-            if self.rate != rate or self._rows is None or self._rows.shape[1] != len(db):
-                self.view_center, self.zoom = 0.0, 1.0
+        if self.rate != rate or self._rows is None or self._rows.shape[1] != len(db):
+            self.view_center, self.zoom = 0.0, 1.0
             self._rows = np.zeros((ROWS, len(db)), np.uint8)
+            self.peak = None
+        elif self.center != center:
+            # The dongle moved: move the waterfall's history with it, so it stays at its frequencies.
+            shift = int(round((center - self.center) / rate * len(db)))
+            if abs(shift) >= len(db):
+                self._rows[:] = 0
+            elif shift:
+                self._rows = np.roll(self._rows, -shift, axis=1)
+                if shift > 0:
+                    self._rows[:, -shift:] = 0
+                else:
+                    self._rows[:, :-shift] = 0
             self.peak = None
         self.center, self.rate = float(center), float(rate)
         self.db = db
@@ -109,6 +138,20 @@ class SpectrumView(QWidget):
         lo, hi = self.span()
         return lo + x / max(self.width(), 1) * (hi - lo)
 
+    def step(self, sign):
+        """A step button: slide the band by STEP of what's on screen."""
+        lo, hi = self.span()
+        self._slide_center = (self._slide_center if self._slide_center is not None else self.center) \
+            + sign * STEP * (hi - lo)
+        self.slid.emit(self._slide_center)
+        self.update()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        left, right = self.step_btns
+        left.setGeometry(0, 0, ARROW, BAR)
+        right.setGeometry(self.width() - ARROW, 0, ARROW, BAR)
+
     def passband(self):
         bw = self.bandwidth
         if self.mode == "USB":
@@ -124,11 +167,15 @@ class SpectrumView(QWidget):
         w, h = self.width(), self.height()
         top = int(h * 0.38)
         p.fillRect(self.rect(), QColor(10, 12, 20))
-        # The grab bar: drag it to slide the band the dongle sees.
+        # The grab bar: drag it to slide the band the dongle sees; the frequencies at its ends.
+        lo, hi = self.span()
         p.fillRect(QRectF(0, 0, w, BAR), QColor(45, 55, 80))
         p.setPen(QColor(190, 200, 225))
-        p.drawText(QRectF(0, 0, w, BAR), Qt.AlignmentFlag.AlignCenter,
-                   "◀  drag to slide along the band  ▶" if self._slide_center is None else
+        inner = QRectF(ARROW + 4, 0, w - 2 * ARROW - 8, BAR)
+        p.drawText(inner, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, f"{lo / 1e6:.4f}")
+        p.drawText(inner, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, f"{hi / 1e6:.4f} MHz")
+        p.drawText(inner, Qt.AlignmentFlag.AlignCenter,
+                   "drag to slide along the band" if self._slide_center is None else
                    f"centre {self._slide_center / 1e6:.4f} MHz")
         if self.db is None:
             p.setPen(QColor(180, 180, 180))
@@ -136,14 +183,18 @@ class SpectrumView(QWidget):
             p.end()
             return
         n = len(self.db)
-        lo, hi = self.span()
-        b0 = int(np.clip(((lo - self.center) / self.rate + 0.5) * n, 0, n - 1))
-        b1 = int(np.clip(((hi - self.center) / self.rate + 0.5) * n, b0 + 1, n))
+        # The bins on screen, drawn where their frequencies are (while sliding, the view runs ahead of
+        # the data: the rest stays dark until the dongle gets there).
+        b0 = int(np.clip(np.floor(((lo - self.center) / self.rate + 0.5) * n), 0, n - 1))
+        b1 = int(np.clip(np.ceil(((hi - self.center) / self.rate + 0.5) * n), b0 + 1, n))
+        f0 = self.center + (b0 / n - 0.5) * self.rate
+        f1 = self.center + (b1 / n - 0.5) * self.rate
+        x0, x1 = self.x_of(f0), self.x_of(f1)
         # Waterfall
         rows = self._rows[:, b0:b1]
         img = np.ascontiguousarray(self.cmap[rows])
         qimg = QImage(img.data, img.shape[1], img.shape[0], img.shape[1] * 4, QImage.Format.Format_RGB32)
-        p.drawImage(QRectF(0, top, w, h - top), qimg)
+        p.drawImage(QRectF(x0, top, x1 - x0, h - top), qimg)
         # Grid and frequency scale
         p.setPen(QPen(QColor(60, 70, 90), 1))
         step = self._grid_step(hi - lo)
@@ -166,7 +217,7 @@ class SpectrumView(QWidget):
         xa, xb = self.x_of(a), self.x_of(b)
         p.fillRect(QRectF(xa, 0, max(xb - xa, 1), h), QColor(255, 255, 255, 28))
         # Spectrum line and peak hold
-        xs = np.linspace(0, w, b1 - b0)
+        xs = np.linspace(x0, x1, b1 - b0, endpoint=False) + (x1 - x0) / max(b1 - b0, 1) / 2
         if self.peak_hold and self.peak is not None:
             p.setPen(QPen(QColor(200, 120, 40, 140), 1))
             p.drawPolyline(QPolygonF([QPointF(x, self._y(v, top)) for x, v in zip(xs, self.peak[b0:b1])]))
@@ -229,8 +280,14 @@ class SpectrumView(QWidget):
             self._limit()
         elif self._drag and self._drag[0] == "slide":
             _, x0, c0 = self._drag
-            # Dragging the band right shows lower frequencies, as dragging a map does.
-            self._slide_center = c0 - (ev.position().x() - x0) / max(self.width(), 1) * self.rate * self.zoom * 2
+            # Dragging the band right shows lower frequencies, as dragging a map does: the band follows
+            # the mouse, and the dongle follows it a few times a second.
+            lo, hi = self.span()
+            self._slide_center = c0 - (ev.position().x() - x0) / max(self.width(), 1) * (hi - lo)
+            now = time.monotonic()
+            if now - self._slid_at >= SLIDE_EVERY:
+                self._slid_at = now
+                self.slid.emit(self._slide_center)
         elif self._drag:
             self.tuned.emit(self.hz_of(ev.position().x()))
         elif ev.position().y() < BAR:
@@ -349,8 +406,7 @@ class ReceiverPanel(QWidget):
         self.identify_btn.setToolTip("Guess once what the signal you're tuned to is, and offer what to do with it. "
                                      "Guessing by itself every few seconds is the Identify automatically setting.")
         self.identify_btn.clicked.connect(self.identify.emit)
-        self.looks = QToolButton()
-        self.looks.setText("Looks like: …")
+        self.looks = FitButton("Looks like: …")       # a long guess mustn't widen the window
         self.looks.setToolTip("The best guess for the tuned signal. Click for all guesses and what to do.")
         self.looks.setAutoRaise(True)
         self.looks.clicked.connect(lambda: self.guesses.emit(self.looks))

@@ -28,7 +28,7 @@ sys.excepthook = hook
 
 import numpy as np  # noqa: E402
 from PyQt6.QtCore import QSettings  # noqa: E402
-from PyQt6.QtWidgets import QApplication  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 import signals  # noqa: E402
 from sdr_toolkit import aircraftdb, appreports, gui  # noqa: E402
@@ -140,6 +140,15 @@ win.tree.setCurrentItem(win._items["tones"])
 win.tree.setCurrentItem(win._items["morse"])
 pump(80)
 results["morse"] = "CQ TEST" in win.text.toPlainText()
+# A long message being decoded, a long status: the window keeps its width.
+pump(5)
+width, least = win.width(), win.minimumSizeHint().width()
+long_text = "CQ CQ DE VK2ABC " * 400
+win.handle([gui.Event("live", long_text), gui.Event("status", "status " + long_text)])
+pump(5)
+results["long_text_fits"] = (win.width() == width and win.minimumSizeHint().width() <= least
+                             and win.live.text() == long_text and win.live.toolTip() == long_text
+                             and QLabel.text(win.live).startswith("…") and QLabel.text(win.live).rstrip().endswith("VK2ABC"))
 # Pager: table output.
 SIGNALS[22050] = np.concatenate([np.zeros(10000, np.float32), signals.pocsag(1234567, "HELLO PAGER", 1200),
                                  np.zeros(10000, np.float32)])
@@ -432,6 +441,12 @@ rp.show_values(dict(win.mode.values, decoder="dmr"))
 results["voice_slider"] = rp.voice.isVisible() and rp.voice.value() == 100
 rp.show_values(win.mode.values)
 results["voice_slider"] = results["voice_slider"] and not rp.voice.isVisible()
+pump(5)                                             # let the layout settle first
+width, least = win.width(), win.minimumSizeHint().width()
+win.decode_area.handle(gui.Event("live", "RYRYRY " * 600))
+rp.looks.setText("Looks like: " + "a very long guess " * 80)
+pump(5)
+results["decode_long_text_fits"] = win.width() == width and win.minimumSizeHint().width() <= least
 results["decode_area"] = (win.decode_area.isVisible() and win.decode_area.M.id == "tones"
                           and win.mode.decoder is not None and win.mode.values["demod"] == "NFM")
 win.logbook.add_tag(101.3e6, "Test station", "WFM", 180000, "")
@@ -441,6 +456,29 @@ win._listen_tag(rp.view.tags[0])
 results["tags"] = results["tags"] and win.mode.values["freq_mhz"] == 101.3 and win.mode.values["demod"] == "WFM"
 win._receiver_slid(100.2e6)
 results["slide"] = win.mode.center == 100.2e6
+# The step buttons: 80% of what's shown; the waterfall's history moves with the band, not wiped.
+view = rp.view
+before = view.center
+view.step_btns[1].click()
+pump(10)
+moved = win.mode.center - before
+results["step_button"] = abs(moved - 0.8 * view.rate) < 1 and view.step_btns[0].isVisible()
+# The waterfall's history moves with the band: a signal 600 kHz up is 256 bins further left afterwards.
+from sdr_toolkit.receiver.view import SpectrumView  # noqa: E402
+sv_ = SpectrumView()
+sv_.resize(800, 400)
+line = np.full(1024, -100.0)
+line[600] = -20
+for _ in range(3):
+    sv_.set_frame(line, 100e6, 2.4e6)
+sv_.set_frame(np.full(1024, -100.0), 100.6e6, 2.4e6)
+results["waterfall_kept"] = (int(np.argmax(sv_._rows[1])) == 600 - 256 and sv_._rows[1].max() > 200
+                             and sv_._rows[1][-256:].max() == 0)
+if shots:
+    win.grab().save(str(shots / "stepped.png"))
+view.step_btns[0].click()
+pump(10)
+results["step_button"] = results["step_button"] and abs(win.mode.center - before) < 1
 rp.survey_btn.setChecked(True)
 results["dwell_shown"] = rp.dwell.isVisible()
 rp.dwell.setValue(5)                                   # 50 ms

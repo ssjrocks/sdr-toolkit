@@ -192,6 +192,11 @@ class ReceiverMode(Mode):
     def _centre_for(tune, rate):
         return tune - rate / 4                    # the signal a quarter span right of the DC spike
 
+    def _fits(self, off, rate):
+        """A channel this far from the dongle's centre can be heard where it is: inside the band the
+        dongle sends (right up to its edges) and clear of the DC spike in the middle."""
+        return 2000 < abs(off) and abs(off) + float(self.values["bandwidth"]) / 2 <= rate / 2
+
     def _offset(self):
         return float(self.values["freq_mhz"]) * 1e6 - self.center
 
@@ -216,8 +221,9 @@ class ReceiverMode(Mode):
             if v["freq_mhz"] != old["freq_mhz"]:
                 tune = float(v["freq_mhz"]) * 1e6
                 off = tune - self.center
-                # Within the span (and clear of the edges and the DC spike): just move the demodulator.
-                if not (2000 < abs(off) < rate * 0.45):
+                # Within the span (up to its edges, clear of the DC spike): just move the demodulator,
+                # so tuning near an edge doesn't make the band jump.
+                if not self._fits(off, rate):
                     self.center = self._centre_for(tune, rate)
                     if v["input"] != "file":
                         s.command(SET_FREQ, int(self.center))
@@ -314,7 +320,7 @@ class ReceiverMode(Mode):
             self.src.command(SET_FREQ, int(self.center))
         tune = float(self.values["freq_mhz"]) * 1e6
         moved = None
-        if abs(tune - self.center) > rate * 0.45:
+        if abs(tune - self.center) + float(self.values["bandwidth"]) / 2 > rate / 2:
             moved = round((self.center + rate / 4) / 1e6, 6)
             self.values["freq_mhz"] = moved
             tune = moved * 1e6

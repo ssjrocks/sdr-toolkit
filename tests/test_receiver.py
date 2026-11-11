@@ -191,6 +191,11 @@ def test_receiver_on_a_recording(monkeypatch, tmp_path):
         # Clicking 50 kHz along stays within the span: the dongle isn't retuned.
         m.apply(dict(m.values, freq_mhz=101.15))
         assert m.center == 100.5e6 and abs(m.demod.offset - 650000) < 1
+        # Right up to the edge of the span (101.7 MHz, less half the channel) it isn't either.
+        m.apply(dict(m.values, freq_mhz=101.6))
+        assert m.center == 100.5e6 and abs(m.demod.offset - 1100000) < 1
+        m.apply(dict(m.values, freq_mhz=99.4))
+        assert m.center == 100.5e6
         # A frequency outside the span retunes the dongle, the signal again a quarter span off centre.
         m.apply(dict(m.values, freq_mhz=145.0))
         assert m.center == 145e6 - RATE / 4

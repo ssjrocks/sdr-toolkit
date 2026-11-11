@@ -123,7 +123,10 @@ step down to 48 kHz audio is a whole-number decimation with no clicks between bl
 puts 4.5 V on the antenna socket: only for active antennas or LNAs, on dongles that have one.
 
 Drag the grab bar along the top of the spectrum to slide the dongle's span along the band (the
-frequency you're listening to stays put until you click elsewhere). **Identify** measures the signal
+frequency you're listening to stays put while it's in view); the dongle follows a few times a
+second, and the bar shows the frequencies at its ends. Its ◀ ▶ buttons step 80% of what's on
+screen. Clicking anywhere in the spectrum, right up to its edges, tunes there without moving the
+band. **Identify** measures the signal
 you're tuned to (its width, whether its envelope is constant, FSK levels and baud rate, deviation,
 a carrier, AFSK tones, how much of the time it's keyed) and checks it against an Australian band
 plan, then offers its guesses, best first, each with the demodulator, bandwidth and decoder that
