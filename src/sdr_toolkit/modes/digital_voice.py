@@ -233,7 +233,20 @@ class DigitalVoiceMode(RadioMode):
         threading.Thread(target=run, daemon=True, name="dsd-volume").start()
 
     def _stop_dsd(self):
-        # DSD-FME ends on SIGINT (Ctrl+C) and ignores SIGTERM for seconds.
+        # DSD-FME ends on SIGINT (Ctrl+C) and ignores SIGTERM for seconds. Reading the receiver's
+        # audio it only sees the signal once its read returns, so that connection is closed first.
+        for attr in ("_conn", "_server"):
+            sock = getattr(self, attr, None)
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                setattr(self, attr, None)
         proc = getattr(self, "_proc", None)
         if proc is not None and proc.poll() is None:
             if system.WINDOWS:
@@ -244,14 +257,6 @@ class DigitalVoiceMode(RadioMode):
                 proc.wait(2)
             except subprocess.TimeoutExpired:
                 proc.kill()
-        for attr in ("_conn", "_server"):
-            sock = getattr(self, attr, None)
-            if sock is not None:
-                try:
-                    sock.close()
-                except OSError:
-                    pass
-                setattr(self, attr, None)
 
     SHORT = {"voice": "Calls: the talkgroup and radio ID show when one starts.",
              "control": "A trunked system's control channel: the calls are on other frequencies.",

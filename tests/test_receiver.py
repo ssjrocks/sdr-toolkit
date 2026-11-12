@@ -471,6 +471,48 @@ def test_decode_points_decode_several_channels_at_once(monkeypatch, tmp_path):
     assert m.points == {}
 
 
+def test_find_carriers_strong_narrow_yes_broadcast_no():
+    n, rate, centre = 4096, 2400000, 100e6
+    f = centre + (np.arange(n) - n / 2) * rate / n
+    db = np.full(n, -100.0)
+    near = lambda f0, half: np.abs(f - f0) < half                         # noqa: E731
+    db[near(centre + 300000, 5000)] = -30                                  # strong DMR: 70 dB up...
+    db[near(centre + 300000, 30000) & (db < -40)] = -80                    # ...skirts 20 dB up, 60 kHz wide
+    db[near(centre - 400000, 100000)] = -50                                # an FM broadcast, 200 kHz flat
+    found = dsp.find_carriers(db, rate, centre, max_width=25000, min_snr=12, merge=10000)
+    assert len(found) == 1 and abs(found[0] - (centre + 300000)) < 2000, found
+
+
+def test_many_dmr_points_stop_quickly(monkeypatch, tmp_path):
+    """Removing DSD-FME points mustn't hold up the receiver, and Stop ends them all at once: they
+    used to take 2 s each, one after another (the window hung, the dongle dropped samples)."""
+    from sdr_toolkit.modes.digital_voice import dsd_fme
+    if dsd_fme() is None:
+        pytest.skip("DSD-FME isn't built")
+    rec = save_iq(tmp_path / "noise.cu8", noise(RATE * 2, 0.05))
+    m = start_receiver(monkeypatch, input="file", file=str(rec), file_rate=RATE, freq_mhz=101.1)
+    try:
+        poll_for(m, 0.3)
+        freqs = [m.center + k * 25000 for k in range(1, 9)]
+        for f in freqs:
+            m.add_point(f, "dmr")
+        poll_for(m, 1.5)
+        procs = [pt["host"].mode._proc for pt in m.points.values()]
+        assert len(procs) == 8 and all(p.poll() is None for p in procs)
+        for f in freqs[:4]:
+            m.remove_point(f)
+        ev = poll_for(m, 1.0)
+        assert len(m.points) == 4
+        frames = sum(e.kind == "spectrum" for e in ev)        # 25 a second while the receiver keeps up
+        assert frames >= 10, frames
+    finally:
+        t = time.time()
+        m.stop()
+        took = time.time() - t
+    assert took < 3, took
+    assert all(p.poll() is not None for p in procs) and m.src is None
+
+
 def test_explorer_lists_and_listening(tmp_path):
     from sdr_toolkit.receiver import dsd
     from sdr_toolkit.receiver.explore import Explorer

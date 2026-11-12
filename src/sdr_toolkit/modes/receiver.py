@@ -152,7 +152,7 @@ class ReceiverMode(Mode):
         self._decoder_events: list = []
         self.points: dict = {}          # decode points: freq (Hz) -> {"decoder", "host", "muted", "heard"}
         self._point_requests: collections.deque = collections.deque()
-        self._point_events: list = []
+        self._point_events: collections.deque = collections.deque()   # added to from other threads too
         self._chz = None                # their channelizer
         self._chz_center = None
         self._discover_at = 0.0
@@ -335,8 +335,8 @@ class ReceiverMode(Mode):
     # ---- the explorer: find signals and decode them ------------------------------
 
     def _discover(self, db, rate):
-        """Runs on the receiver's thread: each new narrow signal in view becomes a decode point that
-        tries it for digital voice (let go after PROBE_FOR s if DSD-FME finds nothing)."""
+        """Runs on the receiver's thread: each new narrow signal in view (in two looks running) becomes a
+        decode point that tries it for digital voice (let go after PROBE_FOR s if DSD-FME finds nothing)."""
         now = time.time()
         busy = set(self.points) | set(self._probing) | {r[1] for r in self._point_requests if r[0] == "add"}
         n = len(db)
@@ -348,7 +348,10 @@ class ReceiverMode(Mode):
         found = dsp.find_carriers(db, rate, self.center, max_width=25000,
                                   min_snr=float(self.values.get("discover_snr", 12)), merge=10000)
         strong = [(g, level(g)) for g in list(busy) + found]
+        before, self._last_found = getattr(self, "_last_found", []), found
         for f in found:
+            if not any(abs(f - g) < 10000 for g in before):
+                continue                                 # only in this look: a noise peak or a click so far
             here = level(f)
             if any(0 < abs(f - g) < SIDEBAND and lg - here > SIDEBAND_DB for g, lg in strong):
                 continue                                 # a strong neighbour's side band, not a signal
@@ -564,6 +567,15 @@ class ReceiverMode(Mode):
         vol = 0 if pt["muted"] else int(self.values.get("voice_volume", 100))
         pt["host"].call(lambda mode: getattr(mode, "set_voice_volume", lambda _: None)(vol))
 
+    def _stop_point_later(self, freq, pt):
+        """A decoder program can take a moment to end: not on the receiver's thread, which would
+        fall behind the dongle (and drop samples) meanwhile."""
+        def run():
+            self._point_events.extend((freq, pt["decoder"], e) for e in pt["host"].stop())
+        t = threading.Thread(target=run, daemon=True, name="point-stop")
+        t.start()
+        self._stopping = [s for s in getattr(self, "_stopping", []) if s.is_alive()] + [t]
+
     def _points_step(self, x, now):
         rate = int(self.values["rate"])
         while self._point_requests:
@@ -588,10 +600,10 @@ class ReceiverMode(Mode):
                 self.points[freq] = {"decoder": decoder, "host": host, "muted": bool(muted), "heard": 0.0}
                 self._chz_center = None                  # place its channel
             elif what == "remove" and pt is not None:
-                self._point_events += [(freq, pt["decoder"], e) for e in pt["host"].stop()]
                 del self.points[freq]
                 if self._chz is not None:
                     self._chz.remove(freq)
+                self._stop_point_later(freq, pt)
             elif what == "mute" and pt is not None:
                 pt["muted"] = bool(muted)
                 self._point_volume(pt)
@@ -678,7 +690,7 @@ class ReceiverMode(Mode):
             self._point_events += [(freq, pt["decoder"], e) for e in evs]
         if self.discover:
             self._check_found(time.time())
-        pending, self._point_events = self._point_events, []
+        pending = [self._point_events.popleft() for _ in range(len(self._point_events))]
         events += [Event("point_decoded", data={"freq": f, "id": d, "event": e}) for f, d, e in pending]
         frame, self._frame = self._frame, None
         if frame is not None:
@@ -735,19 +747,29 @@ class ReceiverMode(Mode):
         return [Event("activity", text)]
 
     def stop(self):
-        if getattr(self, "_halt", None) is not None:
-            self._halt.set()
-        if getattr(self, "_thread", None) is not None:
-            self._thread.join(2)
-        if getattr(self, "decoder", None) is not None:
-            self.decoder.stop()
-            self.decoder = None
-        for pt in getattr(self, "points", {}).values():
-            pt["host"].stop()
-        self.points = {}
-        for part in ("audio", "src"):
-            obj = getattr(self, part, None)
-            if obj is not None:
-                obj.close()
-                setattr(self, part, None)
+        try:
+            if getattr(self, "_halt", None) is not None:
+                self._halt.set()
+            if getattr(self, "_thread", None) is not None:
+                self._thread.join(5)
+            if getattr(self, "decoder", None) is not None:
+                self.decoder.stop()
+                self.decoder = None
+            # The decode points' programs end together, not one after another.
+            points, self.points = list(getattr(self, "points", {}).values()), {}
+            stoppers = [threading.Thread(target=pt["host"].stop, daemon=True) for pt in points]
+            for t in stoppers:
+                t.start()
+            for t in stoppers + getattr(self, "_stopping", []):
+                t.join(5)
+            self._stopping = []
+        finally:
+            for part in ("audio", "src"):                    # the dongle or relay is let go whatever happened
+                obj = getattr(self, part, None)
+                if obj is not None:
+                    try:
+                        obj.close()
+                    except Exception:  # closing must not keep the other one open
+                        log.exception("closing %s", part)
+                    setattr(self, part, None)
         return []

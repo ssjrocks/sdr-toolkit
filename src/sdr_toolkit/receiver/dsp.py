@@ -325,10 +325,29 @@ def fm_discriminator(ch, y, deviation=5000.0):
     return (np.angle(y * np.conj(prev)) * AUDIO_RATE / (2 * np.pi * deviation)).astype(np.float32)
 
 
+CORE_DB = 25.0      # dB below its peak: where a strong signal's width is measured
+
+
+def _runs(mask):
+    """(first, last) index of each run of True."""
+    i, n = 0, len(mask)
+    while i < n:
+        if not mask[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and mask[j + 1]:
+            j += 1
+        yield i, j
+        i = j + 1
+
+
 def find_carriers(power_db, rate, centre, max_width=40000, min_snr=12.0, merge=15000):
     """Narrow carriers well above the noise in an averaged spectrum (FFT-shifted dB): their
     frequencies (Hz), strongest first. The DC spike and the band's edges are left out, and so is
-    anything wider than max_width (a broadcast, or noise)."""
+    anything wider than max_width (a broadcast, or noise). A strong signal's skirts can stay above
+    the noise far out, so a region too wide is measured again CORE_DB below its peak: a narrow
+    signal is narrow there, a broadcast still wide."""
     n = len(power_db)
     freqs = centre + (np.arange(n) - n / 2) * rate / n
     floor = float(np.median(power_db))
@@ -336,18 +355,18 @@ def find_carriers(power_db, rate, centre, max_width=40000, min_snr=12.0, merge=1
     hot &= np.abs(freqs - centre) > 5000                      # the dongle's DC spike
     hot &= np.abs(freqs - centre) < rate * 0.45               # its filter slopes
     found = []
-    i = 0
-    while i < n:
-        if not hot[i]:
-            i += 1
-            continue
-        j = i
-        while j + 1 < n and hot[j + 1]:
-            j += 1
+
+    def add(i, j):
+        w = 10 ** (power_db[i:j + 1] / 10)
+        found.append((float(power_db[i:j + 1].max()), float(np.sum(freqs[i:j + 1] * w) / np.sum(w))))
+    for i, j in _runs(hot):
         if (j - i + 1) * rate / n <= max_width:
-            w = 10 ** (power_db[i:j + 1] / 10)
-            found.append((float(power_db[i:j + 1].max()), float(np.sum(freqs[i:j + 1] * w) / np.sum(w))))
-        i = j + 1
+            add(i, j)
+            continue
+        seg = power_db[i:j + 1]
+        for a, b in _runs(seg > max(seg.max() - CORE_DB, floor + min_snr)):
+            if (b - a + 1) * rate / n <= max_width:
+                add(i + a, i + b)
     out = []
     for _, f in sorted(found, reverse=True):
         if all(abs(f - g) > merge for g in out):
