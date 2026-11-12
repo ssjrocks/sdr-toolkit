@@ -102,6 +102,7 @@ They all run on the JVM; the UI ones run the real app under Robolectric.
 | `RelayLiveTest` | the real SDR Tools Relay (set `SDR_TOOLS_RELAY_SRC` to its `src`) playing an ADS-B recording: found by the scan, logged in with the password, tuned, and the aircraft decoded from its samples |
 | `DspTest` | the FFT, the spectrum's dBFS scale, the filter plans' cost, and NFM, WFM, AM, USB, LSB and CW on synthetic signals: the right tone, the wrong sideband cut, the same audio whatever the block sizes, squelch |
 | `AdsbTest` | the worked examples of *The 1090 MHz Riddle* (identity, CPR positions global and local, ground speed and airspeed), CRC and one-bit repair, an encoder written from the standard round-tripped around the world, the demodulator on synthesised IQ split into awkward chunks, and no aircraft from noise |
+| `EngineAudioTest` | what reaches the speaker: tuned to a simulated FM station, the engine writes real-time 48 kHz audio with the station's 800 Hz tone in it, and silence when muted |
 | `EngineThroughputTest` | the engine keeps up with a relay at 2.4 MS/s: nothing dropped, 25 spectrum frames a second |
 | `UiWalkthroughTest` | the whole app against a simulated relay making up a band and aircraft: found by the scan, the password dialog, the band on the receiver, the bands and settings sheets, five aircraft tracked with the right positions, and back. `SCREENSHOT_DIR=… ./gradlew testDebugUnitTest` saves screenshots of each step |
 
