@@ -181,7 +181,7 @@ def test_digital_voice_and_gps_use_the_bridge(make_relay, tmp_path):
     assert "InputFilter.IF=0" in conf                       # the relay corrects its own dongle
     up = gps.upstream()
     assert up[up.index("--format") + 1] == "s8" and up[up.index("--freq") + 1] == "1575420000"
-    assert "from sdr_toolkit.relay_stream import main" in up[3]
+    assert "sdr_toolkit.relay_stream" in " ".join(up[:4])         # system.python_command runs it
     import shutil
     shutil.rmtree(gps._dir, ignore_errors=True)
 

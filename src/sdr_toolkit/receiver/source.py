@@ -14,6 +14,8 @@ import threading
 import time
 from pathlib import Path
 
+from .. import system
+
 log = logging.getLogger(__name__)
 
 SET_FREQ, SET_RATE, SET_GAIN_MODE, SET_GAIN, SET_PPM, SET_IF_GAIN, SET_TEST_MODE, SET_AGC, \
@@ -154,7 +156,7 @@ class LocalRtlTcp(RtlTcp):
             text = "\n".join(self.output).lower()
             self.stop_server()
             if "no supported devices" in text or "no matching devices" in text:
-                raise SourceError("No RTL-SDR found: plug it in, or connect a relay (Connect relay…)")
+                raise SourceError("No RTL-SDR found: plug it in, or connect a relay (Connect relay…)." + system.DRIVER_HINT)
             if "usb_claim_interface" in text or "busy" in text:
                 raise SourceError("The RTL-SDR is in use by another program (another mode, SDR++, GQRX…)")
             raise SourceError("rtl_tcp didn't start: " + " / ".join(self.output[-3:]))

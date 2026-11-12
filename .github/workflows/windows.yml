@@ -1,0 +1,165 @@
+# Windows: tests from source, builds SDR Toolkit with PyInstaller, checks the build works
+# (--self-test), makes the installer, installs it silently and checks the installed copy.
+#
+# For a release tag (v*), it also builds the wheel, then attaches everything to the release:
+# the wheel and sdr-toolkit.json (for Linux's updater and install.sh), and the installer and
+# sdr-toolkit-windows.json (for Windows' updater). If scripts/release.sh made a draft release,
+# its wheel is kept; otherwise the release is made here, with release-notes/<tag>.md as its notes.
+# The release is published only once everything is attached, so no updater sees half of it.
+name: Windows build and release
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+    paths-ignore: ["android/**", "**.md"]
+  pull_request:
+    paths-ignore: ["android/**", "**.md"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The real relay, for tests/test_relay.py (the relay's protocol from Windows).
+      - uses: actions/checkout@v4
+        with:
+          repository: ssjrocks/sdr-tools-relay
+          path: sdr-tools-relay
+      - name: Python packages
+        run: python -m pip install --upgrade pip . pyinstaller pytest skyfield
+      - name: Tests (from source)
+        env:
+          SDR_TOOLS_RELAY_SRC: ${{ github.workspace }}/sdr-tools-relay/src
+        run: python -m pytest -q -rfs --tb=line -p no:cacheprovider tests
+      - name: RTL-SDR tools (rtl-sdr-blog V1.4.0, as SDR Tools Relay uses)
+        shell: pwsh
+        run: |
+          gh release download V1.4.0 -R rtlsdrblog/rtl-sdr-blog -p Release.zip -D build
+          $sha = (Get-FileHash build\Release.zip -Algorithm SHA256).Hash.ToLower()
+          if ($sha -ne "7ef33f1304647f65e5e0fde43637a73d54f076e91e651a3cecc4f55a17fd9815") { throw "Release.zip checksum $sha" }
+          Expand-Archive build\Release.zip build\rtlblog
+          New-Item -ItemType Directory build\tools | Out-Null
+          Copy-Item build\rtlblog\x64\*.exe, build\rtlblog\x64\*.dll build\tools\
+          Get-ChildItem build\tools | Select-Object Name, Length
+          foreach ($t in "rtl_tcp.exe", "rtl_fm.exe", "rtl_sdr.exe", "rtlsdr.dll") {
+            if (-not (Test-Path "build\tools\$t")) { throw "$t isn't in Release.zip" }
+          }
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Icon
+        run: python packaging/windows/make_icon.py
+      - name: PyInstaller
+        run: pyinstaller --noconfirm --distpath dist --workpath build\pyinstaller packaging\windows\sdr-toolkit.spec
+      - name: Self-test of the build
+        shell: pwsh
+        run: |
+          $p = Start-Process "dist\SDR Toolkit\SDR Toolkit.exe" -ArgumentList "--self-test", "$PWD\build\selftest.json" -Wait -PassThru
+          Get-Content build\selftest.json
+          if ($p.ExitCode -ne 0) { throw "self-test failed ($($p.ExitCode))" }
+      - name: Version
+        id: v
+        shell: pwsh
+        run: |
+          $v = python -c "import sdr_toolkit; print(sdr_toolkit.__version__)"
+          if (-not $v) { throw "no version" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+      - name: Installer
+        shell: pwsh
+        run: |
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DVersion=${{ steps.v.outputs.version }}" packaging\windows\sdr-toolkit.iss
+          if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
+      - name: Install it silently and self-test the installed copy
+        shell: pwsh
+        run: |
+          $setup = "dist\SDR-Toolkit-Setup-${{ steps.v.outputs.version }}.exe"
+          $p = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOLAUNCH=1" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installer exit $($p.ExitCode)" }
+          $exe = "$env:LOCALAPPDATA\Programs\SDR Toolkit\SDR Toolkit.exe"
+          $p = Start-Process $exe -ArgumentList "--self-test", "$PWD\build\installed.json" -Wait -PassThru
+          Get-Content build\installed.json
+          if ($p.ExitCode -ne 0) { throw "installed self-test failed ($($p.ExitCode))" }
+      - name: Installer's info file
+        shell: pwsh
+        run: |
+          $name = "SDR-Toolkit-Setup-${{ steps.v.outputs.version }}.exe"
+          $sha = (Get-FileHash "dist\$name" -Algorithm SHA256).Hash.ToLower()
+          '{"version": "${{ steps.v.outputs.version }}", "installer": "' + $name + '", "sha256": "' + $sha + '"}' | Set-Content -NoNewline -Encoding ascii dist\sdr-toolkit-windows.json
+          Get-Content dist\sdr-toolkit-windows.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            dist/SDR-Toolkit-Setup-*.exe
+            dist/sdr-toolkit-windows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-self-test
+          path: build/*.json
+
+  wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Wheel and its info file
+        run: |
+          uv build -q --wheel --out-dir dist
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+          wheel=$(cd dist && ls sdr_toolkit-"$version"-*.whl)
+          sha=$(sha256sum "dist/$wheel" | cut -d' ' -f1)
+          printf '{"version": "%s", "wheel": "%s", "sha256": "%s"}\n' "$version" "$wheel" "$sha" > dist/sdr-toolkit.json
+          cat dist/sdr-toolkit.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/*
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [windows, wheel]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Attach everything to the release and publish it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ls -l assets
+          version=$(python3 -c "import json; print(json.load(open('assets/sdr-toolkit.json'))['version'])")
+          [ "$TAG" = "v$version" ] || { echo "tag $TAG doesn't match version $version"; exit 1; }
+          installer=$(python3 -c "import json; print(json.load(open('assets/sdr-toolkit-windows.json'))['installer'])")
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            notes="release-notes/$TAG.md"
+            [ -f "$notes" ] || { git tag -l --format='%(contents)' "$TAG" > /tmp/notes.md; notes=/tmp/notes.md; }
+            gh release create "$TAG" --draft --verify-tag --title "SDR Toolkit $version" --notes-file "$notes"
+          fi
+          have=$(gh release view "$TAG" --json assets -q '[.assets[].name] | join(",")')
+          # A draft made by scripts/release.sh carries its own wheel and sdr-toolkit.json: keep them.
+          if [[ ",$have," != *",sdr-toolkit.json,"* ]]; then
+            wheel=$(python3 -c "import json; print(json.load(open('assets/sdr-toolkit.json'))['wheel'])")
+            gh release upload "$TAG" "assets/$wheel" assets/sdr-toolkit.json
+          fi
+          gh release upload "$TAG" "assets/$installer" assets/sdr-toolkit-windows.json --clobber
+          have=$(gh release view "$TAG" --json assets -q '[.assets[].name] | join(",")')
+          for want in sdr-toolkit.json sdr-toolkit-windows.json "$installer"; do
+            [[ ",$have," == *",$want,"* ]] || { echo "$want missing from the release ($have)"; exit 1; }
+          done
+          gh release edit "$TAG" --draft=false --latest

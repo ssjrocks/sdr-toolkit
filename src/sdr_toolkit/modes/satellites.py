@@ -3,12 +3,12 @@
 import json
 import logging
 import subprocess
-import sys
 import threading
 import time
 
 from .base import Event, Setting, Mode, Tuning
 from .radio import LOCATION_SETTINGS, home
+from .. import system
 
 log = logging.getLogger(__name__)
 NEXT_HOURS = 24                     # the list's "next pass" looks this far ahead
@@ -102,7 +102,7 @@ class SatelliteMode(Mode):
         readers = []
         for k in range(WORKERS):
             part = [[s.norad, s.line1, s.line2] for s in sats[k::WORKERS]]
-            proc = subprocess.Popen([sys.executable, "-m", "sdr_toolkit.satellites.worker"], stdin=subprocess.PIPE,
+            proc = subprocess.Popen(system.python_command("sdr_toolkit.satellites.worker"), stdin=subprocess.PIPE,
                                     stdout=subprocess.PIPE, text=True)
             self._procs.append(proc)
             proc.stdin.write(json.dumps(dict(job, sats=part)))

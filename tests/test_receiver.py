@@ -1,5 +1,6 @@
 """The Spectrum receiver's signal processing, on synthetic signals."""
 
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -349,6 +350,11 @@ def test_identify_decodes_dmr():
     assert "DMR digital radio (decoded)" in names, (names, tried)
 
 
+needs_decoders = pytest.mark.skipif(not (shutil.which("multimon-ng") and shutil.which("direwolf")),
+                                    reason="needs multimon-ng and direwolf, not installed here")
+
+
+@needs_decoders
 def test_identify_decodes_a_pager_aprs_and_ctcss():
     import signals
     a = np.concatenate([np.zeros(11025), signals.pocsag(1234567, "HELLO PAGER 42", 1200)])
@@ -371,11 +377,13 @@ def test_identify_broadcast_fm_by_its_pilot():
         assert (g is not None and g.name.startswith("FM broadcast, stereo")) == pilot
 
 
+@needs_decoders
 def test_identify_decodes_nothing_in_noise():
     names, tried = _identified(noise(240000 * 8, 0.1).astype(np.complex64), 460.0, 12000)
     assert names == [] and "multimon-ng (pagers)" in tried
 
 
+@needs_decoders
 def test_receiver_identify_listens_then_decodes(monkeypatch, tmp_path):
     import signals
     a = np.concatenate([np.zeros(11025), signals.pocsag(1234567, "HELLO PAGER 42", 1200), np.zeros(22050 * 9)])

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A spectrum peak over waterfall lines, inside the adaptive icon's safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:strokeColor="#FF4FD1C5" android:strokeWidth="3.5" android:strokeLineCap="round"
+        android:strokeLineJoin="round" android:fillColor="#00000000"
+        android:pathData="M30,62 L40,60 L46,61 L50,40 L54,30 L58,40 L62,61 L68,59 L78,62" />
+    <path android:strokeColor="#FF2B6CB0" android:strokeWidth="3" android:strokeLineCap="round"
+        android:pathData="M32,70 L76,70" />
+    <path android:strokeColor="#FF3182CE" android:strokeWidth="3" android:strokeLineCap="round"
+        android:pathData="M36,76 L72,76" />
+    <path android:strokeColor="#FF63B3ED" android:strokeWidth="3" android:strokeLineCap="round"
+        android:pathData="M42,82 L66,82" />
+</vector>

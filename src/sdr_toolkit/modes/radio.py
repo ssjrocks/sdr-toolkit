@@ -6,7 +6,6 @@ RTL-SDR itself (rtl_433, readsb, rtl_fm), or reads a recording: unsigned
 "How to tune" gives.
 """
 
-import sys
 import time
 from pathlib import Path
 
@@ -15,6 +14,7 @@ from scipy.signal import butter, resample_poly, sosfilt
 
 from .base import Event, Setting
 from .process import ProcessMode
+from .. import system
 
 RADIO_SETTINGS = (
     Setting("input", "Input", "rtl", "choice", restart=True,
@@ -151,9 +151,7 @@ class RadioMode(ProcessMode):
 
     def relay_stream(self, freq_hz, rate, **extra) -> list[str]:
         """relay_stream's command line: the relay's samples on stdout, like rtl_sdr / rtl_fm."""
-        pkg_parent = str(Path(__file__).resolve().parents[2])        # works installed or from a checkout
-        boot = f"import sys; sys.path.insert(0, {pkg_parent!r}); from sdr_toolkit.relay_stream import main; main()"
-        cmd = [sys.executable, "-u", "-c", boot, "--port", str(self.bridge().local_port),
+        cmd = system.python_command("sdr_toolkit.relay_stream") + ["--port", str(self.bridge().local_port),
                "--freq", str(int(freq_hz)), "--rate", str(int(rate)), "--gain", self.gain_db() or "auto"]
         for k, v in extra.items():
             cmd += [f"--{k}", str(v)]
@@ -163,7 +161,7 @@ class RadioMode(ProcessMode):
         """rtl_fm / rtl_433 style: an index, or :serial."""
         return self.values["device"].strip() or "0"
 
-    NO_DEVICE = "No RTL-SDR found: plug it in, or set Settings → Input to an IQ recording."
+    NO_DEVICE = "No RTL-SDR found: plug it in, or set Settings → Input to an IQ recording." + system.DRIVER_HINT
 
     def device_problem(self, line: str) -> list[Event] | None:
         """A clear message for the usual live-input failures, or None."""

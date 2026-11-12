@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Publishes a GitHub release with the wheel and sdr-toolkit.json (version,
-# wheel name, SHA-256) for the in-app updater and scripts/install.sh.
+# Makes a draft GitHub release with the wheel and sdr-toolkit.json (version,
+# wheel name, SHA-256) for the in-app updater and scripts/install.sh. Pushing the
+# tag starts .github/workflows/windows.yml, which adds the Windows installer and
+# sdr-toolkit-windows.json and then publishes the release, so no updater sees a
+# release without its files. (The workflow can also make the release by itself
+# from just the tag: then release-notes/vVERSION.md is its notes.)
 #
 # Usage: scripts/release.sh NOTES.md
 # Bump version in pyproject.toml and commit first.
@@ -24,5 +28,5 @@ printf '{"version": "%s", "wheel": "%s", "sha256": "%s"}\n' "$version" "$wheel" 
 git tag -a "v$version" -m "SDR Toolkit $version"
 git push origin HEAD "v$version"
 gh release create "v$version" "$tmp/$wheel" "$tmp/sdr-toolkit.json" \
-  --title "SDR Toolkit $version" --notes-file "$notes" --verify-tag
-echo "released SDR Toolkit $version ($wheel, sha256 $sha)"
+  --title "SDR Toolkit $version" --notes-file "$notes" --verify-tag --draft
+echo "drafted SDR Toolkit $version ($wheel, sha256 $sha); the Windows build publishes it"

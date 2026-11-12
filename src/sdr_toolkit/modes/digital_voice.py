@@ -25,8 +25,9 @@ import numpy as np
 
 from .base import Event, MissingParts, Setting, Tuning
 from .radio import RADIO_SETTINGS, RadioMode, fm_audio_chunks
+from .. import system
 
-DSD_FME = Path.home() / ".local/share/sdr-toolkit/dsd-fme/bin/dsd-fme"
+DSD_FME = system.data_dir() / "dsd-fme" / "bin" / "dsd-fme"
 PROTOCOLS = (
     ("-fa", "Automatic (P25 phase 1, DMR, D-Star, YSF, X2-TDMA)"),
     ("-fs", "DMR (simplex and repeater)"),
@@ -233,11 +234,14 @@ class DigitalVoiceMode(RadioMode):
         # DSD-FME ends on SIGINT (Ctrl+C) and ignores SIGTERM for seconds.
         proc = getattr(self, "_proc", None)
         if proc is not None and proc.poll() is None:
-            proc.send_signal(signal.SIGINT)
+            if system.WINDOWS:
+                proc.terminate()                # no SIGINT to send on Windows
+            else:
+                proc.send_signal(signal.SIGINT)
             try:
                 proc.wait(2)
             except subprocess.TimeoutExpired:
-                pass
+                proc.kill()
         for attr in ("_conn", "_server"):
             sock = getattr(self, attr, None)
             if sock is not None:

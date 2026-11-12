@@ -8,10 +8,10 @@ rest stays until it's cleared.
 
 import json
 import math
-import os
 import sqlite3
 import time
 from pathlib import Path
+from . import system
 
 KEEP_DAYS = 30
 NEW_SIGHTING = 30 * 60          # seen again after this long counts as another sighting
@@ -20,8 +20,7 @@ POS_MOVED = 300.0               # ...unless it has moved this far (m)
 
 
 def default_path() -> Path:
-    base = os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share"
-    return Path(base) / "sdr-toolkit" / "logbook.sqlite"
+    return system.data_dir() / "logbook.sqlite"
 
 
 def _moved_m(a, b) -> float:

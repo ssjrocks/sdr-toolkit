@@ -13,13 +13,13 @@ weather pictures, gr-satellites for telemetry), or that it's outside an RTL-SDR'
 
 import json
 import logging
-import os
 import time
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .. import __version__
+from .. import system
 
 log = logging.getLogger(__name__)
 SATNOGS = "https://db.satnogs.org/api/{}/?format=json"
@@ -32,8 +32,7 @@ KIND_ORDER = {"decode": 0, "listen": 1, "pictures": 2, "telemetry": 3, "out": 4}
 
 
 def cache_dir() -> Path:
-    base = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
-    return Path(base) / "sdr-toolkit" / "satellites"
+    return system.cache_dir() / "satellites"
 
 
 def _fetch(url, path: Path, max_age, offline=False) -> bytes | None:

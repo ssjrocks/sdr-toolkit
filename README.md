@@ -2,7 +2,8 @@
 
 Decoders for amateur and utility radio data modes in one window, fed by whatever is playing on this
 computer: a WebSDR in the browser, an SDR program, a radio on line-in. Nothing has to be routed: it
-records the output device's monitor through PipeWire, so you still hear the audio.
+records the output device's monitor through PipeWire (on Windows, WASAPI loopback), so you still
+hear the audio. It runs on Ubuntu and on Windows 10 and 11 (see [Windows](#windows)).
 
 Pick a mode on the left. **How to tune** says what to select on the SDR (USB, LSB, FM, CW), the
 filter width and where to listen; **Settings** has every parameter that differs between stations
@@ -125,6 +126,10 @@ sample rate: about 38 Mbit/s for ADS-B, 4 for AIS and ISM, 16 for LoRa. While co
 button's menu says whether the relay is up to date and offers **Update the relay to …** when a
 newer SDR Tools Relay is out (the relay must have a password, and relays from 0.1.2 on).
 
+**On Android:** [`android/`](android/README.md) has a phone version of Spectrum & receiver and
+ADS-B, with an RTL-SDR plugged into the phone (through the free Rtl-sdr driver app) or any relay
+on the network or the internet, found the same way as here. GitHub Actions builds its APK.
+
 **Spectrum & receiver** is a receiver like SDR++ or GQRX: a spectrum (with peak hold) over a
 waterfall of up to 2.6 MHz of the band, and a demodulator on the frequency you click, played
 through your speakers. Click or drag to tune (rounded to the tuning step), wheel to zoom, right-drag
@@ -229,6 +234,51 @@ offers an **Install** button, which does the same with the desktop's password pr
 
 `scripts/install.sh --uninstall` removes the app and everything it built; saved pictures and calls stay.
 
+## Windows
+
+Download `SDR-Toolkit-Setup-<version>.exe` from the
+[latest release](https://github.com/ssjrocks/sdr-toolkit/releases/latest) and run it. It installs
+for your user only (no administrator password), with a Start menu entry. The app updates itself as
+on Linux: **Update to …** downloads the release's installer (only from this repository, and only if
+it matches the release's SHA-256), runs it and starts the new version.
+
+What works on Windows:
+
+- every speaker-audio mode with the app's own decoders: Morse, RTTY, PSK31/63/125, NAVTEX, SSTV,
+  weather fax, DTMF/CTCSS/DCS. The audio comes from an output device's loopback (WASAPI), the same
+  idea as PipeWire's monitor: pick the output under the mode list;
+- **Spectrum & receiver**, with an RTL-SDR on this PC or a relay, and the receiver's own decoders;
+- **Connect relay…**: the scan, the ssjrocks.com list and addresses, as on Linux;
+- the **Satellite tracker**, the **Logbook** and **Replay**.
+
+The RTL-SDR tools (`rtl_tcp`, `rtl_fm`, `rtl_sdr` and the rest, from RTL-SDR Blog's V1.4.0 release)
+come with the app. A dongle on Windows needs the WinUSB driver once: install it with
+[Zadig](https://zadig.akeo.ie), or with SDR Tools Relay's installer, which sets it up.
+
+Modes that run outside programs work once the program is there. **How to get it** (where Linux has
+**Install**) says where each comes from, and opens the folder the app looks in,
+`%LOCALAPPDATA%\SDR Toolkit\tools`. It also finds them on PATH, and WSJT-X's `jt9` in WSJT-X's own
+install folder:
+
+| Needs | For | On Windows |
+|---|---|---|
+| WSJT-X (jt9) | FT8, FT4 | install WSJT-X |
+| direwolf | APRS, AIS | its Windows release, in the tools folder |
+| multimon-ng | pagers | a Windows build, in the tools folder |
+| rtl_433 | ISM sensors | its Windows release, in the tools folder |
+| DSD-FME | DMR, P25 | a Windows build, in the tools folder |
+| readsb, GNSS-SDR, gr-lora_sdr | ADS-B, the GPS fix, LoRa | no Windows versions: use the Linux app |
+
+Files live in `%LOCALAPPDATA%\SDR Toolkit` (the logbook, the aircraft database, `State\app.log`,
+`Cache`) instead of `~/.local/share`, `~/.local/state` and `~/.cache`. Pictures still go to
+`Pictures\SSTV` and `Pictures\WEFAX` in your user folder.
+
+The Windows build is tested on GitHub's Windows Server 2022 machines
+(`.github/workflows/windows.yml`): the tests run from source, then the built app and the installed
+app each run `--self-test` (a Morse transmission decoded, the receiver's demodulator, the helper
+processes, the bundled RTL-SDR tools, the logbook and the window). Those machines have no sound
+card and no dongle, so WASAPI capture and playback and a real dongle aren't tested there.
+
 ## Updates
 
 The app looks for a new release on GitHub at most every 12 hours, and **Check for updates** looks now.
@@ -266,6 +316,10 @@ the next 12 hours. Set your location in Settings first; it's shared with the RTL
 - **Pagers, DMR, P25**: receiving them is restricted in some countries.
 
 ## Tests
+
+Tests that need an outside program which isn't installed (on a fresh PC, or one that doesn't exist
+for Windows) are reported as skipped, naming the program (`tests/conftest.py`).
+`SDR_TOOLKIT_ALL_TOOLS=1` makes them fail instead, to check a fully set-up PC.
 
 ```bash
 python3 -m pytest tests                               # every mode, through the mode interface

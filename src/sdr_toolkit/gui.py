@@ -278,7 +278,8 @@ def tuning_html(mode: Mode) -> str:
         name, installed, _ = deps.PARTS[part]
         needs += (f"<p>Uses {html.escape(name)}: "
                   + ("installed." if installed() else "<span style='color:#c33'>not installed yet</span>; "
-                     "use <b>Install</b> above the output.") + "</p>")
+                     + ("use <b>Install</b> above the output." if deps.can_install()
+                        else "use <b>How to get it</b> above the output.")) + "</p>")
     return (f"<h3>{html.escape(mode.name)}</h3><p>{html.escape(mode.summary)}</p>"
             f"<p><b>Select on the SDR:</b> {html.escape(t.sdr_mode)}</p>"
             f"<p><b>Bandwidth / filter:</b> {html.escape(t.bandwidth)}</p>"
@@ -799,7 +800,7 @@ class MainWindow(QMainWindow):
         ib = QHBoxLayout(self.install_bar)
         self.install_label = QLabel("")
         self.install_label.setWordWrap(True)
-        self.install_btn = QPushButton("Install")
+        self.install_btn = QPushButton("Install" if deps.can_install() else "How to get it")
         self.install_btn.clicked.connect(self.install_missing)
         ib.addWidget(self.install_label, 1)
         ib.addWidget(self.install_btn)
@@ -2010,11 +2011,28 @@ class MainWindow(QMainWindow):
         """Offer to install whatever any mode still lacks (unless the current mode's own offer is up)."""
         if self.install_bar.isVisible() and self._to_install and self._mode_specific:
             return
-        missing = deps.missing()
+        # On Windows some parts can't be had at all (readsb, GNSS-SDR): only each mode says what it lacks.
+        missing = deps.missing() if deps.can_install() else []
         if missing:
             self.offer_install(missing, f"Some modes need parts that aren't installed yet: {deps.describe(missing)}.",
                                mode_specific=False)
         else:
+            self.install_bar.setVisible(False)
+
+    def _windows_parts_help(self, parts):
+        """Windows: where each missing part comes from, and the folder to put programs in."""
+        from . import system
+        box = QMessageBox(QMessageBox.Icon.Information, "Getting the outside parts", "", parent=self)
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(deps.windows_help(parts) + f"<p>The tools folder is <code>{html.escape(str(system.user_tools_dir()))}"
+                    "</code>. Restart the mode (Stop, Start) once a program is in place.</p>")
+        box.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        folder = box.addButton("Open the tools folder", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if box.clickedButton() is folder:
+            system.open_folder(system.user_tools_dir())
+        if not deps.missing(parts):
             self.install_bar.setVisible(False)
 
     def offer_install(self, parts, message, mode_specific=True):
@@ -2025,6 +2043,9 @@ class MainWindow(QMainWindow):
 
     def install_missing(self):
         parts = list(self._to_install)
+        if not deps.can_install():
+            self._windows_parts_help(parts)
+            return
         accept = self.settings.value("mbelib_accepted", "false") in (True, "true")
         if "dsd-fme" in parts and not accept:
             box = QMessageBox(QMessageBox.Icon.Question, "DMR / P25 voice", deps.MBELIB_NOTICE, parent=self)
