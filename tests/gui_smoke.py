@@ -38,6 +38,11 @@ from sdr_toolkit.modes import digital_voice as _dv, lora as _lora  # noqa: E402
 # Parts built for the app (gr-lora_sdr, DSD-FME) are where they really are, not in the test's data folder.
 _lora.LORA_PREFIX = REAL_DATA / "gr-lora_sdr"
 _dv.DSD_FME = REAL_DATA / "dsd-fme" / "bin" / "dsd-fme"
+# The radiosonde decoders: the app's install or this checkout's build (found on PATH).
+for _d in (REAL_DATA / "radiosonde" / "bin", Path(__file__).resolve().parents[1] / "build/ext/RS/demod/mod",
+           Path(__file__).resolve().parents[1] / "build/ext/RS/scan"):
+    if _d.is_dir():
+        os.environ["PATH"] = f"{_d}:{os.environ['PATH']}"
 from sdr_toolkit.engines.morse.synth import transmission  # noqa: E402
 from sdr_toolkit.engines.sstv.modes import BY_NAME  # noqa: E402
 from sdr_toolkit.engines.sstv.synth import color_bars, encode  # noqa: E402
@@ -115,6 +120,9 @@ for M in gui.MODES:
     win.tree.setCurrentItem(win._items[M.id])
     app.processEvents()
     # Not installed comes first: it's said before anything is read (a dongle plugged in or not).
+    if M.id == "sondes" and gui.deps.missing(["radiosonde"]):
+        assert not win.running and win.install_bar.isVisible() and "radiosonde" in win.install_label.text()
+        continue
     if M.id == "lora" and lora_available() is None:
         assert not win.running and win.install_bar.isVisible() and "gr-lora_sdr" in win.install_label.text()
         continue
@@ -448,6 +456,26 @@ win._receiver_changed("freq_mhz", 101.1)
 win._doppler_step()
 results["sat_listen"] = results["sat_listen"] and not win._doppler_timer.isActive()
 win._receiver_changed("decoder", "")
+# Radiosondes on a recording of the real RS41: found, decoded, in the table and on the map.
+if not gui.deps.missing(["radiosonde"]):
+    import test_modes as _TM  # noqa: E402
+    _rec = _TM.sonde_iq(Path(tempfile.mkdtemp()) / "sonde.cu8", (402.050e6,))
+    win.settings.setValue("sondes/input", "file")
+    win.settings.setValue("sondes/file", str(_rec))
+    win.settings.setValue("sondes/file_rate", 240000)
+    win.tree.setCurrentItem(win._items["sondes"])
+    for _ in range(150):
+        time.sleep(0.1)
+        pump(1)
+        if win.table.rowCount() and win.map.points:
+            break
+    cells = [win.table.item(0, c).text() for c in range(win.table.columnCount())] if win.table.rowCount() else []
+    results["sondes"] = (win.mode.id == "sondes" and "K1930308" in cells
+                         and any(p_["kind"] == "sonde" for p_ in win.map.points))
+    if shots:
+        win.map.refit()
+        app.processEvents()
+        win.grab().save(str(shots / "sondes.png"))
 # Connect relay: by address to a relay playing a recording, then disconnect.
 relay_src = Path(__file__).resolve().parents[2] / "sdr-tools-relay" / "src"
 if relay_src.is_dir():

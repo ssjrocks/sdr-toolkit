@@ -757,6 +757,86 @@ def test_big_tables_fill_quickly():
     assert t.horizontalHeader().sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents
 
 
+# ---- Radiosondes (rs1729's decoders: setup/build.sh, or build/ext/RS here) -------------------------
+
+SONDE_WAV = Path(__file__).resolve().parent / "data" / "sondes" / "rs41_402mhz_40s.wav"
+RS_BUILD = Path(__file__).resolve().parents[1] / "build" / "ext" / "RS"
+
+
+def _sonde_tools(monkeypatch):
+    """The decoders: the app's install, or the build in build/ext/RS (on PATH for the engine)."""
+    from sdr_toolkit.engines import sonde_rx
+    if (RS_BUILD / "demod" / "mod" / "rs41mod").is_file():
+        monkeypatch.setenv("PATH", f"{RS_BUILD / 'demod' / 'mod'}:{RS_BUILD / 'scan'}:{os.environ['PATH']}")
+    if sonde_rx.program("rs41mod") is None or sonde_rx.program("dft_detect") is None:
+        pytest.skip("rs1729's radiosonde decoders aren't built (setup/build.sh)")
+
+
+def sonde_iq(path, sondes, rate=240000, seconds=40.0, centre=402e6):
+    """A cu8 recording with the real RS41 recording FM-modulated onto each of `sondes` (Hz), in noise."""
+    import wave
+    from scipy.signal import resample_poly
+    w = wave.open(str(SONDE_WAV))
+    a = (np.frombuffer(w.readframes(int(48000 * seconds)), np.uint8).astype(np.float32) - 128) / 128
+    a = resample_poly(a / np.percentile(np.abs(a), 99.5), rate // 48000, 1)
+    t = np.arange(len(a)) / rate
+    iq = np.random.default_rng(2).normal(0, 0.02, (len(a), 2)) @ [1, 1j]
+    for f in sondes:
+        iq = iq + 0.25 * np.exp(1j * (2 * np.pi * (f - centre) * t + 2 * np.pi * 2400 * np.cumsum(a) / rate))
+    cu8 = np.empty(2 * len(iq), np.uint8)
+    cu8[0::2] = np.clip(iq.real * 127.5 + 127.5, 0, 255)
+    cu8[1::2] = np.clip(iq.imag * 127.5 + 127.5, 0, 255)
+    cu8.tofile(path)
+    return path
+
+
+def test_sonde_engine_finds_identifies_and_decodes_two_at_once(tmp_path, monkeypatch):
+    _sonde_tools(monkeypatch)
+    from sdr_toolkit.engines import sonde_rx
+    from sdr_toolkit.receiver import dsp
+    path = sonde_iq(tmp_path / "sondes.cu8", (402.050e6, 401.930e6))
+    ev = []
+    eng = sonde_rx.Engine(240000, 402e6, out=lambda **e: ev.append(e))
+    data = path.read_bytes()
+    for i in range(0, len(data), 48000):
+        eng.feed(dsp.cu8(data[i:i + 48000]))
+    eng.close()
+    decoding = {e["freq"]: e["type"] for e in ev if e["event"] == "channel" and e["state"] == "decoding"}
+    assert sorted(decoding) == [401930000.0, 402050000.0] and set(decoding.values()) == {"RS41"}, ev[:6]
+    frames = [e for e in ev if e["event"] == "frame"]
+    for f in decoding:
+        mine = [e for e in frames if e["freq"] == f]
+        assert len(mine) >= 25 and {e["id"] for e in mine} == {"K1930308"}, (f, len(mine))
+    assert 28000 < frames[0]["alt"] < 29500 and abs(frames[0]["lat"] - 45.669) < 0.01
+
+
+def test_sonde_mode_table_and_map(tmp_path, monkeypatch):
+    _sonde_tools(monkeypatch)
+    path = sonde_iq(tmp_path / "sonde.cu8", (402.050e6,))
+    mode, ev = run_radio("sondes", path, wait=60, file_rate=240000, centre_mhz=402.0, lat="45.60", lon="15.80")
+    rows = [r for e in ev if e.kind == "table" for r in e.data["rows"]]
+    assert rows and rows[-1]["id"] == "K1930308" and rows[-1]["type"].startswith("RS41")
+    last = rows[-1]
+    assert last["freq"] == "402.050" and float(last["climb"]) > 0 and last["lands"] == "" and "km" in last["dist"]
+    pts = [p for e in ev if e.kind == "points" for p in e.data["points"]]
+    assert pts and pts[-1]["kind"] == "sonde" and len(pts[-1]["track"]) > 10
+    assert not [p for p in pts if p["kind"] == "landing"]                 # still going up
+    logs = [e.text for e in ev if e.kind == "log"]
+    assert any("RS41, decoding" in t for t in logs) and any(t.startswith("K1930308") for t in logs)
+    d = mode.details("K1930308")
+    assert d["links"][0][1] == "https://sondehub.org/K1930308" and dict(d["fields"])["Type"].startswith("RS41")
+
+
+def test_sonde_landing_estimate():
+    from sdr_toolkit.modes.sondes import landing
+    assert landing({"lat": -27.5, "lon": 153.0, "alt": 20000, "vel_v": 5.0, "vel_h": 10, "heading": 90}) is None
+    lat, lon, secs = landing({"lat": -27.5, "lon": 153.0, "alt": 10100, "vel_v": -10.0, "vel_h": 10, "heading": 90},
+                             ground_m=100)
+    assert secs == 1000 and abs(lat + 27.5) < 0.01
+    b, km = coverage.bearing_km((-27.5, 153.0), (lat, lon))
+    assert abs(km - 10) < 0.05 and abs(b - 90) < 1
+
+
 def test_table_sort_order():
     from sdr_toolkit.widgets import sort_key
     cells = ["10 s", "", "abc", "9 s", "-82.1", "7C1234", "3", "12.5 km at 30°", "Zulu", "2026-11-11 08:00"]

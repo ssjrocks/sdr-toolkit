@@ -7,6 +7,7 @@ from .digital_voice import DigitalVoiceMode
 from .gps_fix import GPSFixMode
 from .receiver import ReceiverMode
 from .satellites import SatelliteMode
+from .sondes import SondeMode
 from .morse import MorseMode
 from .ism import ISMMode
 from .lora import LoRaMode
@@ -23,7 +24,7 @@ MODES = [
     SSTVMode, WefaxMode,
     APRSMode, PagerMode,
     TonesMode,
-    ReceiverMode, ADSBMode, AISMode, ISMMode, LoRaMode, DigitalVoiceMode, GPSFixMode,
+    ReceiverMode, ADSBMode, AISMode, SondeMode, ISMMode, LoRaMode, DigitalVoiceMode, GPSFixMode,
     SatelliteMode,
 ]
 GROUPS = ["Text", "Digital (weak signal)", "Pictures", "Packet & paging", "Tones", "RTL-SDR", "Satellites"]

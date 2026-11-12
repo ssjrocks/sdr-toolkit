@@ -27,6 +27,11 @@ def _lora():
     return lora_available() is not None
 
 
+def _radiosonde():
+    from .engines.sonde_rx import program
+    return program("rs41mod") is not None and program("dft_detect") is not None
+
+
 def _dsd():
     from .modes.digital_voice import dsd_fme
     return dsd_fme() is not None
@@ -43,6 +48,7 @@ PARTS = {
     "rtl-sdr": ("the RTL-SDR tools", lambda: shutil.which("rtl_fm") is not None, "system"),
     "gr-lora_sdr": ("gr-lora_sdr (LoRa)", _lora, "build"),
     "dsd-fme": ("DSD-FME and mbelib (DMR, P25)", _dsd, "mbelib"),
+    "radiosonde": ("rs1729's radiosonde decoders (RS41, DFM, M10/M20...)", _radiosonde, "build"),
 }
 
 
@@ -65,6 +71,9 @@ WINDOWS_HELP = {
     "readsb": "readsb has no Windows version yet: use the Linux version of SDR Toolkit for ADS-B.",
     "gnss-sdr": "GNSS-SDR has no Windows version: use the Linux version of SDR Toolkit for the GPS fix.",
     "gr-lora_sdr": "gr-lora_sdr has no Windows version: use the Linux version of SDR Toolkit for LoRa.",
+    "radiosonde": ("rs1729's decoders (<a href='https://github.com/rs1729/RS'>github.com/rs1729/RS</a>) have no "
+                   "Windows release: build rs41mod, dfm09mod, m10m20mod and dft_detect and put them in the tools "
+                   "folder, or use the Linux version of SDR Toolkit."),
 }
 
 

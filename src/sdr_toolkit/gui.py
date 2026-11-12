@@ -1785,6 +1785,8 @@ class MainWindow(QMainWindow):
             for key, t in (heard or {}).items():
                 self.coverage.heard(str(key), t)
         for p in points:
+            if p.get("kind") == "landing":                 # an estimate on the map, not a craft heard
+                continue
             self.logbook.see(self.mode.id, str(p["id"]), p.get("name", ""), p.get("info"), p["lat"], p["lon"],
                              alt=p.get("alt"), heading=p.get("heading"), label=p.get("label", ""), t=now)
             if self.coverage is not None:

@@ -413,13 +413,16 @@ class MapView(QWidget):
             self._draw_one(p, self.live(pt, now), now=now)
 
     def _draw_one(self, p, pt, faded=False, now=0.0):
-        colour = {"aircraft": QColor(220, 60, 40), "satellite": QColor(250, 170, 20)}.get(pt.get("kind"),
-                                                                                       QColor(20, 120, 60))
+        colour = {"aircraft": QColor(220, 60, 40), "satellite": QColor(250, 170, 20), "sonde": QColor(150, 60, 210),
+                  "landing": QColor(150, 60, 210)}.get(pt.get("kind"), QColor(20, 120, 60))
         if faded:
             colour = QColor(colour.red(), colour.green(), colour.blue(), 110)
         track = pt.get("track") or []
         if len(track) > 1:
-            p.setPen(QPen(QColor(colour.red(), colour.green(), colour.blue(), 70 if faded else 140), 2))
+            pen = QPen(QColor(colour.red(), colour.green(), colour.blue(), 70 if faded else 140), 2)
+            if pt.get("kind") == "landing":
+                pen.setStyle(Qt.PenStyle.DashLine)            # from the sonde to where it may land
+            p.setPen(pen)
             for line in self._lines(track):
                 p.drawPolyline(line)
         c = self._screen(pt["lat"], pt["lon"])
@@ -445,6 +448,16 @@ class MapView(QWidget):
         if pt.get("kind") == "aircraft":
             shape = QPolygonF([QPointF(0, -10), QPointF(7, 8), QPointF(0, 4), QPointF(-7, 8)])
             p.drawPolygon(shape)
+        elif pt.get("kind") == "sonde":
+            p.rotate(-float(pt.get("heading") or 0))         # a balloon stays upright
+            p.drawEllipse(QPointF(0, -4), 6, 7)
+            p.drawLine(QPointF(0, 3), QPointF(0, 10))
+            p.drawRect(QRectF(-2, 10, 4, 3))
+        elif pt.get("kind") == "landing":
+            p.rotate(-float(pt.get("heading") or 0))
+            p.setPen(QPen(colour, 3))
+            p.drawLine(QPointF(-6, -6), QPointF(6, 6))
+            p.drawLine(QPointF(-6, 6), QPointF(6, -6))
         elif pt.get("kind") == "satellite":
             p.drawRect(QRectF(-4, -4, 8, 8))                 # the body, and its solar panels
             p.setBrush(QBrush(QColor(60, 110, 200)))

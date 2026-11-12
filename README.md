@@ -49,6 +49,7 @@ it), set under **Settings → Input**: handy without a dongle, or to decode some
 | ISM sensors (433/868/915/315 MHz) | rtl_433 | frequency or several to hop between, sample rate, protocol filter |
 | ADS-B aircraft (1090 MHz) | readsb | units, how long aircraft stay listed |
 | AIS ships (161.975 / 162.025 MHz) | rtl_fm + direwolf, sentences decoded by the toolkit | channel, how long ships stay listed |
+| Radiosondes (weather balloons, 400–406 MHz) | rs1729's decoders (RS41, DFM, M10/M20, RS92, iMet-54, Meisei...) and dft_detect | centre frequency, frequencies or found by themselves, ground height for the landing estimate, how long sondes stay listed |
 | LoRa / Meshtastic / MeshCore | gr-lora_sdr (built separately, see below) | network preset, region, frequency, SF/BW/CR/sync word, channel keys |
 | DMR, P25, NXDN, D-Star, YSF, dPMR, M17 | DSD-FME with mbelib (built separately, see below) | frequency, protocol, channel bandwidth, squelch, play voice, save each call as WAV |
 | Spectrum & receiver | the toolkit's own (rtl_tcp to the dongle) | frequency and step, mode (WFM, NFM, AM, USB, LSB, CW), bandwidth, de-emphasis, squelch, volume, sample rate, gain mode and gain steps, RTL AGC, ppm, direct sampling (HF), offset tuning, bias tee, FFT size, averaging, peak hold |
@@ -192,6 +193,17 @@ sky; a passive antenna may manage outdoors. From cold a fix takes 1-5 minutes. S
 correction first (ADS-B's button): a cheap dongle 57 ppm off puts the satellites 90 kHz away,
 outside the normal search. The correction is applied as GNSS-SDR's RTL-SDR example does it: the
 real sample rate and the signal's offset.
+
+**Radiosondes** follows weather balloons. The dongle watches 2.2 MHz of the 400–406 MHz band; any
+narrow signal well above the noise gets its own channel (cut out with the decode points'
+channelizer), rs1729's `dft_detect` says which sonde type it is and its polarity, and that type's
+decoder (from [rs1729/RS](https://github.com/rs1729/RS), built by the installer) decodes it, so
+several sondes can be followed at once. Each one is a row (serial, type, frequency, altitude, climb,
+speed, temperature, humidity, pressure, battery, GPS satellites, distance) and a balloon on the map
+with its track. Once it's coming down, a cross marks where it should land: a straight line at its
+descent rate on the wind it has now, so rough; SondeHub's prediction (linked in Details) uses wind
+forecasts. In Australia the Bureau of Meteorology launches Vaisala RS41s around 9 am and 9 pm from
+its stations, on 400.5–403.5 MHz.
 
 **LoRa** decodes Meshtastic texts, positions and node names on the default channel (key `AQ==`, and
 any private channel you add the key for), and MeshCore adverts and Public channel texts. MeshCore

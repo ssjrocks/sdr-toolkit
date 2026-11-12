@@ -2,6 +2,7 @@
 # Builds the decoders Ubuntu doesn't package, into ~/.local/share/sdr-toolkit, as the user:
 #   gr-lora_sdr (EPFL's LoRa modem for GNU Radio, github.com/tapparelj/gr-lora_sdr)
 #   mbelib (AMBE/IMBE voice codecs, github.com/lwvmobile/mbelib) and DSD-FME (github.com/lwvmobile/dsd-fme)
+#   rs1729's radiosonde decoders and dft_detect (github.com/rs1729/RS)
 # Parts already built are skipped; --rebuild builds them again.
 #
 # mbelib carries a patent notice: "Executable objects compiled or derived from this package may be
@@ -58,5 +59,20 @@ if (( rebuild )) || [[ ! -x "$dsd/bin/dsd-fme" ]]; then
   fi
 else
   echo "STEP DSD-FME already built"
+fi
+rs="$root/radiosonde"
+sondes="rs41mod rs92mod dfm09mod m10m20mod lms6Xmod imet54mod meisei100mod mp3h1mod mts01mod"
+if (( rebuild )) || [[ ! -x "$rs/bin/rs41mod" || ! -x "$rs/bin/dft_detect" ]]; then
+  echo "STEP Building the radiosonde decoders, a minute"
+  fetch RS https://github.com/rs1729/RS.git
+  # shellcheck disable=SC2086
+  nice -n 10 make -C "$src/RS/demod/mod" -j"$jobs" $sondes >/dev/null
+  nice -n 10 gcc -O2 "$src/RS/scan/dft_detect.c" -lm -o "$src/RS/scan/dft_detect"
+  mkdir -p "$rs/bin"
+  for p in $sondes; do install -m 755 "$src/RS/demod/mod/$p" "$rs/bin/"; done
+  install -m 755 "$src/RS/scan/dft_detect" "$rs/bin/"
+  echo "STEP Radiosonde decoders installed"
+else
+  echo "STEP Radiosonde decoders already built"
 fi
 echo "STEP Builds done"
