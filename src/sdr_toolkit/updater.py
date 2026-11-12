@@ -4,6 +4,11 @@ Each release carries the wheel and sdr-toolkit.json ({"version", "wheel",
 "sha256"}). The wheel must come from github.com, match the checksum, and is
 installed with pip into the venv scripts/install.sh made. Running from a source
 checkout, the app only reports that an update exists.
+
+On Windows, the release also carries the installer and sdr-toolkit-windows.json
+({"version", "installer", "sha256"}): the installed app downloads the installer,
+checks it the same way, runs it silently and exits; the installer starts the new
+version when it's done (as SDR Tools Relay updates itself).
 """
 
 import hashlib
@@ -17,12 +22,12 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from sdr_toolkit import REPO, __version__
+from sdr_toolkit import REPO, __version__, system
 
 LOG = logging.getLogger(__name__)
 
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
-INFO_ASSET = "sdr-toolkit.json"
+INFO_ASSET = "sdr-toolkit-windows.json" if system.WINDOWS else "sdr-toolkit.json"
 CHECK_EVERY = 12 * 3600
 USER_AGENT = f"sdr-toolkit/{__version__}"
 
@@ -86,19 +91,17 @@ def check() -> Update | None:
     info = json.loads(_download(*assets[INFO_ASSET]))
     if parse_version(info["version"]) <= parse_version(__version__):
         return None
-    if info["wheel"] not in assets:
+    name = info["installer" if system.WINDOWS else "wheel"]
+    if name not in assets:
         return None
-    api_url, link = assets[info["wheel"]]
+    api_url, link = assets[name]
     if not (_trusted(api_url) or _trusted(link)):
         return None
-    return Update(info["version"], api_url, info["wheel"], info["sha256"].lower(), link)
+    return Update(info["version"], api_url, name, info["sha256"].lower(), link)
 
 
 def _state_dir() -> Path:
-    base = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state"
-    path = Path(base) / "sdr-toolkit"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return system.state_dir()
 
 
 def due() -> bool:
@@ -118,12 +121,17 @@ def installed_in_venv() -> bool:
     return (Path(sys.prefix) / "sdr-toolkit-venv").exists()
 
 
+def can_install() -> bool:
+    """This copy can update itself: the Windows installer's, or install.sh's venv."""
+    return system.FROZEN if system.WINDOWS else installed_in_venv()
+
+
 def install(update: Update) -> None:
     """Download, verify and pip-install the update. Raises on any failure.
 
     New outside parts a version needs are offered by the window after the restart.
     """
-    if not installed_in_venv():
+    if not can_install():
         raise RuntimeError(
             f"This copy runs from source. Update it with git, or get "
             f"{update.version} from https://github.com/{REPO}/releases"
@@ -135,6 +143,11 @@ def install(update: Update) -> None:
     if hashlib.sha256(data).hexdigest() != update.sha256:
         raise RuntimeError("The download didn't match its checksum; nothing was installed.")
     path.write_bytes(data)
+    if system.WINDOWS:
+        # The installer closes this app, replaces it and starts the new version (see restart()).
+        subprocess.Popen([str(path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"], close_fds=True)
+        LOG.info("started the installer for %s", update.version)
+        return
     result = subprocess.run(
         [sys.executable, "-m", "pip", "install", str(path)],
         capture_output=True,
@@ -147,4 +160,6 @@ def install(update: Update) -> None:
 
 
 def restart() -> None:
+    if system.WINDOWS:
+        os._exit(0)             # the installer is running: get out of its way; it starts the new version
     os.execv(sys.executable, [sys.executable, "-m", "sdr_toolkit"])

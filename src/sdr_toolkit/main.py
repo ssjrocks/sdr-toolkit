@@ -2,19 +2,15 @@
 
 import logging
 import logging.handlers
-import os
 import sys
 import traceback
 from pathlib import Path
 
-from sdr_toolkit import APP_ID, APP_NAME, __version__, appreports
+from sdr_toolkit import APP_ID, APP_NAME, __version__, appreports, system
 
 
 def state_dir() -> Path:
-    base = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state"
-    path = Path(base) / "sdr-toolkit"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return system.state_dir()
 
 
 def _log_exception(exc_type, exc, tb) -> None:
@@ -24,6 +20,9 @@ def _log_exception(exc_type, exc, tb) -> None:
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--self-test":
+        from sdr_toolkit.selftest import run as self_test
+        sys.exit(self_test(sys.argv[2]))
     log_file = state_dir() / "app.log"
     logging.basicConfig(
         level=logging.INFO,
@@ -31,6 +30,7 @@ def main():
         handlers=[logging.handlers.RotatingFileHandler(log_file, maxBytes=512 * 1024, backupCount=1)],
     )
     logging.info("%s %s starting", APP_NAME, __version__)
+    system.setup_environment()
     sys.excepthook = _log_exception
     appreports.init(APP_ID, APP_NAME, __version__, state_dir(), log_file=log_file)
 

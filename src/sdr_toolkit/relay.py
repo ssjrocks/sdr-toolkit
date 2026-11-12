@@ -17,6 +17,7 @@ import json
 import logging
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -96,9 +97,28 @@ def open_session(host, port, password="", timeout=8.0, check=False):
 
 # ---- finding relays ------------------------------------------------------
 
+def _qt_broadcasts() -> list[str]:
+    """Each IPv4 interface's broadcast address from Qt (Windows has no `ip`)."""
+    try:
+        from PyQt6.QtNetwork import QAbstractSocket, QNetworkInterface
+    except ImportError:
+        return []
+    out = []
+    for iface in QNetworkInterface.allInterfaces():
+        flags = iface.flags()
+        if not (flags & QNetworkInterface.InterfaceFlag.IsUp) or flags & QNetworkInterface.InterfaceFlag.IsLoopBack:
+            continue
+        for entry in iface.addressEntries():
+            if entry.ip().protocol() == QAbstractSocket.NetworkLayerProtocol.IPv4Protocol and not entry.broadcast().isNull():
+                out.append(entry.broadcast().toString())
+    return out
+
+
 def broadcast_addresses() -> list[str]:
-    """255.255.255.255 and each IPv4 interface's broadcast address (from `ip`)."""
+    """255.255.255.255 and each IPv4 interface's broadcast address (from `ip`, or Qt's list on Windows)."""
     out = ["255.255.255.255"]
+    if sys.platform == "win32":
+        return list(dict.fromkeys(out + _qt_broadcasts()))
     try:
         data = json.loads(subprocess.run(["ip", "-j", "-4", "addr"], capture_output=True, text=True,
                                          timeout=3).stdout or "[]")

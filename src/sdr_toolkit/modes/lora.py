@@ -4,15 +4,15 @@ import glob
 import importlib.util
 import os
 import re
-import sys
 import time
 from pathlib import Path
 
 from ..engines import mesh
 from .base import Event, MissingParts, Setting, Tuning
 from .radio import RADIO_SETTINGS, RadioMode, rtl_rate
+from .. import system
 
-LORA_PREFIX = Path.home() / ".local/share/sdr-toolkit/gr-lora_sdr"
+LORA_PREFIX = system.data_dir() / "gr-lora_sdr"
 OVERSAMPLE = 4
 
 # Meshtastic presets: (display name, SF, bandwidth Hz, coding rate 1-4 = 4/5-4/8)
@@ -47,7 +47,11 @@ def lora_available() -> dict | None:
     py = [p for p in py if Path(p, "gnuradio", "lora_sdr").is_dir()]
     if not py:
         # Installed system-wide instead?
-        return dict(os.environ) if importlib.util.find_spec("gnuradio.lora_sdr") else None
+        try:
+            found = importlib.util.find_spec("gnuradio.lora_sdr")
+        except ModuleNotFoundError:         # no GNU Radio at all (Windows, or a PC without it)
+            found = None
+        return dict(os.environ) if found else None
     libs = [str(p) for p in LORA_PREFIX.glob("lib*") if p.is_dir()] + glob.glob(str(LORA_PREFIX / "lib/*-linux-gnu"))
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(py + [env.get("PYTHONPATH", "")]).strip(os.pathsep)
@@ -157,7 +161,7 @@ class LoRaMode(RadioMode):
         # Live: the dongle can't sample at 300-900 kHz (125 kHz LoRa x 4), so it may run faster;
         # lora_rx resamples to 4x the bandwidth either way.
         rate = rtl_rate(bw * OVERSAMPLE) if live else self.values["file_rate"]
-        cmd = [sys.executable, "-u", "-m", "sdr_toolkit.engines.lora_rx", "--input", "-" if live else self.file_path(),
+        cmd = system.python_command("sdr_toolkit.engines.lora_rx") + ["--input", "-" if live else self.file_path(),
                "--rate", str(rate), "--bw", str(bw), "--sf", str(sf), "--cr", str(cr), "--sync", sync,
                "--preamble", str(pre), "--centre", str(int(freq))]
         if not live and self.values["file_offset"]:

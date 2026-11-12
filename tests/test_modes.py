@@ -358,7 +358,10 @@ def test_ais_decoder():
 
 def _dongle_present():
     import subprocess
-    out = subprocess.run(["lsusb"], capture_output=True, text=True).stdout
+    try:
+        out = subprocess.run(["lsusb"], capture_output=True, text=True).stdout
+    except OSError:             # no lsusb (Windows, minimal containers): can't tell, assume none
+        return False
     return any(i in out for i in ("0bda:2838", "0bda:2832"))
 
 

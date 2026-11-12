@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import QToolButton, QWidget
 
 from . import __version__
 from .coverage import destination
+from . import system
 
 # Markers move on between reports: from the last position along its course at its speed (dead
 # reckoning), drawn ten times a second. After OVERDUE of its usual updates are missed, the
@@ -62,7 +63,7 @@ class MapView(QWidget):
     def __init__(self, cache_dir: Path | None = None, online=True):
         super().__init__()
         self.setMinimumHeight(200)
-        self.cache_dir = cache_dir or Path.home() / ".cache/sdr-toolkit/tiles"
+        self.cache_dir = cache_dir or system.cache_dir() / "tiles"
         self.online = online
         self.zoom = 3
         self.center = (0.0, 0.0)

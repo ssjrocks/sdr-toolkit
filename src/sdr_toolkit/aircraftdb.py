@@ -6,12 +6,12 @@ refreshed when it's a month old.
 """
 
 import logging
-import os
 import time
 import urllib.request
 from pathlib import Path
 
 from . import __version__
+from . import system
 
 log = logging.getLogger(__name__)
 URL = "https://github.com/wiedehopf/tar1090-db/raw/csv/aircraft.csv.gz"
@@ -20,8 +20,7 @@ MAX_AGE = 30 * 86400
 
 
 def path() -> Path:
-    base = os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share"
-    return Path(base) / "sdr-toolkit" / "aircraft.csv.gz"
+    return system.data_dir() / "aircraft.csv.gz"
 
 
 def present() -> bool:

@@ -5,11 +5,11 @@ password prompt). gr-lora_sdr and DSD-FME are built by setup/build.sh as the use
 """
 
 import logging
-import os
 import shutil
 import subprocess
 from importlib import resources
 from pathlib import Path
+from . import system
 
 log = logging.getLogger(__name__)
 MBELIB_NOTICE = (
@@ -46,6 +46,38 @@ PARTS = {
 }
 
 
+# On Windows nothing is installed for the user: where each part comes from instead. The app looks
+# for programs in the tools bundled with it, in %LOCALAPPDATA%\SDR Toolkit\tools (for ones you
+# add), in WSJT-X's install folder and on PATH.
+WINDOWS_HELP = {
+    "wsjtx": ("Install WSJT-X (free) from <a href='https://wsjt.sourceforge.io/wsjtx.html'>wsjt.sourceforge.io</a>. "
+              "The app finds its jt9 in WSJT-X's install folder."),
+    "direwolf": ("Get Dire Wolf for Windows from its <a href='https://github.com/wb2osz/direwolf/releases'>releases</a> "
+                 "and put direwolf.exe (with the files beside it) in the tools folder."),
+    "multimon-ng": ("Get a Windows build of multimon-ng from its "
+                    "<a href='https://github.com/EliasOenal/multimon-ng/releases'>releases</a> and put multimon-ng.exe "
+                    "(with any DLLs beside it) in the tools folder."),
+    "rtl-433": ("Get rtl_433 for Windows from its <a href='https://github.com/merbanan/rtl_433/releases'>releases</a> "
+                "and put rtl_433.exe (with any DLLs beside it) in the tools folder."),
+    "dsd-fme": ("Get a Windows build of DSD-FME from its <a href='https://github.com/lwvmobile/dsd-fme/releases'>releases</a> "
+                "and put dsd-fme.exe (with the files beside it) in the tools folder. " + MBELIB_NOTICE.split("\n\n")[1]),
+    "rtl-sdr": "The RTL-SDR tools come with the app; reinstall it if they're missing.",
+    "readsb": "readsb has no Windows version yet: use the Linux version of SDR Toolkit for ADS-B.",
+    "gnss-sdr": "GNSS-SDR has no Windows version: use the Linux version of SDR Toolkit for the GPS fix.",
+    "gr-lora_sdr": "gr-lora_sdr has no Windows version: use the Linux version of SDR Toolkit for LoRa.",
+}
+
+
+def can_install() -> bool:
+    """The app installs parts itself (Linux: apt and the builds); on Windows it says where to get them."""
+    return not system.WINDOWS
+
+
+def windows_help(parts) -> str:
+    """Rich text saying where each of *parts* comes from on Windows."""
+    return "".join(f"<p><b>{PARTS[p][0]}</b>: {WINDOWS_HELP.get(p, '')}</p>" for p in parts)
+
+
 def describe(parts) -> str:
     return ", ".join(PARTS[p][0] for p in parts)
 
@@ -59,10 +91,7 @@ def setup_script(name: str) -> str:
 
 
 def log_file() -> Path:
-    base = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state"
-    path = Path(base) / "sdr-toolkit"
-    path.mkdir(parents=True, exist_ok=True)
-    return path / "setup.log"
+    return system.state_dir() / "setup.log"
 
 
 def install(parts, accept_mbelib: bool, on_line=lambda s: None) -> list[str]:
