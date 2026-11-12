@@ -117,6 +117,8 @@ def pump(ticks):
 from sdr_toolkit.modes.lora import lora_available  # noqa: E402
 
 for M in gui.MODES:
+    if getattr(M, "hidden", False):
+        continue                                  # not in the list (the one-frequency DMR decoder)
     win.tree.setCurrentItem(win._items[M.id])
     app.processEvents()
     # Not installed comes first: it's said before anything is read (a dongle plugged in or not).
@@ -132,7 +134,7 @@ for M in gui.MODES:
         assert not win.running and ("recording" in win.title.text() or win.install_bar.isVisible()), (
             M.id, win.title.text())
         continue
-    if M.id == "receiver":
+    if M.id in ("receiver", "explorer"):
         # No dongle here: rtl_tcp finds none and the receiver says so instead of starting.
         assert not win.running and "No RTL-SDR" in win.title.text(), win.title.text()
         continue
@@ -476,6 +478,24 @@ if not gui.deps.missing(["radiosonde"]):
         win.map.refit()
         app.processEvents()
         win.grab().save(str(shots / "sondes.png"))
+# The DMR / P25 explorer: its lists show under the spectrum; a call fills the talkgroup and radio lists.
+win.tree.setCurrentItem(win._items["explorer"])
+for _ in range(10):
+    time.sleep(0.05)
+    pump(1)
+from sdr_toolkit.modes.base import Event as _Ev  # noqa: E402
+from sdr_toolkit.receiver import dsd as _dsd  # noqa: E402
+if win.explorer is None:
+    win._explorer_start()
+for _line in ("Sync: +DMR  [SLOT1]  slot2  | Color Code=01 | VLC", " SLOT 1 TGT=505 SRC=3125678 Group Call"):
+    win._explorer_event(438.8e6, _Ev("dsd", data=_dsd.parse(_line)))
+win._ex_timer.timeout.emit()
+xp = win.explorer_pane
+results["explorer"] = (xp.isVisible() and xp.talkgroups.rowCount() >= 1 and xp.radios.rowCount() >= 1
+                       and "digital voice channel" in xp.title.text() and xp.channels.rowCount() >= 1
+                       and not win.decode_area.points_box.isVisible())
+if shots:
+    win.grab().save(str(shots / "explorer.png"))
 # Connect relay: by address to a relay playing a recording, then disconnect.
 relay_src = Path(__file__).resolve().parents[2] / "sdr-tools-relay" / "src"
 if relay_src.is_dir():

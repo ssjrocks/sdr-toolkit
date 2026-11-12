@@ -51,7 +51,7 @@ it), set under **Settings → Input**: handy without a dongle, or to decode some
 | AIS ships (161.975 / 162.025 MHz) | rtl_fm + direwolf, sentences decoded by the toolkit | channel, how long ships stay listed |
 | Radiosondes (weather balloons, 400–406 MHz) | rs1729's decoders (RS41, DFM, M10/M20, RS92, iMet-54, Meisei...) and dft_detect | centre frequency, frequencies or found by themselves, ground height for the landing estimate, how long sondes stay listed |
 | LoRa / Meshtastic / MeshCore | gr-lora_sdr (built separately, see below) | network preset, region, frequency, SF/BW/CR/sync word, channel keys |
-| DMR, P25, NXDN, D-Star, YSF, dPMR, M17 | DSD-FME with mbelib (built separately, see below) | frequency, protocol, channel bandwidth, squelch, play voice, save each call as WAV |
+| DMR / P25 / digital voice (the explorer) | DSD-FME with mbelib (built separately, see below), on every signal found | everything Spectrum & receiver has, how strong a signal must be to be tried, listen to everything or one channel, talkgroup or radio |
 | Spectrum & receiver | the toolkit's own (rtl_tcp to the dongle) | frequency and step, mode (WFM, NFM, AM, USB, LSB, CW), bandwidth, de-emphasis, squelch, volume, sample rate, gain mode and gain steps, RTL AGC, ppm, direct sampling (HF), offset tuning, bias tee, FFT size, averaging, peak hold |
 | GPS position fix (1575.42 MHz) | GNSS-SDR | search range, satellites tracked at once, fill in my location |
 
@@ -172,6 +172,32 @@ out of the dongle's samples together, from one FFT per block, so a dozen cost le
 receiver's own demodulator; each point runs its own decoder program, though, so up to 24 at once.
 Points outside the band the dongle sends wait until it's back there; they're kept between sessions. DMR voice from every point plays at the Voice volume (mute one
 from its right-click menu); right-click a point to stop it, or **Stop all channels**.
+
+**DMR / P25 / digital voice** is the receiver with an explorer on top, for mapping the digital
+voice around you. Slide the spectrum to a busy part of the band (430-520 MHz, say) and leave it:
+every narrow signal that appears gets a decode point running DSD-FME for about 20 s. One that
+turns out to be DMR, P25, NXDN, D-Star, YSF, dPMR or M17 stays, and is listed; anything else is let
+go and left alone for 10 minutes, and a channel silent for 10 minutes has its decoder stopped until
+it's back. A much weaker signal right beside a strong one is taken for its side band, not tried.
+The lists under the spectrum fill as things are heard:
+
+- **Channels**: each frequency and what it is in plain words ("DMR voice channel", "P25 phase 1
+  control channel", "DMR repeater, idle"), its colour code or NAC, slots, calls, who's talking on it
+  now and what its data carried (GPS positions, text messages, control messages). Hover a row for
+  what that kind of channel means.
+- **Systems**: channels that belong together (same protocol and access code, or a P25 system's
+  WACN and system ID), with their control and voice channels.
+- **Talkgroups** and **Radios**: every talkgroup and radio ID heard, their calls, which radios use
+  a talkgroup and which talkgroups a radio calls, and a radio's last GPS position.
+- **Activity**: what happened, as it happened ("Group call to 505 from radio 3125678, slot 1").
+
+All channels' voice plays at once by default. Select a channel, talkgroup or radio and press
+**Only the selected** to hear just that one (a talkgroup or radio is let through on whichever
+channel its call is on), or **Listen to everything** to go back; double-click a channel to single it
+out. The lists are kept between sessions (in `explorer.json` in the app's data folder), so
+exploring builds up a picture of your area. Encrypted calls are listed but can't be heard. The
+single-frequency DMR / P25 decoder is still there as **Decode with → DMR / P25** in Spectrum &
+receiver.
 
 **Survey** sweeps the dongle over its whole tuning range and stitches the slices into one spectrum
 and waterfall. After each retune it throws away the samples of a settle time (150 ms by default,

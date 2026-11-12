@@ -46,6 +46,7 @@ from PyQt6.QtWidgets import (
 )
 
 from . import APP_ID, APP_NAME, __version__, aircraftdb, appreports, coverage, deps, updater
+from .explorer_view import ExplorerPane
 from .satellites.view import SatellitePanel
 from .widgets import ORDER, FitLabel, SortItem, drop_oldest, filling, sortable, unsorted
 from .capture import AudioCapture, list_outputs
@@ -501,6 +502,7 @@ class DecodeArea(QWidget):
         pl.addWidget(self.points_text, 1)
         self.points_box.setVisible(False)
         self._points: list = []
+        self.points_hidden = False               # the explorer shows them in its own lists
         self.main = QWidget()
         ml = QVBoxLayout(self.main)
         ml.setContentsMargins(0, 0, 0, 0)
@@ -579,8 +581,9 @@ class DecodeArea(QWidget):
     def set_points(self, states):
         """The decode points (ReceiverMode.point_states()), for the pane's heading."""
         self._points = states
-        self.points_box.setVisible(bool(states))
-        self.setVisible(self.M is not None or bool(states))
+        shown = bool(states) and not self.points_hidden
+        self.points_box.setVisible(shown)
+        self.setVisible(self.M is not None or shown)
         now = time.time()
         parts = [f"{s['freq'] / 1e6:.4f} {POINT_NAMES.get(s['decoder'], s['decoder'])}"
                  + (" ●" if now - s["heard"] < 5 else "") + ("" if s["in_view"] else " (outside the band)")
@@ -645,7 +648,7 @@ class MainWindow(QMainWindow):
             g.setFont(0, f)
             self.tree.addTopLevelItem(g)
             for M in MODES:
-                if M.group == group:
+                if M.group == group and not getattr(M, "hidden", False):
                     it = QTreeWidgetItem([M.name])
                     it.setData(0, Qt.ItemDataRole.UserRole, M.id)
                     it.setToolTip(0, M.summary)
@@ -729,6 +732,18 @@ class MainWindow(QMainWindow):
         self._guesses: list = []
         self._tags_view = None
         self.output.addWidget(self.receiver_panel)
+        # The DMR / P25 explorer's lists, under the spectrum on its page.
+        self.explorer_pane = ExplorerPane()
+        self.explorer_pane.setVisible(False)
+        rp.split.addWidget(self.explorer_pane)
+        self.explorer_pane.only.connect(self._explorer_only)
+        self.explorer_pane.tune.connect(lambda f: self._explorer_only(("freq", f)))
+        self.explorer = None                      # receiver/explore.Explorer, loaded with the page
+        self._ex_muted: dict = {}
+        self._ex_saved = 0.0
+        self._ex_timer = QTimer(self)
+        self._ex_timer.setInterval(1000)
+        self._ex_timer.timeout.connect(self._explorer_tick)
         self.satellite_panel = SatellitePanel(MapView())
         self.satellite_panel.listen.connect(self.listen_satellite)
         self.output.addWidget(self.satellite_panel)
@@ -982,6 +997,9 @@ class MainWindow(QMainWindow):
         elif m.output == "receiver":
             self.receiver_panel.show_values(m.values)
             self.output.setCurrentWidget(self.receiver_panel)
+            explorer = getattr(m, "explorer", False)
+            self.explorer_pane.setVisible(explorer)
+            self.decode_area.points_hidden = explorer      # the explorer's own lists show them
         elif m.output == "satellites":
             self._satellite_settings()
             self.output.setCurrentWidget(self.satellite_panel)
@@ -1227,6 +1245,76 @@ class MainWindow(QMainWindow):
                                                         self._receiver_changed("decoder", k)))
         menu.exec(pos)
 
+    # ---- the DMR / P25 explorer ------------------------------------------
+
+    def _explorer_path(self):
+        from . import system
+        return system.data_dir() / "explorer.json"
+
+    def _explorer_start(self):
+        from .receiver.explore import Explorer
+        if self.explorer is None:
+            self.explorer = Explorer.load(self._explorer_path())
+            for t, f, text in self.explorer.log[-200:]:
+                self.explorer_pane.add_log(t, f, text)
+        self._ex_muted = {}
+        self._ex_timer.start()
+        self._explorer_tick()
+
+    def _explorer_stop(self):
+        self._ex_timer.stop()
+        if self.explorer is not None:
+            self.explorer.save(self._explorer_path())
+
+    def _explorer_event(self, freq, ev):
+        ex = self.explorer
+        if ex is None:
+            return
+        if ev.kind == "explorer":
+            ex.found(freq, ev.data["state"])
+            if ex.log and ex.log[-1][1] == freq:
+                self.explorer_pane.add_log(*ex.log[-1])
+            return
+        news = ex.add(freq, ev.data)
+        if news:
+            self.explorer_pane.add_log(time.time(), freq, news)
+            self.decoded_log.add(f"{freq / 1e6:.5f}  {news}")
+            self.logbook.add("explorer", f"{freq / 1e6:.5f} MHz  {news}")
+        if ev.data["what"] == "call":
+            self._explorer_listen()
+
+    def _explorer_only(self, choice):
+        if self.explorer is None:
+            return
+        self.explorer.only = choice
+        self._explorer_listen()
+        self._explorer_tick()
+
+    def _explorer_listen(self):
+        """Mute the streams the "listen only to" choice leaves out (again as calls start and stop)."""
+        if self.explorer is None or not self.running or not getattr(self.mode, "explorer", False):
+            return
+        for st in self.mode.point_states():
+            f = st["freq"]
+            mute = not self.explorer.audible(f)
+            if self._ex_muted.get(f) != mute:
+                self._ex_muted[f] = mute
+                self.mode.mute_point(f, mute)
+
+    def _explorer_tick(self):
+        ex = self.explorer
+        if ex is None or not getattr(self.mode, "explorer", False):
+            return
+        only = ex.only
+        listening = ("everything" if only is None else f"only {only[1] / 1e6:.5f} MHz" if only[0] == "freq"
+                     else f"only talkgroup {only[1]}" if only[0] == "tg" else f"only radio {only[1]}")
+        decoding = [st["freq"] for st in self.mode.point_states()] if self.running else []
+        self.explorer_pane.refresh(ex, decoding, listening)
+        self._explorer_listen()
+        if time.time() - self._ex_saved > 30:
+            self._ex_saved = time.time()
+            ex.save(self._explorer_path())
+
     # ---- satellites -----------------------------------------------------
 
     def _satellite_settings(self):
@@ -1284,14 +1372,18 @@ class MainWindow(QMainWindow):
 
     # ---- decode points -------------------------------------------------
 
+    def _points_setting(self) -> str:
+        """Decode points are kept per page (Spectrum & receiver, the explorer)."""
+        return f"{self.mode.id if self.mode is not None else 'receiver'}/points"
+
     def _saved_points(self) -> list[dict]:
         try:
-            return [p for p in json.loads(self.settings.value("receiver/points", "[]") or "[]") if "freq" in p]
+            return [p for p in json.loads(self.settings.value(self._points_setting(), "[]") or "[]") if "freq" in p]
         except (TypeError, ValueError):
             return []
 
     def _save_points(self, points):
-        self.settings.setValue("receiver/points", json.dumps(points))
+        self.settings.setValue(self._points_setting(), json.dumps(points))
         self._show_points(force=True)
 
     def _start_point(self, freq, decoder, muted=False):
@@ -1464,11 +1556,15 @@ class MainWindow(QMainWindow):
             self._receiver_decoder()
             for p in self._saved_points():
                 self._start_point(p["freq"], p["decoder"], p.get("muted", False))
+            if getattr(self.mode, "explorer", False):
+                self._explorer_start()
         log.info("mode %s started", self.mode.id)
         return True
 
     def _stop_mode(self):
         if self.mode is not None and getattr(self, "_mode_started", False):
+            if getattr(self.mode, "explorer", False):
+                self._explorer_stop()
             try:
                 self.handle(self.mode.stop())
                 self._save_coverage()
@@ -1622,6 +1718,9 @@ class MainWindow(QMainWindow):
                 self.satellite_panel.set_catalogue(e.data["catalogue"])
             elif e.kind == "sat_next":
                 self.satellite_panel.set_next(e.data["passes"], e.data.get("done", True))
+            elif e.kind == "point_decoded" and getattr(self.mode, "explorer", False) and \
+                    e.data["event"].kind in ("dsd", "explorer"):
+                self._explorer_event(e.data["freq"], e.data["event"])
             elif e.kind == "point_decoded":
                 d = e.data
                 text = self.decode_area.point_event(d["freq"], d["id"], d["event"])

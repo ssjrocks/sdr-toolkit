@@ -29,6 +29,13 @@ AUTO_ID = 3.0                   # s between automatic identifications of the tun
 POINT_DECODERS = ("dmr", "pager", "aprs", "tones")    # narrow-FM decoders a decode point can run
 MAX_POINTS = 24
 POINT_WIDTH = 12500             # Hz: each decode point's channel
+DISCOVER_EVERY = 2.0            # s between looks for new signals (the explorer)
+PROBE_FOR = 20.0                # s a new signal gets to show digital voice before it's let go
+IGNORE_FOR = 600.0              # s a signal that wasn't digital voice is left alone
+IDLE_DROP = 600.0               # s without a frame before a found channel's decoder is stopped
+GRID = 6250                     # Hz: digital voice channels sit on this raster
+SIDEBAND = 30000                 # Hz: a much weaker signal this close to a found one is its side band
+SIDEBAND_DB = 20.0               # dB weaker than its neighbour for that
 
 _radio = tuple(s for s in RADIO_SETTINGS if s.key in ("input", "file", "device"))
 DECODER_NAMES = {"morse": "Morse / CW", "rtty": "RTTY", "psk": "PSK31 / 63 / 125", "navtex": "NAVTEX",
@@ -47,6 +54,8 @@ class ReceiverMode(Mode):
     output = "receiver"
     source = "radio"
     rate = dsp.AUDIO_RATE
+    discover = False                # find signals by themselves and decode them (the explorer)
+    explorer = False
     requires = ("rtl-sdr",)
     settings = _radio + (
         Setting("file_rate", "Recording sample rate", 2400000, "choice", restart=True,
@@ -146,6 +155,12 @@ class ReceiverMode(Mode):
         self._point_events: list = []
         self._chz = None                # their channelizer
         self._chz_center = None
+        self._discover_at = 0.0
+        self._discover_sum = None       # the spectrum lines since the last look, summed (linear power)
+        self._discover_n = 0
+        self._probing: dict[float, float] = {}     # freq -> when its decode point was added to try it
+        self._ignored: dict[float, float] = {}     # freq -> until when it's left alone
+        self._auto: set = set()                     # decode points the explorer added (it may drop them)
         self._decoder_note = ""
         self._recent: list = []
         self._recent_n = 0
@@ -306,6 +321,89 @@ class ReceiverMode(Mode):
                 db = spectrum.update(tail)
                 if db is not None:
                     self._frame = (db.copy(), self.center, int(v["rate"]), demod.level, demod.open)
+                    if self.discover:            # averaged over DISCOVER_EVERY, so noise peaks even out
+                        p = 10 ** (db / 10)
+                        self._discover_sum = p if self._discover_sum is None or len(self._discover_sum) != len(p) \
+                            else self._discover_sum + p
+                        self._discover_n += 1
+                        if now - self._discover_at >= DISCOVER_EVERY:
+                            self._discover_at = now
+                            avg = 10 * np.log10(self._discover_sum / self._discover_n + 1e-20)
+                            self._discover_sum, self._discover_n = None, 0
+                            self._discover(avg, int(v["rate"]))
+
+    # ---- the explorer: find signals and decode them ------------------------------
+
+    def _discover(self, db, rate):
+        """Runs on the receiver's thread: each new narrow signal in view becomes a decode point that
+        tries it for digital voice (let go after PROBE_FOR s if DSD-FME finds nothing)."""
+        now = time.time()
+        busy = set(self.points) | set(self._probing) | {r[1] for r in self._point_requests if r[0] == "add"}
+        n = len(db)
+
+        def level(f):                                    # the strongest bin within 3 kHz of f
+            i = int(round((f - self.center) * n / rate + n / 2))
+            k = max(1, int(3000 * n / rate))
+            return float(db[max(0, i - k): i + k + 1].max()) if 0 <= i < n else -999.0
+        found = dsp.find_carriers(db, rate, self.center, max_width=25000,
+                                  min_snr=float(self.values.get("discover_snr", 12)), merge=10000)
+        strong = [(g, level(g)) for g in list(busy) + found]
+        for f in found:
+            here = level(f)
+            if any(0 < abs(f - g) < SIDEBAND and lg - here > SIDEBAND_DB for g, lg in strong):
+                continue                                 # a strong neighbour's side band, not a signal
+            f = float(round(f / GRID) * GRID)
+            if abs(f - self.center) + POINT_WIDTH / 2 > rate / 2 or any(abs(f - g) < GRID for g in busy):
+                continue
+            if self._ignored.get(f, 0) > now:
+                continue
+            if len(busy) >= MAX_POINTS:
+                break
+            self.add_point(f, "dmr")
+            self._probing[f] = now
+            self._auto.add(f)
+            busy.add(f)
+            self._point_events.append((f, "dmr", Event("explorer", data={"freq": f, "state": "probing"})))
+
+    def _digital_check(self, pt, evs):
+        """DSD-FME's lines from a point: it carries digital voice once a frame passed its checks (a colour
+        code, NAC or call) or HEARD_AFTER clean syncs came in, as Identify decides. Until then a found
+        signal's lines are held back, so a stray sync in noise doesn't make it a channel."""
+        from .digital_voice import HEARD_AFTER
+        for e in evs:
+            if e.kind != "dsd":
+                continue
+            d = e.data
+            if d.get("cc") is not None or d.get("nac") or d["what"] == "call":
+                pt["verified"] = pt.get("verified", 0) + 1
+            elif d["what"] == "frame" and not d.get("error"):
+                pt["clean"] = pt.get("clean", 0) + 1
+            if pt.get("verified") or pt.get("clean", 0) >= HEARD_AFTER:
+                pt["digital"] = time.time()
+        if not self.discover or pt.get("digital"):
+            out, pt["held"] = pt.get("held", []) + evs, []
+            return out
+        pt["held"] = (pt.get("held", []) + [e for e in evs if e.kind == "dsd"])[-200:]
+        return [e for e in evs if e.kind != "dsd"]
+
+    def _check_found(self, now):
+        """The explorer's decode points: keep the ones with digital voice, let the others go."""
+        for f, t0 in list(self._probing.items()):
+            pt = self.points.get(f)
+            if pt is not None and pt.get("digital"):
+                del self._probing[f]
+            elif now - t0 > PROBE_FOR:
+                del self._probing[f]
+                self._ignored[f] = now + IGNORE_FOR
+                self.remove_point(f)
+                self._auto.discard(f)
+                self._point_events.append((f, "dmr", Event("explorer", data={"freq": f, "state": "not digital"})))
+        for f in list(self._auto):
+            pt = self.points.get(f)
+            if pt is not None and pt.get("digital") and now - pt["digital"] > IDLE_DROP:
+                self.remove_point(f)                     # quiet for a while: found again when it comes back
+                self._auto.discard(f)
+                self._point_events.append((f, "dmr", Event("explorer", data={"freq": f, "state": "idle"})))
 
     # ---- identifying the tuned signal ---------------------------------------
 
@@ -575,7 +673,11 @@ class ReceiverMode(Mode):
                 pt["host"].error = ""
             if any(e.kind in ("line", "row", "log") and e.style not in ("dim", "warn") for e in evs):
                 pt["heard"] = time.time()
+            if any(e.kind == "dsd" for e in evs):
+                evs = self._digital_check(pt, evs)
             self._point_events += [(freq, pt["decoder"], e) for e in evs]
+        if self.discover:
+            self._check_found(time.time())
         pending, self._point_events = self._point_events, []
         events += [Event("point_decoded", data={"freq": f, "id": d, "event": e}) for f, d, e in pending]
         frame, self._frame = self._frame, None

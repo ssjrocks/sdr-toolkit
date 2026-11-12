@@ -4,6 +4,7 @@ from .adsb import ADSBMode
 from .ais import AISMode
 from .aprs import APRSMode
 from .digital_voice import DigitalVoiceMode
+from .explorer import ExplorerMode
 from .gps_fix import GPSFixMode
 from .receiver import ReceiverMode
 from .satellites import SatelliteMode
@@ -24,7 +25,7 @@ MODES = [
     SSTVMode, WefaxMode,
     APRSMode, PagerMode,
     TonesMode,
-    ReceiverMode, ADSBMode, AISMode, SondeMode, ISMMode, LoRaMode, DigitalVoiceMode, GPSFixMode,
+    ReceiverMode, ADSBMode, AISMode, SondeMode, ISMMode, LoRaMode, ExplorerMode, DigitalVoiceMode, GPSFixMode,
     SatelliteMode,
 ]
 GROUPS = ["Text", "Digital (weak signal)", "Pictures", "Packet & paging", "Tones", "RTL-SDR", "Satellites"]

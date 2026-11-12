@@ -471,6 +471,80 @@ def test_decode_points_decode_several_channels_at_once(monkeypatch, tmp_path):
     assert m.points == {}
 
 
+def test_explorer_lists_and_listening(tmp_path):
+    from sdr_toolkit.receiver import dsd
+    from sdr_toolkit.receiver.explore import Explorer
+    ex = Explorer()
+    t = 1000.0
+    for line in ("Sync: +DMR  [SLOT1]  slot2  | Color Code=01 | VLC", " SLOT 1 TGT=505 SRC=3125678 Group Call",
+                 "Sync: +DMR  [SLOT1]  slot2  | Color Code=01 | VC1", " Lat: -27.6 Lon: 153.1 (-27.6, 153.1)"):
+        ex.add(438.8e6, dsd.parse(line), t)
+    for line in ["Sync: +P25p1   NAC: 654; TSBK"] * 4 + ["  WACN [BEE00] SYSID [658] NAC [654]"]:
+        ex.add(419.9875e6, dsd.parse(line), t)
+    ex.add(473.1e6, dsd.parse(" SLOT 2 TGT=9 SRC=42 Private Encrypted Call"), t)
+    assert ex.talkgroups[505]["calls"] == 1 and ex.talkgroups[505]["radios"] == {3125678}
+    assert ex.radios[3125678]["position"] == (-27.6, 153.1) and ex.radios[42]["last_tg"] == 9
+    kinds = {s["id"]: s for s in ex.systems()}
+    assert kinds["WACN BEE00 SYSID 658"]["control"] == [419.9875e6] and kinds["colour code 1"]["voice"] == [438.8e6]
+    assert any("Group call to 505 from radio 3125678" in x[2] for x in ex.log)
+    # Listening: everything; one channel; one talkgroup (only while its call is on).
+    assert ex.audible(438.8e6, t) and ex.audible(473.1e6, t)
+    ex.only = ("freq", 473.1e6)
+    assert ex.audible(473.1e6, t) and not ex.audible(438.8e6, t)
+    ex.only = ("tg", 505)
+    assert ex.audible(438.8e6, t + 1) and not ex.audible(473.1e6, t + 1) and not ex.audible(438.8e6, t + 10)
+    ex.only = ("radio", 42)
+    assert ex.audible(473.1e6, t + 1) and not ex.audible(438.8e6, t + 1)
+    # Kept between sessions.
+    ex.save(tmp_path / "explorer.json")
+    back = Explorer.load(tmp_path / "explorer.json")
+    assert back.channels[419.9875e6].what() == "P25 phase 1 control channel" and back.talkgroups[505]["radios"] == {3125678}
+    assert back.radios[3125678]["position"] == (-27.6, 153.1) and len(back.log) == len(ex.log)
+    assert Explorer.load(tmp_path / "missing.json").channels == {}
+
+
+def test_explorer_finds_signals_and_lets_go_of_non_digital(monkeypatch, tmp_path):
+    from sdr_toolkit.modes import receiver as R
+    from sdr_toolkit.modes.digital_voice import dsd_fme
+    if dsd_fme() is None:
+        pytest.skip("DSD-FME isn't built")
+    import signals
+    monkeypatch.setattr(R, "PROBE_FOR", 6.0)
+    dmr = fm_iq(signals.dmr_bursts(48000, 4.0), 300000, 1944)
+    tt = np.arange(len(dmr)) / RATE
+    x = dmr + (0.2 * np.exp(2j * np.pi * -400000 * tt)).astype(np.complex64)     # a plain carrier: not digital
+    rec = save_iq(tmp_path / "band.cu8", x)
+    monkeypatch.setattr(R, "AudioOut", FakeAudio)
+    from sdr_toolkit.modes.explorer import ExplorerMode
+    m = ExplorerMode()
+    m.start(dict(m.values, input="file", file=str(rec), file_rate=RATE, freq_mhz=101.1))
+    try:
+        centre = None
+        states = {}
+        end = time.time() + 30
+        while time.time() < end:
+            time.sleep(0.1)
+            for e in m.poll():
+                centre = centre or m.center
+                if e.kind == "point_decoded" and e.data["event"].kind == "explorer":
+                    states.setdefault(e.data["freq"], []).append(e.data["event"].data["state"])
+                if e.kind == "point_decoded" and e.data["event"].kind == "dsd":
+                    states.setdefault(e.data["freq"], []).append("dsd")
+            if any("not digital" in v for v in states.values()) and any("dsd" in v for v in states.values()):
+                break
+        dmr_f = round((centre + 300000) / 6250) * 6250
+        cw_f = round((centre - 400000) / 6250) * 6250
+        assert "probing" in states.get(dmr_f, []) and "dsd" in states.get(dmr_f, []), states.keys()
+        assert states.get(cw_f, [])[:1] == ["probing"] and "not digital" in states[cw_f], states.keys()
+        end = time.time() + 3
+        while cw_f in m.points and time.time() < end:                 # its decode point is removed
+            time.sleep(0.1)
+        assert dmr_f in m.points and cw_f not in m.points
+        assert set(states) == {dmr_f, cw_f}, states.keys()             # its side bands aren't signals
+    finally:
+        m.stop()
+
+
 def keyed_carrier(text, offset, wpm=20):
     """A carrier keyed on and off (5 ms raised-cosine edges, as a transmitter's) with the
     timing of the Morse generator's text."""

@@ -323,3 +323,33 @@ def fm_discriminator(ch, y, deviation=5000.0):
     prev = np.concatenate([[ch["last"]], y[:-1]])
     ch["last"] = y[-1]
     return (np.angle(y * np.conj(prev)) * AUDIO_RATE / (2 * np.pi * deviation)).astype(np.float32)
+
+
+def find_carriers(power_db, rate, centre, max_width=40000, min_snr=12.0, merge=15000):
+    """Narrow carriers well above the noise in an averaged spectrum (FFT-shifted dB): their
+    frequencies (Hz), strongest first. The DC spike and the band's edges are left out, and so is
+    anything wider than max_width (a broadcast, or noise)."""
+    n = len(power_db)
+    freqs = centre + (np.arange(n) - n / 2) * rate / n
+    floor = float(np.median(power_db))
+    hot = power_db > floor + min_snr
+    hot &= np.abs(freqs - centre) > 5000                      # the dongle's DC spike
+    hot &= np.abs(freqs - centre) < rate * 0.45               # its filter slopes
+    found = []
+    i = 0
+    while i < n:
+        if not hot[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and hot[j + 1]:
+            j += 1
+        if (j - i + 1) * rate / n <= max_width:
+            w = 10 ** (power_db[i:j + 1] / 10)
+            found.append((float(power_db[i:j + 1].max()), float(np.sum(freqs[i:j + 1] * w) / np.sum(w))))
+        i = j + 1
+    out = []
+    for _, f in sorted(found, reverse=True):
+        if all(abs(f - g) > merge for g in out):
+            out.append(f)
+    return out

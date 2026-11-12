@@ -71,34 +71,7 @@ def say(**event):
 
 
 def find_carriers(power_db, rate, centre):
-    """Narrow carriers well above the noise in an averaged spectrum (FFT-shifted dB): their
-    frequencies (Hz), strongest first. The DC spike and the band's edges are left out."""
-    n = len(power_db)
-    freqs = centre + (np.arange(n) - n / 2) * rate / n
-    floor = float(np.median(power_db))
-    hot = power_db > floor + MIN_SNR
-    hot &= np.abs(freqs - centre) > 5000                      # the dongle's DC spike
-    hot &= np.abs(freqs - centre) < rate * 0.45               # its filter slopes
-    found = []
-    i = 0
-    while i < n:
-        if not hot[i]:
-            i += 1
-            continue
-        j = i
-        while j + 1 < n and hot[j + 1]:
-            j += 1
-        width = (j - i + 1) * rate / n
-        if width <= 2 * CHANNEL_WIDTH:                         # wider is a broadcast or noise, not a sonde
-            w = 10 ** (power_db[i:j + 1] / 10)
-            f = float(np.sum(freqs[i:j + 1] * w) / np.sum(w))
-            found.append((float(power_db[i:j + 1].max()), f))
-        i = j + 1
-    out = []
-    for _, f in sorted(found, reverse=True):
-        if all(abs(f - g) > MERGE for g in out):
-            out.append(f)
-    return out
+    return dsp.find_carriers(power_db, rate, centre, 2 * CHANNEL_WIDTH, MIN_SNR, MERGE)
 
 
 class Channel:
