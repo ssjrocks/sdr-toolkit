@@ -33,7 +33,9 @@ DISCOVER_EVERY = 2.0            # s between looks for new signals (the explorer)
 PROBE_FOR = 20.0                # s a new signal gets to show digital voice before it's let go
 IGNORE_FOR = 600.0              # s a signal that wasn't digital voice is left alone
 IDLE_DROP = 600.0               # s without a frame before a found channel's decoder is stopped
-GRID = 6250                     # Hz: digital voice channels sit on this raster
+EDGE_ROOM = 0.02                # of the rate: how far inside the band's edge a clicked signal is put
+SAME_SIGNAL = 1500              # Hz: a signal found this close to a known one is that one
+GRID = 6250                     # Hz: digital voice channels are at least this far apart
 SIDEBAND = 30000                 # Hz: a much weaker signal this close to a found one is its side band
 SIDEBAND_DB = 20.0               # dB weaker than its neighbour for that
 
@@ -55,6 +57,7 @@ class ReceiverMode(Mode):
     source = "radio"
     rate = dsp.AUDIO_RATE
     discover = False                # find signals by themselves and decode them (the explorer)
+    known_channels: frozenset = frozenset()     # the explorer's channels so far (set by the window)
     explorer = False
     requires = ("rtl-sdr",)
     settings = _radio + (
@@ -160,6 +163,7 @@ class ReceiverMode(Mode):
         self._discover_n = 0
         self._probing: dict[float, float] = {}     # freq -> when its decode point was added to try it
         self._ignored: dict[float, float] = {}     # freq -> until when it's left alone
+        self._known: set = set()                   # frequencies the explorer has put decode points on
         self._auto: set = set()                     # decode points the explorer added (it may drop them)
         self._decoder_note = ""
         self._recent: list = []
@@ -219,6 +223,16 @@ class ReceiverMode(Mode):
     def _centre_for(tune, rate):
         return tune - rate / 4                    # the signal a quarter span right of the DC spike
 
+    def _nudged(self, tune, rate):
+        """A centre for a frequency in view that doesn't fit (in an edge, or on the DC spike): the
+        dongle moves only as far as needed, so what was clicked stays about where it was on screen."""
+        bw = float(self.values["bandwidth"])
+        off = tune - self.center
+        if abs(off) <= 2000:                         # the DC spike: step just clear of it
+            return tune - (bw / 2 + 2000)
+        edge = rate / 2 - bw / 2 - EDGE_ROOM * rate  # inside the edge, a little off the filter's slope
+        return tune - np.sign(off) * max(edge, 2000 + 1)
+
     def _fits(self, off, rate):
         """A channel this far from the dongle's centre can be heard where it is: inside the band the
         dongle sends (right up to its edges) and clear of the DC spike in the middle."""
@@ -251,7 +265,7 @@ class ReceiverMode(Mode):
                 # Within the span (up to its edges, clear of the DC spike): just move the demodulator,
                 # so tuning near an edge doesn't make the band jump.
                 if not self._fits(off, rate):
-                    self.center = self._centre_for(tune, rate)
+                    self.center = self._nudged(tune, rate) if abs(off) <= rate / 2 else self._centre_for(tune, rate)
                     if v["input"] != "file":
                         s.command(SET_FREQ, int(self.center))
                 self.demod.retune(self._offset())
@@ -355,13 +369,19 @@ class ReceiverMode(Mode):
             here = level(f)
             if any(0 < abs(f - g) < SIDEBAND and lg - here > SIDEBAND_DB for g, lg in strong):
                 continue                                 # a strong neighbour's side band, not a signal
-            f = float(round(f / GRID) * GRID)
+            # Where it is, not the nearest channel of a raster: a transmitter or dongle a few kHz off
+            # put the decoder beside the signal. One already known (found again) keeps its frequency.
+            f = float(round(f / 100) * 100)
+            near = [g for g in self._known | set(self.known_channels) if abs(f - g) < SAME_SIGNAL]
+            if near:
+                f = min(near, key=lambda g: abs(f - g))
             if abs(f - self.center) + POINT_WIDTH / 2 > rate / 2 or any(abs(f - g) < GRID for g in busy):
                 continue
-            if self._ignored.get(f, 0) > now:
+            if any(abs(f - g) < SAME_SIGNAL and until > now for g, until in self._ignored.items()):
                 continue
             if len(busy) >= MAX_POINTS:
                 break
+            self._known.add(f)
             self.add_point(f, "dmr")
             self._probing[f] = now
             self._auto.add(f)

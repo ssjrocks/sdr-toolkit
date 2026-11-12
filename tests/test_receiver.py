@@ -200,6 +200,14 @@ def test_receiver_on_a_recording(monkeypatch, tmp_path):
         assert m.center == 100.5e6 and abs(m.demod.offset - 1100000) < 1
         m.apply(dict(m.values, freq_mhz=99.4))
         assert m.center == 100.5e6
+        # In view but in the edge (101.65 MHz: the 180 kHz channel would stick out): the dongle moves
+        # only far enough for it to fit, so the band barely shifts on screen (it used to jump 1.75 MHz).
+        m.apply(dict(m.values, freq_mhz=101.65))
+        assert 0 < m.center - 100.5e6 < 150000 and abs(m.demod.offset) + 90000 <= RATE / 2
+        c = m.center
+        # On the DC spike: just clear of it.
+        m.apply(dict(m.values, freq_mhz=round(c / 1e6, 6)))
+        assert 0 < c - m.center <= 92000 and abs(m.demod.offset) > 2000
         # A frequency outside the span retunes the dongle, the signal again a quarter span off centre.
         m.apply(dict(m.values, freq_mhz=145.0))
         assert m.center == 145e6 - RATE / 4
@@ -598,7 +606,7 @@ def test_explorer_finds_signals_and_lets_go_of_non_digital(monkeypatch, tmp_path
         pytest.skip("DSD-FME isn't built")
     import signals
     monkeypatch.setattr(R, "PROBE_FOR", 6.0)
-    dmr = fm_iq(signals.dmr_bursts(48000, 4.0), 300000, 1944)
+    dmr = fm_iq(signals.dmr_bursts(48000, 4.0), 303400, 1944)     # 3.4 kHz off the 6.25 kHz raster
     tt = np.arange(len(dmr)) / RATE
     x = dmr + (0.2 * np.exp(2j * np.pi * -400000 * tt)).astype(np.complex64)     # a plain carrier: not digital
     rec = save_iq(tmp_path / "band.cu8", x)
@@ -620,8 +628,9 @@ def test_explorer_finds_signals_and_lets_go_of_non_digital(monkeypatch, tmp_path
                     states.setdefault(e.data["freq"], []).append("dsd")
             if any("not digital" in v for v in states.values()) and any("dsd" in v for v in states.values()):
                 break
-        dmr_f = round((centre + 300000) / 6250) * 6250
-        cw_f = round((centre - 400000) / 6250) * 6250
+        # On the signals themselves (to 100 Hz), not on a 6.25 kHz raster.
+        dmr_f = next((f for f in states if abs(f - (centre + 303400)) < 1000), None)
+        cw_f = next((f for f in states if abs(f - (centre - 400000)) < 1500), None)
         assert "probing" in states.get(dmr_f, []) and "dsd" in states.get(dmr_f, []), states.keys()
         assert states.get(cw_f, [])[:1] == ["probing"] and "not digital" in states[cw_f], states.keys()
         end = time.time() + 3

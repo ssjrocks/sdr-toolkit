@@ -1309,6 +1309,7 @@ class MainWindow(QMainWindow):
         listening = ("everything" if only is None else f"only {only[1] / 1e6:.5f} MHz" if only[0] == "freq"
                      else f"only talkgroup {only[1]}" if only[0] == "tg" else f"only radio {only[1]}")
         decoding = [st["freq"] for st in self.mode.point_states()] if self.running else []
+        self.mode.known_channels = frozenset(f for f, s in ex.states.items() if s == "digital")
         self.explorer_pane.refresh(ex, decoding, listening)
         self._explorer_listen()
         if time.time() - self._ex_saved > 30:

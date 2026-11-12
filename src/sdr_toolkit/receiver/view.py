@@ -26,6 +26,8 @@ BAR = 18                         # px: the grab bar along the top (drag to slide
 ARROW = 30                       # px: the step buttons at its ends
 SLIDE_EVERY = 0.15               # s between retunes while the bar is dragged
 STEP = 0.8                       # of the span on screen, per step button press
+CLICK_SNAP = 1000                # Hz: a click on the spectrum tunes to the nearest kHz
+SLIDE_AFTER = 4                  # px the grab bar must be dragged before the band moves
 STEPS = ((100, "100 Hz"), (1000, "1 kHz"), (5000, "5 kHz"), (6250, "6.25 kHz"), (10000, "10 kHz"),
          (12500, "12.5 kHz"), (25000, "25 kHz"), (100000, "100 kHz"), (200000, "200 kHz"), (1000000, "1 MHz"))
 ROWS = 400
@@ -336,6 +338,8 @@ class SpectrumView(QWidget):
             self._limit()
         elif self._drag and self._drag[0] == "slide":
             _, x0, c0 = self._drag
+            if self._slide_center is None and abs(ev.position().x() - x0) < SLIDE_AFTER:
+                return                                   # a click on the bar, not (yet) a drag
             # Dragging the band right shows lower frequencies, as dragging a map does: the band follows
             # the mouse, and the dongle follows it a few times a second.
             lo, hi = self.span()
@@ -574,7 +578,10 @@ class ReceiverPanel(QWidget):
         self._emit("step", int(hz))
 
     def _clicked(self, hz):
-        step = self.step.currentData() or 1
+        # Where you clicked, to CLICK_SNAP: the tuning step (100 kHz, say) is for the arrows and
+        # wheel, and snapping a click to it tuned well away from the signal clicked on.
+        fine = 10 if self.mode.currentData() in ("USB", "LSB", "CW") else CLICK_SNAP
+        step = min(self.step.currentData() or fine, fine)
         self.changed.emit("freq_mhz", round(round(hz / step) * step / 1e6, 6))
 
     def show_values(self, v: dict):

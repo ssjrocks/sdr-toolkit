@@ -570,10 +570,26 @@ rp = win.receiver_panel
 results["saved_decoder_runs"] = win.mode.decoder is not None and win.mode.decoder.id == "tones"
 results["receiver"] = (win.output.currentWidget() is rp and rp.view.db is not None and rp.view.center == 100.5e6
                        and "Signal" in rp.meter.text())
-rp.view.tuned.emit(101.2e6 + 30)                 # a click: rounded to the 100 kHz step
+rp.view.tuned.emit(101.2e6 + 30)                 # a click: to the nearest kHz
 app.processEvents()
 results["receiver_tune"] = (abs(rp.freq.value() - 101.2) < 1e-9 and win.mode.values["freq_mhz"] == 101.2
                             and win.form.widgets["freq_mhz"][1].value() == 101.2 and win.mode.center == 100.5e6)
+rp.view.tuned.emit(101.1372e6)                   # not to the 100 kHz tuning step: where it was clicked
+app.processEvents()
+results["receiver_tune"] = results["receiver_tune"] and win.mode.values["freq_mhz"] == 101.137
+# A click on the grab bar that twitches a pixel or two doesn't slide the band.
+from PyQt6.QtCore import QPointF as _P  # noqa: E402
+from PyQt6.QtGui import QMouseEvent as _ME  # noqa: E402
+_slides = []
+rp.view.slid.connect(_slides.append)
+_B, _NB = _Qt.MouseButton.LeftButton, _Qt.KeyboardModifier.NoModifier
+for _kind, _x, _btn in ((_ME.Type.MouseButtonPress, 300, _B), (_ME.Type.MouseMove, 302, _B),
+                        (_ME.Type.MouseButtonRelease, 302, _B)):
+    _ev = _ME(_kind, _P(_x, 6), _P(_x, 6), _btn, _B if _kind != _ME.Type.MouseButtonRelease else _Qt.MouseButton.NoButton, _NB)
+    app.sendEvent(rp.view, _ev)
+app.processEvents()
+results["bar_click_stays"] = not _slides and win.mode.center == 100.5e6
+rp.view.slid.disconnect(_slides.append)
 rp.mode.setCurrentIndex(rp.mode.findData("NFM"))
 app.processEvents()
 results["receiver_mode"] = (win.mode.demod.mode == "NFM" and win.mode.values["bandwidth"] == 12500
