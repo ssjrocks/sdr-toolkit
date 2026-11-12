@@ -1,0 +1,50 @@
+name: Android
+
+on:
+  push:
+    paths: ["android/**", ".github/workflows/android.yml"]
+  pull_request:
+    paths: ["android/**", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      # The real relay, for RelayLiveTest.
+      - uses: actions/checkout@v4
+        with:
+          repository: ssjrocks/sdr-tools-relay
+          path: sdr-tools-relay
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Tests
+        env:
+          SDR_TOOLS_RELAY_SRC: ${{ github.workspace }}/sdr-tools-relay/src
+          SCREENSHOT_DIR: ${{ github.workspace }}/screenshots
+        run: ./gradlew testDebugUnitTest
+      - name: APKs
+        run: ./gradlew assembleDebug assembleRelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdr-toolkit-android
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/release/app-release.apk
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots-and-test-reports
+          path: |
+            screenshots
+            android/app/build/reports/tests

@@ -125,6 +125,10 @@ sample rate: about 38 Mbit/s for ADS-B, 4 for AIS and ISM, 16 for LoRa. While co
 button's menu says whether the relay is up to date and offers **Update the relay to …** when a
 newer SDR Tools Relay is out (the relay must have a password, and relays from 0.1.2 on).
 
+**On Android:** [`android/`](android/README.md) has a phone version of Spectrum & receiver and
+ADS-B, with an RTL-SDR plugged into the phone (through the free Rtl-sdr driver app) or any relay
+on the network or the internet, found the same way as here. GitHub Actions builds its APK.
+
 **Spectrum & receiver** is a receiver like SDR++ or GQRX: a spectrum (with peak hold) over a
 waterfall of up to 2.6 MHz of the band, and a demodulator on the frequency you click, played
 through your speakers. Click or drag to tune (rounded to the tuning step), wheel to zoom, right-drag
