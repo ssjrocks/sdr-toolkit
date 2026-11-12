@@ -1,5 +1,6 @@
 """The Spectrum receiver's signal processing, on synthetic signals."""
 
+import os
 import shutil
 import sys
 import time
@@ -218,6 +219,49 @@ def test_local_dongle_missing_is_explained(monkeypatch):
     with pytest.raises(RuntimeError, match="No RTL-SDR found"):
         m.start(dict(m.values, input="rtl"))
     m.stop()
+
+
+FAKE_RTL_TCP = r"""#!/usr/bin/env python3
+# Behaves like Ubuntu's rtl_tcp 2.0.2 to a pipe: device lines on stderr (unbuffered), and
+# "listening..." on stdout, which stays in its buffer until it exits.
+import socket, struct, sys, time
+args = sys.argv[1:]
+port = int(args[args.index("-p") + 1])
+sys.stderr.write("Found 1 device(s):\nTuned to 100000000 Hz.\n")
+sys.stderr.flush()
+time.sleep(0.5)                                        # opening the dongle
+srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", port)); srv.listen(1)
+print("listening...")                                  # not flushed
+conn, _ = srv.accept()
+conn.sendall(b"RTL0" + struct.pack(">II", 6, 29))
+try:
+    while True:
+        conn.sendall(bytes([127, 128]) * 48000)
+        time.sleep(0.02)
+except OSError:
+    pass
+"""
+
+
+def test_local_rtl_tcp_is_ready_when_its_port_answers(monkeypatch, tmp_path):
+    """Its "listening..." line sits in a pipe buffer: waiting for it timed out after 10 s and the
+    dongle never opened (the error showed rtl_tcp's OsmoSDR help lines)."""
+    from sdr_toolkit.receiver import source
+    exe = tmp_path / "rtl_tcp"
+    exe.write_text(FAKE_RTL_TCP)
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    t = time.time()
+    src = source.LocalRtlTcp("0", 2400000, 100e6)
+    try:
+        assert time.time() - t < 5
+        assert src.tuner_name and src.proc.poll() is None
+        time.sleep(0.3)
+        assert len(src.read()) > 0
+    finally:
+        src.close()
+    assert src.proc.poll() is not None
 
 
 # ---- decoding the receiver's audio --------------------------------------------

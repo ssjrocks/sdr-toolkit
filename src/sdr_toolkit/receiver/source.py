@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 SET_FREQ, SET_RATE, SET_GAIN_MODE, SET_GAIN, SET_PPM, SET_IF_GAIN, SET_TEST_MODE, SET_AGC, \
     SET_DIRECT_SAMPLING, SET_OFFSET_TUNING, SET_RTL_XTAL, SET_TUNER_XTAL, SET_GAIN_INDEX, SET_BIAS_TEE = range(1, 15)
 TUNER_NAMES = {0: "unknown", 1: "E4000", 2: "FC0012", 3: "FC0013", 4: "FC2580", 5: "R820T", 6: "R828D"}
+START_WAIT = 10.0              # s for rtl_tcp to open the dongle and its port
 MAX_BUFFERED = 2.0            # s of samples kept if processing falls behind; older ones are dropped
 
 
@@ -138,7 +139,6 @@ class LocalRtlTcp(RtlTcp):
         except FileNotFoundError:
             raise SourceError("rtl_tcp isn't installed (the rtl-sdr package)") from None
         self.output: list[str] = []
-        ready = threading.Event()
 
         def watch():
             for line in self.proc.stdout:
@@ -146,13 +146,29 @@ class LocalRtlTcp(RtlTcp):
                 self.output.append(line)
                 del self.output[:-40]
                 log.info("rtl_tcp: %s", line)
-                if "listening" in line.lower():
-                    ready.set()
-            ready.set()
 
-        threading.Thread(target=watch, daemon=True, name="rtl_tcp-log").start()
-        ready.wait(10)
-        if self.proc.poll() is not None or not any("listening" in x.lower() for x in self.output):
+        reader = threading.Thread(target=watch, daemon=True, name="rtl_tcp-log")
+        reader.start()
+        # Ready when its port answers. Its "listening..." line can't be waited for: rtl_tcp prints
+        # it to stdout, which a pipe buffers until it exits (Ubuntu's 2.0.2).
+        deadline = time.monotonic() + START_WAIT
+        connected = False
+        while not connected:
+            if self.proc.poll() is not None:
+                reader.join(1)                           # its last lines say why
+                break
+            try:
+                super().__init__("127.0.0.1", port, timeout=3.0)
+                connected = True
+            except SourceError:
+                sock = getattr(self, "sock", None)       # connected, but no rtl_tcp greeting
+                if sock is not None:
+                    sock.close()
+                    del self.sock
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(0.1)
+        if not connected:
             text = "\n".join(self.output).lower()
             self.stop_server()
             if "no supported devices" in text or "no matching devices" in text:
@@ -160,20 +176,18 @@ class LocalRtlTcp(RtlTcp):
             if "usb_claim_interface" in text or "busy" in text:
                 raise SourceError("The RTL-SDR is in use by another program (another mode, SDR++, GQRX…)")
             raise SourceError("rtl_tcp didn't start: " + " / ".join(self.output[-3:]))
-        try:
-            super().__init__("127.0.0.1", port)
-        except SourceError:
-            self.stop_server()
-            raise
         self.rate = int(rate)
 
     def stop_server(self):
+        # Once a client has connected, rtl_tcp 2.0.2 catches SIGTERM but never exits (measured on
+        # this PC's dongle: still running 10 s later); waiting for it froze the window on every Stop.
         if self.proc.poll() is None:
             self.proc.terminate()
             try:
-                self.proc.wait(3)
+                self.proc.wait(0.5)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+                self.proc.wait(2)
 
     def close(self):
         super().close()
