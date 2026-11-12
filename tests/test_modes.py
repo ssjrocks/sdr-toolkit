@@ -665,16 +665,18 @@ def test_updater_trusts_only_this_repository():
 
 def test_updater_refuses_a_wheel_with_the_wrong_checksum(monkeypatch, tmp_path):
     from sdr_toolkit import updater
-    monkeypatch.setattr(updater, "installed_in_venv", lambda: True)
+    monkeypatch.setattr(updater, "can_install", lambda: True)          # as if installed (venv, or the Windows installer's)
     monkeypatch.setattr(updater, "_download", lambda *a: b"not the real wheel")
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     ran = []
     monkeypatch.setattr(updater.subprocess, "run", lambda *a, **k: ran.append(a))
+    monkeypatch.setattr(updater.subprocess, "Popen", lambda *a, **k: ran.append(a))   # Windows: the installer
     u = updater.Update("9.9.9", "https://api.github.com/repos/ssjrocks/sdr-toolkit/releases/assets/1",
                        "sdr_toolkit-9.9.9-py3-none-any.whl", "0" * 64)
     with pytest.raises(RuntimeError, match="checksum"):
         updater.install(u)
-    assert not ran                                   # pip never ran
+    assert not ran                                   # neither pip nor the installer ran
 
 
 def test_updater_falls_back_to_the_plain_link(monkeypatch):
