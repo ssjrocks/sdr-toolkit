@@ -282,14 +282,16 @@ class SpectrumView(QWidget):
         now = time.time()
         names = {"dmr": "DMR", "pager": "Pager", "aprs": "APRS", "tones": "Tones"}
         for pt in self.points:
-            if lo <= pt["freq"] <= hi:
-                xp = self.x_of(pt["freq"])
+            at = pt["freq"] + pt.get("afc", 0.0)         # where its AFC has followed the signal to
+            if lo <= at <= hi:
+                xp = self.x_of(at)
                 pen = QPen(QColor(60, 220, 230, 210), 1)
                 pen.setStyle(Qt.PenStyle.DotLine)
                 p.setPen(pen)
                 p.drawLine(QPointF(xp, BAR), QPointF(xp, h))
                 label = names.get(pt["decoder"], pt["decoder"]) + (" ●" if now - pt["heard"] < 5 else "") \
-                    + (" muted" if pt.get("muted") else "")
+                    + (" muted" if pt.get("muted") else "") \
+                    + (f" {pt['afc'] / 1000:+.1f} kHz" if abs(pt.get("afc", 0.0)) >= 300 else "")
                 r = p.fontMetrics().boundingRect(label)
                 box = QRectF(xp + 2, top - r.height() - 22, r.width() + 8, r.height() + 2)
                 p.fillRect(box, QColor(60, 220, 230, 220))

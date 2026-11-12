@@ -34,6 +34,10 @@ PROBE_FOR = 20.0                # s a new signal gets to show digital voice befo
 IGNORE_FOR = 600.0              # s a signal that wasn't digital voice is left alone
 IDLE_DROP = 600.0               # s without a frame before a found channel's decoder is stopped
 EDGE_ROOM = 0.02                # of the rate: how far inside the band's edge a clicked signal is put
+AFC_EVERY = 0.5                 # s of a point's audio per frequency measurement
+AFC_GAIN = 0.5                  # of the measured offset corrected each time
+AFC_MAX = 4000                  # Hz either way a point may follow its signal
+AFC_SNR = 10.0                  # dB over the band's noise in the spectrum: a signal is there to measure
 SAME_SIGNAL = 1500              # Hz: a signal found this close to a known one is that one
 GRID = 6250                     # Hz: digital voice channels are at least this far apart
 SIDEBAND = 30000                 # Hz: a much weaker signal this close to a found one is its side band
@@ -163,6 +167,7 @@ class ReceiverMode(Mode):
         self._discover_n = 0
         self._probing: dict[float, float] = {}     # freq -> when its decode point was added to try it
         self._ignored: dict[float, float] = {}     # freq -> until when it's left alone
+        self._afc_spec = None           # the latest spectrum line, for AFC to see whether a signal is there
         self._known: set = set()                   # frequencies the explorer has put decode points on
         self._auto: set = set()                     # decode points the explorer added (it may drop them)
         self._decoder_note = ""
@@ -335,6 +340,7 @@ class ReceiverMode(Mode):
                 db = spectrum.update(tail)
                 if db is not None:
                     self._frame = (db.copy(), self.center, int(v["rate"]), demod.level, demod.open)
+                    self._afc_spec = (self._frame[0], self.center, int(v["rate"]))
                     if self.discover:            # averaged over DISCOVER_EVERY, so noise peaks even out
                         p = 10 ** (db / 10)
                         self._discover_sum = p if self._discover_sum is None or len(self._discover_sum) != len(p) \
@@ -636,21 +642,62 @@ class ReceiverMode(Mode):
         if self._chz_center != self.center:
             # Only the points inside the band the dongle sends get a channel (and audio).
             self._chz_center = self.center
-            for freq in self.points:
+            for freq, pt in self.points.items():
                 off = freq - self.center
                 if abs(off) + POINT_WIDTH / 2 <= rate / 2:
-                    self._chz.set(freq, off, POINT_WIDTH)
+                    self._chz.set(freq, off + pt.get("afc", 0.0), POINT_WIDTH)
                 else:
                     self._chz.remove(freq)
         for freq, y in self._chz.process(x).items():
             pt = self.points.get(freq)
             if pt is not None and len(y):
+                if pt["decoder"] == "dmr":
+                    self._afc(freq, pt, y, now)
                 pt["host"].feed(dsp.fm_discriminator(self._chz.channels[freq], y), now)
+
+    def _signal_at(self, f):
+        """Whether the spectrum shows a signal within half a channel of f, AFC_SNR over the noise."""
+        spec = self._afc_spec
+        if spec is None:
+            return False
+        db, center, rate = spec
+        n = len(db)
+        i = int(round((f - center) * n / rate + n / 2))
+        k = max(1, int(POINT_WIDTH / 2 * n / rate))
+        if not 0 <= i < n:
+            return False
+        return float(db[max(0, i - k): i + k + 1].max()) - float(np.median(db)) >= AFC_SNR
+
+    def _afc(self, freq, pt, y, now):
+        """Automatic frequency control for a digital voice point: the mean of its signal's instantaneous
+        frequency is its offset from the point's centre (DMR's and P25's four tones come equally often),
+        weighted by power so the gaps between bursts count for little. Measured only while the spectrum
+        shows a signal there (even one too far off to decode yet), so noise doesn't walk the point
+        away; each time it moves part of the way."""
+        ch = self._chz.channels[freq]
+        prev = np.concatenate([[ch["last"]], y[:-1]])
+        p = np.abs(y) ** 2
+        f = np.angle(y * np.conj(prev)) * dsp.AUDIO_RATE / (2 * np.pi)
+        acc = pt.setdefault("afc_acc", [0.0, 0.0, 0])
+        acc[0] += float(np.sum(p * f))
+        acc[1] += float(np.sum(p))
+        acc[2] += len(y)
+        if acc[2] < AFC_EVERY * dsp.AUDIO_RATE:
+            return
+        wf, w, _ = acc
+        pt["afc_acc"] = [0.0, 0.0, 0]
+        if w <= 0 or not self._signal_at(freq + pt.get("afc", 0.0)):
+            return
+        afc = float(np.clip(pt.get("afc", 0.0) + AFC_GAIN * wf / w, -AFC_MAX, AFC_MAX))
+        if abs(afc - pt.get("afc", 0.0)) >= 20:
+            pt["afc"] = afc
+            self._chz.set(freq, freq - self.center + afc, POINT_WIDTH)
 
     def point_states(self) -> list[dict]:
         """For the window: each decode point, whether it's in the band, and when it last decoded."""
         rate = int(self.values["rate"])
         return [{"freq": f, "decoder": pt["decoder"], "muted": pt["muted"], "heard": pt["heard"],
+                 "afc": pt.get("afc", 0.0),
                  "in_view": abs(f - self.center) + POINT_WIDTH / 2 <= rate / 2} for f, pt in self.points.items()]
 
     def _decoder_step(self, audio):

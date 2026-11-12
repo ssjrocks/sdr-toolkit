@@ -567,6 +567,44 @@ def test_many_dmr_points_stop_quickly(monkeypatch, tmp_path):
     assert all(p.poll() is not None for p in procs) and m.src is None
 
 
+def test_dmr_points_follow_their_signal(monkeypatch, tmp_path):
+    """AFC: a point 2.5 kHz beside a DMR signal moves onto it; one on a signal drifting 1.5 kHz
+    during the transmission follows it. Noise elsewhere leaves its point where it is."""
+    from sdr_toolkit.modes.digital_voice import dsd_fme
+    from scipy.signal import resample_poly
+    if dsd_fme() is None:
+        pytest.skip("DSD-FME isn't built")
+    import signals
+    a = resample_poly(signals.dmr_bursts(48000, 10.0), RATE // 48000, 1)
+    tt = np.arange(len(a)) / RATE
+    fsk = 2 * np.pi * 1944 * np.cumsum(a) / RATE
+    drift = 2 * np.pi * np.cumsum(-400000 + 1500 * tt / tt[-1]) / RATE           # -400 kHz, rising 1.5 kHz
+    x = (0.5 * np.exp(1j * (2 * np.pi * 302500 * tt + fsk)) + 0.5 * np.exp(1j * (drift + fsk))).astype(np.complex64)
+    rec = save_iq(tmp_path / "two.cu8", x + noise(len(x), 0.01))
+    m = start_receiver(monkeypatch, input="file", file=str(rec), file_rate=RATE, freq_mhz=101.1)
+    try:
+        poll_for(m, 0.3)
+        c = m.center
+        m.add_point(c + 300000, "dmr")                  # 2.5 kHz below its signal
+        m.add_point(c - 400000, "dmr")                  # on its signal at first, which then drifts up
+        m.add_point(c + 700000, "dmr")                  # only noise
+        afc, frames = {}, {}
+        t0 = time.time()
+        while time.time() < t0 + 9.5:
+            ev = poll_for(m, 0.5)
+            afc = {round(st["freq"] - c): st["afc"] for st in m.point_states()}
+            for e in ev:
+                if e.kind == "point_decoded" and e.data["event"].kind == "dsd" and not e.data["event"].data.get("error"):
+                    k = (round(e.data["freq"] - c), time.time() - t0 > 5)
+                    frames[k] = frames.get(k, 0) + 1
+        assert abs(afc[300000] - 2500) < 400, afc
+        assert frames.get((300000, True), 0) > 0, frames    # decoding once it's on the signal
+        assert 900 < afc[-400000] < 1900, afc            # about 1.4 kHz up by now
+        assert afc[700000] == 0, afc
+    finally:
+        m.stop()
+
+
 def test_explorer_lists_and_listening(tmp_path):
     from sdr_toolkit.receiver import dsd
     from sdr_toolkit.receiver.explore import Explorer

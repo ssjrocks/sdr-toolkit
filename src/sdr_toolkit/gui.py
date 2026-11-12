@@ -1433,7 +1433,8 @@ class MainWindow(QMainWindow):
             states = [{"freq": p["freq"], "decoder": p["decoder"], "muted": p.get("muted", False), "heard": 0.0,
                        "in_view": False} for p in self._saved_points()]
         now = time.time()
-        key = tuple((s["freq"], s["decoder"], s["muted"], s["in_view"], now - s["heard"] < 5) for s in states)
+        key = tuple((s["freq"], s["decoder"], s["muted"], s["in_view"], now - s["heard"] < 5,
+                     round(s.get("afc", 0.0) / 100)) for s in states)
         if not force and key == getattr(self, "_points_key", None):
             return
         self._points_key = key
