@@ -247,6 +247,8 @@ except OSError:
 def test_local_rtl_tcp_is_ready_when_its_port_answers(monkeypatch, tmp_path):
     """Its "listening..." line sits in a pipe buffer: waiting for it timed out after 10 s and the
     dongle never opened (the error showed rtl_tcp's OsmoSDR help lines)."""
+    if sys.platform == "win32":
+        pytest.skip("the stand-in rtl_tcp is a script run by its #! line")
     from sdr_toolkit.receiver import source
     exe = tmp_path / "rtl_tcp"
     exe.write_text(FAKE_RTL_TCP)
