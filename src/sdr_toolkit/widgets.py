@@ -13,8 +13,10 @@ import functools
 import re
 from contextlib import contextmanager
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QHeaderView, QLabel, QSizePolicy, QTableWidgetItem, QToolButton
+from PyQt6.QtCore import QRect, QSize, Qt
+from PyQt6.QtWidgets import (QComboBox, QHeaderView, QLabel, QListView, QProxyStyle, QSizePolicy, QStyle,
+                             QStyledItemDelegate,
+                             QStyleOptionViewItem, QTableWidgetItem, QToolButton)
 
 NUMBER = re.compile(r"[-+]?\d+(?:\.\d+)?")
 ORDER = Qt.ItemDataRole.UserRole + 1          # a row's arrival number, on its first cell
@@ -145,3 +147,76 @@ class FitButton(_Fits, QToolButton):
 
     def _room(self):
         return self.width() - 12
+
+
+class _BoxWideList(QListView):
+    """A combo's list no wider than the combo: Qt widens a popup to its longest entry, and on
+    Wayland it can't tell where the window is, so a wide one ran off the window (onto the next
+    monitor)."""
+
+    def __init__(self, combo):
+        super().__init__()
+        self.combo = combo
+        self.setWordWrap(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+    def sizeHintForColumn(self, column):
+        return max(self.combo.width() - 2 * self.frameWidth() - self.verticalScrollBar().sizeHint().width(), 40)
+
+
+class _WrapDelegate(QStyledItemDelegate):
+    """Entries wrapped onto more lines to fit the combo's width, instead of widening the list."""
+
+    def __init__(self, view):
+        super().__init__(view)
+        self.view = view
+
+    def _width(self):
+        return max(self.view.sizeHintForColumn(0) - 8, 40)
+
+    def sizeHint(self, option, index):
+        fm = option.fontMetrics
+        text = str(index.data() or "")
+        r = fm.boundingRect(QRect(0, 0, self._width(), 10000), Qt.TextFlag.TextWordWrap, text)
+        return QSize(self._width(), max(r.height(), fm.height()) + 8)
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.features |= QStyleOptionViewItem.ViewItemFeature.WrapText
+        style = opt.widget.style() if opt.widget is not None else self.view.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+
+
+class _DropDownStyle(QProxyStyle):
+    """Fusion opens a combo's list over the combo, as wide as its longest entry's text: this opens
+    it as a plain drop-down list under the combo instead, at the combo's width."""
+
+    def styleHint(self, hint, option=None, widget=None, returnData=None):
+        if hint == QStyle.StyleHint.SH_ComboBox_Popup:
+            return 0
+        return super().styleHint(hint, option, widget, returnData)
+
+
+_drop_down_style = None
+
+
+class BoxCombo(QComboBox):
+    """A combo box whose list opens at its own width, long entries wrapped: it stays inside the
+    window wherever the combo is (the settings down the right side, say)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        global _drop_down_style
+        if _drop_down_style is None:
+            _drop_down_style = _DropDownStyle()          # kept: a widget's style isn't owned by it
+        self.setStyle(_drop_down_style)
+        view = _BoxWideList(self)
+        self.setView(view)
+        view.setItemDelegate(_WrapDelegate(view))
+        self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(8)
+
+    def showPopup(self):
+        self.view().doItemsLayout()                  # the wrapping depends on the combo's width now
+        super().showPopup()

@@ -48,7 +48,7 @@ from PyQt6.QtWidgets import (
 from . import APP_ID, APP_NAME, __version__, aircraftdb, appreports, coverage, deps, updater
 from .explorer_view import ExplorerPane
 from .satellites.view import SatellitePanel
-from .widgets import ORDER, FitLabel, SortItem, drop_oldest, filling, sortable, unsorted
+from .widgets import ORDER, BoxCombo, FitLabel, SortItem, drop_oldest, filling, sortable, unsorted
 from .capture import AudioCapture, list_outputs
 from .logbook import Logbook
 from .mapview import MapView
@@ -245,7 +245,7 @@ class SettingsForm(QWidget):
             w.setKeyboardTracking(False)
             w.valueChanged.connect(lambda v, k=s.key: self.changed.emit(k, float(v)))
         elif s.kind == "choice":
-            w = QComboBox()
+            w = BoxCombo()
             for val, label in s.choices:
                 w.addItem(label, val)
             i = next((n for n, (val, _) in enumerate(s.choices) if val == value), 0)
@@ -1330,13 +1330,24 @@ class MainWindow(QMainWindow):
         self.tree.setCurrentItem(self._items["receiver"])        # starts the receiver
         if self.mode is None or self.mode.output != "receiver":
             return
+        if radio.decoder == "sattlm":
+            # What gr-satellites needs to know (saved as that decoder's settings, which it starts with).
+            M = next(m for m in MODES if m.id == "sattlm")
+            from .modes.sat_telemetry import generic_modulation
+            for key, val in (("satellite", str(sat.norad)), ("sat_name", sat.name),
+                             ("modulation", generic_modulation(radio.mode, radio.baud) or "FSK"),
+                             ("baud", int(radio.baud or 9600)), ("freq", int(radio.downlink))):
+                self.settings.setValue(self._key(M, key), val)
+            if self.mode.values.get("decoder") == "sattlm":
+                self._receiver_changed("decoder", "")               # restarted with the new satellite
         if radio.decoder:
             self._receiver_changed("decoder", radio.decoder)     # sets its usual demodulator...
         else:
             self._receiver_changed("decoder", "")
         self._receiver_changed("demod", radio.demod)             # ...and then the satellite's
         self._receiver_changed("bandwidth", int(radio.bandwidth))
-        self._doppler = {"sat": orbit.satrec(sat.line1, sat.line2), "f0": radio.downlink, "name": sat.name,
+        f0 = (radio.downlink + radio.downlink_high) / 2 if radio.downlink_high > radio.downlink else radio.downlink
+        self._doppler = {"sat": orbit.satrec(sat.line1, sat.line2), "f0": f0, "name": sat.name,
                          "home": here, "last": None}
         self._doppler_step()
         self._doppler_timer.start()

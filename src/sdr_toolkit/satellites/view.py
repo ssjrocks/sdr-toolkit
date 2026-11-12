@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QLineEdit,
     QPushButton,
     QSplitter,
@@ -24,7 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..widgets import FitLabel, SortItem, filling, sortable, unsorted
-from .data import CATEGORIES, short
+from .data import CATEGORIES, pick, short
 
 COMING_HOURS = 12                   # the Coming over tab looks this far ahead
 REFRESH = 1.5                       # s between refreshes while the next passes are coming in
@@ -234,6 +235,9 @@ class SatellitePanel(QWidget):
         self.search.textChanged.connect(lambda _: self.refresh_list())
         self.category.currentIndexChanged.connect(lambda _: (self.refresh_list(), self.refresh_coming()))
         self.list.itemSelectionChanged.connect(self._picked)
+        for t in (self.list, self.coming):
+            t.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            t.customContextMenuRequested.connect(lambda pos, t=t: self._menu(t, pos))
         self.coming.itemSelectionChanged.connect(self._picked_coming)
         self.pass_table.itemSelectionChanged.connect(self._picked_pass)
         self.best.toggled.connect(lambda _: self._show_passes())
@@ -331,6 +335,30 @@ class SatellitePanel(QWidget):
         n = _key(self.list, self.list.currentRow())
         if n is not None:
             self.select(n)
+
+    PURPOSES = (("beacon", "Listen for its beacon"), ("telemetry", "Listen for its telemetry (decode it)"),
+                ("repeater", "Listen to its repeater / transponder output"))
+
+    def _menu(self, table, pos):
+        """Right-click a satellite: listen for its beacon, its telemetry or its repeater's output."""
+        n = _key(table, table.rowAt(pos.y()))
+        sat = self.catalogue.get(n) if n is not None else None
+        if sat is None:
+            return
+        menu = QMenu(self)
+        title = menu.addAction(sat.name)
+        title.setEnabled(False)
+        for purpose, label in self.PURPOSES:
+            r = pick(sat, purpose)
+            if r is None:
+                a = menu.addAction(f"{label}: it has none")
+                a.setEnabled(False)
+                continue
+            a = menu.addAction(f"{label}: {short(r)}" + ("" if r.alive else " (not heard lately)"))
+            a.setToolTip(r.how)
+            a.triggered.connect(lambda _=False, sat=sat, r=r: self.listen.emit(sat, r))
+        menu.setToolTipsVisible(True)
+        menu.exec(table.viewport().mapToGlobal(pos))
 
     def _picked_coming(self):
         n = _key(self.coming, self.coming.currentRow())

@@ -105,6 +105,63 @@ def test_downlinks_sorted_into_what_you_can_do():
     assert classify("LRPT", 72000, 137.9e6)[0] == "pictures"
 
 
+def test_telemetry_downlinks_go_to_gr_satellites():
+    from sdr_toolkit.modes import sat_telemetry as T
+    from sdr_toolkit.satellites.data import classify
+    kind, how, demod, bw, decoder = classify("FSK", 9600, 437.2e6, "", norad=99998)
+    assert (kind, decoder, demod) == ("telemetry", "sattlm", "NFM") and "plain AX.25" in how
+    assert classify("AFSK", 1200, 437.0e6)[4] == "aprs"                    # plain 1200 baud AX.25: direwolf
+    assert classify("AFSK", 4800, 437.0e6, norad=99998)[4] == ""           # not plain AX.25: needs its SatYAML
+    assert classify("LoRa", None, 437.0e6)[4] == ""
+    if T.known_norads():                                                    # gr-satellites is installed
+        assert 22825 in T.known_norads()                                    # AO-27
+        known = classify("AFSK", 1200, 436.795e6, norad=22825)
+        assert known[4] == "sattlm" and "knows this satellite" in known[1]
+    y = T.satyaml("TestSat", "FSK", 9600, 437.2e6)
+    assert "framing: AX.25 G3RUH" in y and "baudrate: 9600" in y and "modulation: FSK" in y
+    assert "af_carrier: 1700" in T.satyaml("T", "AFSK", 1200, 145.8e6)
+
+
+def test_telemetry_packets_in_one_line():
+    from sdr_toolkit.modes.sat_telemetry import describe
+    ax25 = """Container: 
+    header = Container: 
+        addresses = ListContainer: 
+            Container: 
+                callsign = u'CQ' (total 2)
+                ssid = Container: 
+                    ch = True
+                    ssid = 0
+                    extension = False
+            Container: 
+                callsign = u'AO27' (total 4)
+                ssid = Container: 
+                    ch = True
+                    ssid = 1
+                    extension = True
+        control = 0x03
+        pid = 0xF0
+    info = b'BAT 7.9V TEMP 21C' (total 17)""".splitlines()
+    assert describe(ax25) == "From AO27-1 to CQ: BAT 7.9V TEMP 21C"
+    fields = ["Container: ", "    batt_voltage = 7.92", "    temp_obc = 21", "    mode = u'nominal' (total 7)"]
+    assert describe(fields) == "batt_voltage 7.92 · temp_obc 21 · mode nominal"
+
+
+def test_right_click_picks_beacon_telemetry_and_repeater():
+    from sdr_toolkit.satellites.data import Radio, Satellite, classify, pick
+
+    def radio(desc, f, mode, baud=None, up=None, alive=True):
+        kind, how, demod, bw, dec = classify(mode, baud, f, desc, norad=99998)
+        return Radio(desc, f, f, up, mode, baud, alive, kind, how, demod, bw, dec, "Amateur")
+    sat = Satellite(99998, "TestSat", radios=[
+        radio("CW beacon", 435.1e6, "CW"), radio("9k6 telemetry", 437.2e6, "FSK", 9600),
+        radio("FM repeater", 145.9e6, "FM", up=435.0e6), radio("old beacon", 435.2e6, "CW", alive=False)])
+    assert pick(sat, "beacon").downlink == 435.1e6                        # heard ones first
+    assert pick(sat, "telemetry").decoder == "sattlm"
+    assert pick(sat, "repeater").downlink == 145.9e6
+    assert pick(Satellite(1, "Quiet"), "beacon") is None
+
+
 def test_satellite_mode_finds_the_next_passes():
     import time
     from sdr_toolkit.modes.satellites import SatelliteMode

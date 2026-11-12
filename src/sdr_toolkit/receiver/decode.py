@@ -31,6 +31,7 @@ DECODERS = {
     "pager": ("NFM", 12500),
     "tones": ("NFM", 12500),
     "dmr": ("NFM", 12500),
+    "sattlm": ("NFM", 25000),           # it takes the IQ; the audio is only for listening along
 }
 TAIL = 4096 * 2                 # recent decoder-rate audio kept for its waterfall
 
@@ -103,6 +104,26 @@ class DecoderHost:
         with self._lock:
             self.events.extend(events)
             self.tail = np.concatenate([self.tail, x])[-TAIL:]
+
+    def feed_iq(self, iq: np.ndarray, now: float):
+        """A decoder that wants IQ (mode.iq): the receiver's complex channel at 48 kHz, as it is."""
+        while self._todo:
+            fn = self._todo.popleft()
+            try:
+                fn(self.mode)
+            except Exception:  # a bad setting must not stop the receiver
+                log.exception("decoder %s", self.id)
+        if not len(iq):
+            return
+        try:
+            events = list(self.mode.feed(iq, now)) + list(self.mode.poll())
+        except Exception as e:  # shown, and the decoder is left stopped
+            log.exception("decoder %s", self.id)
+            self.error = f"{self.mode.name} stopped: {e}"
+            events = []
+        with self._lock:
+            self.events.extend(events)
+            self.tail = np.concatenate([self.tail, np.abs(iq).astype(np.float32)])[-TAIL:]
 
     def poll_idle(self):
         """Decoders that run outside programs produce output even when no audio comes."""

@@ -29,6 +29,7 @@ AUTO_ID = 3.0                   # s between automatic identifications of the tun
 POINT_DECODERS = ("dmr", "pager", "aprs", "tones")    # narrow-FM decoders a decode point can run
 MAX_POINTS = 24
 POINT_WIDTH = 12500             # Hz: each decode point's channel
+IQ_WIDTH = 40000                # Hz: the IQ channel a decoder that wants IQ gets (satellite telemetry)
 DISCOVER_EVERY = 2.0            # s between looks for new signals (the explorer)
 PROBE_FOR = 20.0                # s a new signal gets to show digital voice before it's let go
 IGNORE_FOR = 600.0              # s a signal that wasn't digital voice is left alone
@@ -47,7 +48,7 @@ _radio = tuple(s for s in RADIO_SETTINGS if s.key in ("input", "file", "device")
 DECODER_NAMES = {"morse": "Morse / CW", "rtty": "RTTY", "psk": "PSK31 / 63 / 125", "navtex": "NAVTEX",
                  "ft8": "FT8", "ft4": "FT4", "sstv": "SSTV", "wefax": "Weather fax", "aprs": "APRS / packet",
                  "pager": "Pagers (POCSAG / FLEX)", "tones": "DTMF / CTCSS / DCS",
-                 "dmr": "DMR / P25 / digital voice (DSD-FME)"}
+                 "dmr": "DMR / P25 / digital voice (DSD-FME)", "sattlm": "Satellite telemetry (gr-satellites)"}
 DECODER_CHOICES = tuple((k, DECODER_NAMES[k]) for k in DECODERS)
 
 
@@ -171,6 +172,7 @@ class ReceiverMode(Mode):
         self._known: set = set()                   # frequencies the explorer has put decode points on
         self._auto: set = set()                     # decode points the explorer added (it may drop them)
         self._decoder_note = ""
+        self._iq_chz = None             # the tuned channel's IQ, for a decoder that wants it
         self._recent: list = []
         self._recent_n = 0
         self._identify_busy = False
@@ -323,7 +325,7 @@ class ReceiverMode(Mode):
                     continue
             if not v["mute"] and v["demod"] != "RAW":
                 self.audio.play(audio, float(v["volume"]) / 100)
-            self._decoder_step(audio)
+            self._decoder_step(audio, x)
             if self.points or self._point_requests:
                 self._points_step(x, time.time())
             if self._listen is not None:
@@ -700,7 +702,25 @@ class ReceiverMode(Mode):
                  "afc": pt.get("afc", 0.0),
                  "in_view": abs(f - self.center) + POINT_WIDTH / 2 <= rate / 2} for f, pt in self.points.items()]
 
-    def _decoder_step(self, audio):
+    def _decoder_iq(self, x):
+        """The tuned channel as complex samples at 48 kHz, for a decoder that wants IQ (satellite
+        telemetry): IQ_WIDTH wide, following the tuning (and so a satellite's Doppler shift)."""
+        rate = int(self.values["rate"])
+        chz = self._iq_chz
+        if chz is None or chz.rate != rate:
+            try:
+                chz = self._iq_chz = dsp.Channelizer(rate)
+            except ValueError as e:                     # a rate that isn't a multiple of 48 kHz
+                if self.decoder is not None and not self.decoder.error:
+                    self.decoder.error = f"{e}: choose 1.92, 2.4 or 2.88 MS/s for this decoder"
+                return np.zeros(0, np.complex64)
+        off = self._offset()
+        ch = chz.channels.get("iq")
+        if ch is None or abs(ch["offset"] - off) > 1:
+            chz.set("iq", off, IQ_WIDTH)
+        return chz.process(x).get("iq", np.zeros(0, np.complex64))
+
+    def _decoder_step(self, audio, x=None):
         req, self._decoder_request = self._decoder_request, None
         if req is not None:
             if self.decoder is not None:
@@ -729,7 +749,11 @@ class ReceiverMode(Mode):
             else:
                 self._decoder_note = ""
         if self.decoder is not None:
-            self.decoder.feed(audio, time.time())
+            if getattr(self.decoder.mode, "iq", False):
+                if x is not None:
+                    self.decoder.feed_iq(self._decoder_iq(x), time.time())
+            else:
+                self.decoder.feed(audio, time.time())
             if self.decoder.error:
                 self._decoder_events.append((self.decoder.id, Event("line", self.decoder.error, style="warn")))
                 self.decoder.stop()

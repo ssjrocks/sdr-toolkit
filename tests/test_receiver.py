@@ -605,6 +605,33 @@ def test_dmr_points_follow_their_signal(monkeypatch, tmp_path):
         m.stop()
 
 
+def test_satellite_telemetry_from_the_receivers_iq(monkeypatch, tmp_path):
+    """A satellite's 1200 baud AFSK AX.25 telemetry at 300 kHz off the dongle's centre: gr-satellites
+    gets the tuned channel's IQ and each packet comes out as one line."""
+    import shutil as _sh
+    if not _sh.which("gr_satellites") or not _sh.which("gen_packets"):
+        pytest.skip("gr-satellites or direwolf isn't installed")
+    import signals
+    a = signals.aprs_packets(48000)
+    a = (a / np.max(np.abs(a))).astype(np.float32)
+    rec = save_iq(tmp_path / "sat.cu8", fm_iq(np.concatenate([a, np.zeros(48000, np.float32)]), 300000, 3000))
+    m = start_receiver(monkeypatch, input="file", file=str(rec), file_rate=RATE, freq_mhz=101.1, demod="NFM",
+                       bandwidth=25000)
+    try:
+        poll_for(m, 0.3)
+        m.apply(dict(m.values, freq_mhz=(m.center + 300000) / 1e6))
+        m.set_decoder("sattlm", {"satellite": "", "modulation": "AFSK", "baud": 1200, "freq": 437e6,
+                                 "sat_name": "TestSat"})
+        lines = []
+        end = time.time() + 40
+        while time.time() < end and not any("quick brown fox" in t for t in lines):
+            lines += [e.data["event"].text or "" for e in poll_for(m, 0.5)
+                      if e.kind == "decoded" and e.data["event"].kind == "line"]
+        assert any(t.startswith("TestSat: From WB2OSZ-15 to TEST: ,The quick brown fox") for t in lines), lines[-8:]
+    finally:
+        m.stop()
+
+
 def test_explorer_lists_and_listening(tmp_path):
     from sdr_toolkit.receiver import dsd
     from sdr_toolkit.receiver.explore import Explorer

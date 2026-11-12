@@ -335,10 +335,24 @@ satellite for its passes over you (the next days, or **best first**: the highest
 can see with your eyes (lit by the Sun against a dark sky), where it is now on the map with its
 ground track and footprint, a sky plot of the pass, and every radio it carries: frequency, mode,
 baud rate, whether it's still heard, and what you can do with it here (listen in NFM or SSB,
-decode APRS, SSTV or Morse) or what it needs instead (SatDump for weather pictures, gr-satellites
-for telemetry). **Listen** opens Spectrum & receiver tuned to it and follows its Doppler shift
-(up to ±3.5 kHz on 2 m, ±10 kHz on 70 cm) through the pass. **Coming over** lists every pass in
-the next 12 hours. Set your location in Settings first; it's shared with the RTL-SDR modes.
+decode APRS, SSTV, Morse or telemetry) or what it needs instead (SatDump for weather pictures).
+**Listen** opens Spectrum & receiver tuned to it and follows its Doppler shift (up to ±3.5 kHz on
+2 m, ±10 kHz on 70 cm) through the pass. Right-click a satellite in the list or in **Coming over**
+for **Listen for its beacon** (a CW beacon, decoded as Morse, or another beacon), **Listen for its
+telemetry** or **Listen to its repeater / transponder output** (an FM repeater, or the middle of a
+linear transponder's passband in SSB). Each one names the downlink it will use, or says the satellite
+has none. **Coming over** lists every pass in the next 12 hours. Set your location in Settings
+first; it's shared with the RTL-SDR modes.
+
+**Satellite telemetry** is decoded by [gr-satellites](https://github.com/daniestevez/gr-satellites)
+(Daniel Estévez), from a 40 kHz IQ channel of the receiver that follows the Doppler shift. It knows
+about 380 satellites by NORAD number: their modulation, framing and telemetry layout. For those it
+shows the telemetry fields ("batt_voltage 7.92 · temp_obc 21 ..."). For a satellite it doesn't know,
+a description is written from SatNOGS' data for the downlink (FSK, GFSK or GMSK at up to 19200 baud;
+9600 baud and up G3RUH-scrambled), which decodes the many that send plain AX.25. Those show as
+"From callsign to callsign: text". The full dump of each packet is in **Raw data**. Plain 1200 baud
+AFSK packet (APRS) still goes to direwolf. It needs Ubuntu's `gr-satellites` package (the installer
+adds it); there's no Windows version.
 
 ## Notes per mode
 

@@ -49,6 +49,8 @@ PARTS = {
     "gr-lora_sdr": ("gr-lora_sdr (LoRa)", _lora, "build"),
     "dsd-fme": ("DSD-FME and mbelib (DMR, P25)", _dsd, "mbelib"),
     "radiosonde": ("rs1729's radiosonde decoders (RS41, DFM, M10/M20...)", _radiosonde, "build"),
+    "gr-satellites": ("gr-satellites (satellite telemetry)", lambda: shutil.which("gr_satellites") is not None,
+                      "system"),
 }
 
 
@@ -71,6 +73,8 @@ WINDOWS_HELP = {
     "readsb": "readsb has no Windows version yet: use the Linux version of SDR Toolkit for ADS-B.",
     "gnss-sdr": "GNSS-SDR has no Windows version: use the Linux version of SDR Toolkit for the GPS fix.",
     "gr-lora_sdr": "gr-lora_sdr has no Windows version: use the Linux version of SDR Toolkit for LoRa.",
+    "gr-satellites": ("gr-satellites has no Windows package (it runs on GNU Radio, e.g. through radioconda): use "
+                      "the Linux version of SDR Toolkit for satellite telemetry."),
     "radiosonde": ("rs1729's decoders (<a href='https://github.com/rs1729/RS'>github.com/rs1729/RS</a>) have no "
                    "Windows release: build rs41mod, dfm09mod, m10m20mod and dft_detect and put them in the tools "
                    "folder, or use the Linux version of SDR Toolkit."),

@@ -457,6 +457,33 @@ results["sat_listen"] = (win.mode.id == "receiver" and abs(f - 145.825) < 0.004 
 win._receiver_changed("freq_mhz", 101.1)
 win._doppler_step()
 results["sat_listen"] = results["sat_listen"] and not win._doppler_timer.isActive()
+# Right-click a satellite: listen for its beacon, telemetry or repeater. Telemetry goes to gr-satellites
+# (the Satellite telemetry decoder), told which satellite.
+win.tree.setCurrentItem(win._items["satellites"])
+pump(5)
+from PyQt6.QtWidgets import QMenu as _QMenu  # noqa: E402
+_menus = []
+_orig_exec = _QMenu.exec
+_QMenu.exec = lambda self, *a: _menus.append([(x.text(), x.isEnabled(), x) for x in self.actions()])
+_row = next(r for r in range(sp.list.rowCount()) if sp.list.item(r, 0).data(_Qt.ItemDataRole.UserRole) == 25544)
+sp._menu(sp.list, sp.list.visualItemRect(sp.list.item(_row, 0)).center())
+_QMenu.exec = _orig_exec
+_acts = _menus[0] if _menus else []
+_texts = [t for t, _, _ in _acts]
+results["sat_menu"] = (len(_acts) == 4 and _texts[0] == "ISS" and "beacon" in _texts[1] and "telemetry" in _texts[2]
+                       and "437.800 FM voice" in _texts[3] and all(e for _, e, _ in _acts[1:]))
+if _acts:
+    _acts[2][2].trigger()
+    pump(10)
+    from sdr_toolkit.modes import MODES as _MODES  # noqa: E402
+    _TM = next(m for m in _MODES if m.id == "sattlm")
+    results["sat_telemetry"] = (win.mode.id == "receiver" and win.mode.values["decoder"] == "sattlm"
+                                and str(win.settings.value(win._key(_TM, "satellite"))) == "25544"
+                                and win._doppler_timer.isActive())
+    win._receiver_changed("decoder", "")
+    win._receiver_changed("bandwidth", 12500)          # as the APRS listen above leaves it
+    win._receiver_changed("freq_mhz", 101.1)
+    win._doppler_step()
 win._receiver_changed("decoder", "")
 # Radiosondes on a recording of the real RS41: found, decoded, in the table and on the map.
 if not gui.deps.missing(["radiosonde"]):
@@ -570,6 +597,12 @@ rp = win.receiver_panel
 results["saved_decoder_runs"] = win.mode.decoder is not None and win.mode.decoder.id == "tones"
 results["receiver"] = (win.output.currentWidget() is rp and rp.view.db is not None and rp.view.center == 100.5e6
                        and "Signal" in rp.meter.text())
+# A settings dropdown opens at its box's width (a wide one ran off the window onto the next monitor).
+_dm = win.form.widgets["demod"][1]
+_dm.showPopup()
+app.processEvents()
+results["dropdown_in_box"] = _dm.view().window().width() <= _dm.width() + 2 and _dm.view().window().isVisible()
+_dm.hidePopup()
 rp.view.tuned.emit(101.2e6 + 30)                 # a click: to the nearest kHz
 app.processEvents()
 results["receiver_tune"] = (abs(rp.freq.value() - 101.2) < 1e-9 and win.mode.values["freq_mhz"] == 101.2

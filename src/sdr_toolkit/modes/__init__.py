@@ -7,6 +7,7 @@ from .digital_voice import DigitalVoiceMode
 from .explorer import ExplorerMode
 from .gps_fix import GPSFixMode
 from .receiver import ReceiverMode
+from .sat_telemetry import SatTelemetryMode
 from .satellites import SatelliteMode
 from .sondes import SondeMode
 from .morse import MorseMode
@@ -26,6 +27,6 @@ MODES = [
     APRSMode, PagerMode,
     TonesMode,
     ReceiverMode, ADSBMode, AISMode, SondeMode, ISMMode, LoRaMode, ExplorerMode, DigitalVoiceMode, GPSFixMode,
-    SatelliteMode,
+    SatelliteMode, SatTelemetryMode,
 ]
 GROUPS = ["Text", "Digital (weak signal)", "Pictures", "Packet & paging", "Tones", "RTL-SDR", "Satellites"]

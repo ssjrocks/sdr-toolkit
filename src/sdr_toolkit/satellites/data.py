@@ -76,7 +76,11 @@ class Radio:
 def short(radio) -> str:
     """A downlink in a few words: "145.825 APRS", "145.800 FM voice"."""
     what = {"aprs": "APRS", "sstv": "SSTV", "morse": "CW"}.get(radio.decoder) or (
-        "FM voice" if radio.kind == "listen" and radio.mode in ("FM", "FMN") else radio.mode)
+        "FM voice" if radio.kind == "listen" and radio.mode in ("FM", "FMN") else
+        f"{radio.mode} {radio.baud:g} baud telemetry" if radio.decoder == "sattlm" and radio.baud else
+        f"{radio.mode} telemetry" if radio.decoder == "sattlm" else radio.mode)
+    if radio.downlink_high > radio.downlink:
+        return f"{radio.downlink / 1e6:.3f}–{radio.downlink_high / 1e6:.3f} {what}"
     return f"{radio.downlink / 1e6:.3f} {what}"
 
 
@@ -105,12 +109,18 @@ class Satellite:
         return any(r.alive and r.kind in ("listen", "decode") for r in self.radios)
 
 
-def classify(mode, baud, freq, description="") -> tuple:
+def classify(mode, baud, freq, description="", norad=None) -> tuple:
     """(kind, how, demod, bandwidth, decoder) for a downlink."""
     m = (mode or "").upper()
     d = (description or "").upper()
     if not freq or not RTL_RANGE[0] <= freq <= RTL_RANGE[1]:
         return "out", "outside an RTL-SDR's range (24 MHz to 1.77 GHz)", "", 0, ""
+    from ..modes.sat_telemetry import can_decode, known_norads
+    if norad in known_norads() and m not in ("FM", "FMN", "AM", "USB", "LSB", "CW", "SSTV", "APT", "LRPT", "HRPT",
+                                             "AHRPT", "LORA") and "APRS" not in d:
+        rate = f" {baud:g} baud" if baud else ""
+        return "telemetry", (f"{mode or 'unknown'}{rate} telemetry: decode with Satellite telemetry (gr-satellites, "
+                             "which knows this satellite's telemetry)"), "NFM", 25000, "sattlm"
     if m == "SSTV" or ("SSTV" in d and m in ("FM", "FMN")):
         return "decode", "SSTV pictures: FM, decode with SSTV", "NFM", 12500, "sstv"
     if (m == "AFSK" and (not baud or baud == 1200)) or ("APRS" in d and m in ("FM", "AFSK")):
@@ -130,6 +140,9 @@ def classify(mode, baud, freq, description="") -> tuple:
     if m == "LORA":
         return "telemetry", "LoRa telemetry", "", 0, ""
     rate = f" {baud:g} baud" if baud else ""
+    if m not in ("FM", "FMN", "AM", "DUV", "DSTAR", "DIGITALVOICE") and can_decode(norad, mode, baud):
+        return "telemetry", f"{mode or 'unknown'}{rate} telemetry: decode with Satellite telemetry (gr-satellites, " \
+            "as plain AX.25)", "NFM", 25000, "sattlm"
     return "telemetry", f"{mode or 'unknown'}{rate} telemetry: decode with gr-satellites or SatNOGS", "", 0, ""
 
 
@@ -179,7 +192,7 @@ def load(offline=False, folder: Path | None = None) -> dict[int, Satellite]:
                                                                                  "Transponder"):
             continue
         f = float(tx["downlink_low"])
-        kind, how, demod, bw, decoder = classify(tx.get("mode"), tx.get("baud"), f, tx.get("description"))
+        kind, how, demod, bw, decoder = classify(tx.get("mode"), tx.get("baud"), f, tx.get("description"), sat.norad)
         sat.radios.append(Radio(tx.get("description") or "", f, float(tx.get("downlink_high") or f),
                                 float(tx["uplink_low"]) if tx.get("uplink_low") else None, tx.get("mode") or "",
                                 tx.get("baud"), bool(tx.get("alive")) and tx.get("status") == "active", kind, how,
@@ -197,3 +210,35 @@ def load(offline=False, folder: Path | None = None) -> dict[int, Satellite]:
         if not sat.categories:
             sat.categories.append("Other")
     return sats
+
+
+def _usable(r) -> bool:
+    return r.kind != "out" and bool(r.demod)
+
+
+def pick(sat: Satellite, purpose: str):
+    """The downlink to listen to for purpose: "beacon" (a CW or voice beacon, else a telemetry
+    beacon), "telemetry" (packets to decode) or "repeater" (a transponder's or FM repeater's output).
+    Heard ones first; None if it has none."""
+    def order(r):
+        return (not r.alive, r.service != "Amateur", r.downlink)
+    radios = sorted((r for r in sat.radios if _usable(r)), key=order)
+    d = lambda r: (r.description or "").lower()      # noqa: E731
+    if purpose == "beacon":
+        cands = ([r for r in radios if r.decoder == "morse"]
+                 + [r for r in radios if "beacon" in d(r) and r.decoder != "morse"])
+    elif purpose == "telemetry":
+        cands = ([r for r in radios if r.decoder == "sattlm"]
+                 + [r for r in radios if r.decoder == "aprs" and "digi" not in d(r)])
+    elif purpose == "repeater":
+        voice = [r for r in radios if r.kind == "listen" and r.uplink]
+        cands = (voice + [r for r in radios if r.kind == "listen" and not r.uplink
+                          and any(w in d(r) for w in ("repeater", "transponder", "voice"))]
+                 + [r for r in radios if r.decoder == "aprs" and ("digi" in d(r) or r.uplink)])
+    else:
+        cands = []
+    seen = []
+    for r in cands:
+        if r not in seen:
+            seen.append(r)
+    return seen[0] if seen else None
