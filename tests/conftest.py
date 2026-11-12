@@ -17,11 +17,34 @@ import pytest
 from sdr_toolkit.modes.base import MissingParts
 
 
-def _missing_program(exc) -> str | None:
-    if not isinstance(exc, FileNotFoundError) or not exc.filename:
+def _program_from_traceback(excinfo) -> str | None:
+    """The program a failed subprocess start was for. Windows' FileNotFoundError doesn't name it:
+    it's in _execute_child's arguments (a command line string there, a list on Linux)."""
+    for entry in reversed(excinfo.traceback):
+        frame = entry.frame
+        if frame.code.name != "_execute_child":
+            continue
+        f_locals = frame.f_locals
+        exe = f_locals.get("executable")
+        if exe:
+            return str(exe)
+        args = f_locals.get("args")
+        if isinstance(args, (list, tuple)) and args:
+            return str(args[0])
+        if isinstance(args, str) and args:
+            return args[1:].split('"', 1)[0] if args.startswith('"') else args.split(" ", 1)[0]
+    return None
+
+
+def _missing_program(excinfo) -> str | None:
+    exc = excinfo.value
+    if not isinstance(exc, FileNotFoundError):
         return None
-    name = Path(str(exc.filename)).name
-    return name if shutil.which(name) is None and not Path(str(exc.filename)).is_file() else None
+    path = exc.filename or _program_from_traceback(excinfo)
+    if not path:
+        return None
+    name = Path(str(path)).name
+    return name if shutil.which(name) is None and not Path(str(path)).is_file() else None
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -33,7 +56,7 @@ def pytest_runtest_makereport(item, call):
     exc = call.excinfo.value
     if isinstance(exc, MissingParts):
         reason = f"needs {', '.join(exc.parts)}, not installed here"
-    elif (prog := _missing_program(exc)) is not None:
+    elif (prog := _missing_program(call.excinfo)) is not None:
         reason = f"needs {prog}, not installed here"
     else:
         return

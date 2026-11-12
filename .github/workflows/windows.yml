@@ -28,10 +28,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # The real relay, for tests/test_relay.py (the relay's protocol from Windows).
+      - uses: actions/checkout@v4
+        with:
+          repository: ssjrocks/sdr-tools-relay
+          path: sdr-tools-relay
       - name: Python packages
-        run: python -m pip install --upgrade pip . pyinstaller pytest
+        run: python -m pip install --upgrade pip . pyinstaller pytest skyfield
       - name: Tests (from source)
-        run: python -m pytest -q -rs -p no:cacheprovider tests
+        env:
+          SDR_TOOLS_RELAY_SRC: ${{ github.workspace }}/sdr-tools-relay/src
+        run: python -m pytest -q -rfs --tb=line -p no:cacheprovider tests
       - name: RTL-SDR tools (rtl-sdr-blog V1.4.0, as SDR Tools Relay uses)
         shell: pwsh
         run: |
