@@ -11,6 +11,7 @@ import time
 import traceback
 from pathlib import Path
 
+REAL_DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "sdr-toolkit"
 os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp()      # its own logbook and aircraft database
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -32,6 +33,11 @@ from PyQt6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 import signals  # noqa: E402
 from sdr_toolkit import aircraftdb, appreports, gui  # noqa: E402
+from sdr_toolkit.modes import digital_voice as _dv, lora as _lora  # noqa: E402
+
+# Parts built for the app (gr-lora_sdr, DSD-FME) are where they really are, not in the test's data folder.
+_lora.LORA_PREFIX = REAL_DATA / "gr-lora_sdr"
+_dv.DSD_FME = REAL_DATA / "dsd-fme" / "bin" / "dsd-fme"
 from sdr_toolkit.engines.morse.synth import transmission  # noqa: E402
 from sdr_toolkit.engines.sstv.modes import BY_NAME  # noqa: E402
 from sdr_toolkit.engines.sstv.synth import color_bars, encode  # noqa: E402
@@ -108,11 +114,15 @@ from sdr_toolkit.modes.lora import lora_available  # noqa: E402
 for M in gui.MODES:
     win.tree.setCurrentItem(win._items[M.id])
     app.processEvents()
-    if DONGLE and getattr(M, "source", "audio") == "radio":
-        assert not win.running and "recording" in win.title.text(), (M.id, win.title.text())
-        continue
+    # Not installed comes first: it's said before anything is read (a dongle plugged in or not).
     if M.id == "lora" and lora_available() is None:
         assert not win.running and win.install_bar.isVisible() and "gr-lora_sdr" in win.install_label.text()
+        continue
+    if DONGLE and getattr(M, "source", "audio") == "radio":
+        # A dongle is plugged in: the mode mustn't touch it. It asks for a recording, or offers to
+        # install what it's missing (parts are looked for in this test's own data folder).
+        assert not win.running and ("recording" in win.title.text() or win.install_bar.isVisible()), (
+            M.id, win.title.text())
         continue
     if M.id == "receiver":
         # No dongle here: rtl_tcp finds none and the receiver says so instead of starting.

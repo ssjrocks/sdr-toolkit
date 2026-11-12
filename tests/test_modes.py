@@ -1018,7 +1018,10 @@ def test_adsb_details_with_the_aircraft_database(tmp_path, monkeypatch):
     shutil.copy(ACDB, tmp_path / "sdr-toolkit" / "aircraft.csv.gz")
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     assert aircraftdb.present() and not aircraftdb.due()
-    path = radio_signals.save(tmp_path / "adsb.cu8", radio_signals.adsb_iq(0x7C1234, "QFA123", -33.95, 151.18, 12000))
+    # readsb loads the database in the background as it starts: 2 s of quiet first, so it's loaded
+    # before the aircraft is heard (heard first, it never gets a registration, which a busy PC showed).
+    iq = radio_signals.adsb_iq(0x7C1234, "QFA123", -33.95, 151.18, 12000)
+    path = radio_signals.save(tmp_path / "adsb.cu8", np.concatenate([np.zeros(2 * 2400000, iq.dtype), iq]))
     mode, ev = run_radio("adsb", path, lat="-33.87", lon="151.21")
     d = mode.details("7C1234")
     fields = dict(d["fields"])

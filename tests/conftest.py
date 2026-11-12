@@ -10,11 +10,15 @@ SDR_TOOLKIT_ALL_TOOLS=1 turns that off, so a fully set-up PC can make sure nothi
 
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
 
-from sdr_toolkit.modes.base import MissingParts
+# From a source checkout (CI installs the package; here the tests run from src/).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from sdr_toolkit.modes.base import MissingParts  # noqa: E402
 
 
 def _program_from_traceback(excinfo) -> str | None:
