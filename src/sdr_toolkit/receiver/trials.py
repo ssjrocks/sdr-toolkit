@@ -35,11 +35,12 @@ def _mode(mode_id):
     return next(M for M in MODES if M.id == mode_id)()
 
 
-def _run_file(mode_id, path, rate, **values):
-    """A mode that reads recordings itself (DSD-FME, direwolf for AIS, rtl_433), run on the snippet."""
+def _run_file(mode_id, path, iq_rate, **values):
+    """A mode that reads recordings itself (DSD-FME, direwolf for AIS, rtl_433), run on the snippet.
+    (iq_rate, not rate: rtl_433's mode has a setting called rate.)"""
     m = _mode(mode_id)
     v = dict(m.values)
-    v.update(values, input="file", file=str(path), file_rate=rate)
+    v.update(values, input="file", file=str(path), file_rate=iq_rate)
     m.start(v)
     events = []
     end = time.monotonic() + WAIT
@@ -88,15 +89,22 @@ def _texts(events, kinds=("line", "log")):
 # ---- what counts as decoded, per decoder ------------------------------------------------------
 
 def _dmr(path, rate, audio):
+    from .dsd import Channel
     events = _run_file("dmr", path, rate, voice=False, file_offset=0)
-    heard = [t for t in _texts(events) if " signal" in t or " ended: " in t]
-    calls = [t for t in _texts(events) if t not in heard]
-    if not heard and not calls:
+    from ..modes.digital_voice import HEARD_AFTER
+    chan = Channel(None)
+    verified = clean = 0
+    for e in events:
+        if e.kind == "dsd":
+            chan.add(e.data)
+            verified += bool(e.data.get("cc") is not None or e.data.get("nac") or e.data["what"] == "call")
+            clean += e.data["what"] == "frame" and not e.data.get("error")
+    # A frame with a colour code / NAC passed its checks; without one, a run of clean syncs counts
+    # (as for the activity lines: noise gives odd ones).
+    if not verified and clean < HEARD_AFTER:
         return None
-    first = (heard or calls)[0].split("  ", 1)[-1]
-    proto = first.split()[0]
-    why = first + (f"; {len(calls)} call events" if calls else "")
-    return Guess(f"{proto} digital radio (decoded)", 1.0, f"DSD-FME: {why}", "NFM", 12500, "dmr")
+    why = chan.line() + (f"; {chan.calls} calls" if chan.calls else "")
+    return Guess(f"{chan.what()} (decoded)", 1.0, f"DSD-FME: {why}", "NFM", 12500, "dmr")
 
 
 def _pager(path, rate, audio):

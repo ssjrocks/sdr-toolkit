@@ -297,9 +297,9 @@ def test_dmr_heard_through_the_receiver(monkeypatch, tmp_path):
         pytest.skip("DSD-FME isn't built")
     import signals
     rec = save_iq(tmp_path / "dmr.cu8", fm_iq(signals.dmr_bursts(48000, 3.0), 600000, 1944))
-    found = lambda ev: any(" DMR signal: " in (e.text or "") for e in ev)   # noqa: E731
+    found = lambda ev: any("  DMR " in (e.text or "") and "colour code" in (e.text or "") for e in ev)   # noqa: E731
     m, ev = run_decoder(monkeypatch, rec, "dmr", "NFM", 12500, found, wait=30)
-    heard = [e.text for e in decoded(ev) if " DMR signal: " in (e.text or "")]
+    heard = [e.text for e in decoded(ev) if "  DMR " in (e.text or "") and "colour code" in (e.text or "")]
     assert heard and "colour code 12" in heard[0], [e.text for e in decoded(ev)][-8:]
 
 
@@ -347,7 +347,7 @@ def test_identify_decodes_dmr():
         pytest.skip("DSD-FME isn't built")
     import signals
     names, tried = _identified(_channel(signals.dmr_bursts(48000, 6.0), 48000, 1944), 438.8, 9000)
-    assert "DMR digital radio (decoded)" in names, (names, tried)
+    assert any(n.startswith("DMR ") and n.endswith("(decoded)") for n in names), (names, tried)
 
 
 needs_decoders = pytest.mark.skipif(not (shutil.which("multimon-ng") and shutil.which("direwolf")),

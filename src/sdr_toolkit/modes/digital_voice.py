@@ -23,6 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ..receiver import dsd
 from .base import Event, MissingParts, Setting, Tuning
 from .radio import RADIO_SETTINGS, RadioMode, fm_audio_chunks
 from .. import system
@@ -251,7 +252,17 @@ class DigitalVoiceMode(RadioMode):
                     pass
                 setattr(self, attr, None)
 
-    def _heard(self, line, now) -> list[Event]:
+    SHORT = {"voice": "Calls: the talkgroup and radio ID show when one starts.",
+             "control": "A trunked system's control channel: the calls are on other frequencies.",
+             "idle": "An idle repeater's beacon: calls come when someone talks.",
+             "data": "Data (GPS positions, messages, telemetry), not voice."}
+
+    def _opening(self, tx) -> str:
+        chan = tx["chan"]
+        k = chan.kinds.most_common(1)[0][0] if chan.kinds else ""
+        return f"{time.strftime('%H:%M:%S')}  {chan.line()}." + (f" {self.SHORT[k]}" if k in self.SHORT else "")
+
+    def _heard(self, line, now, parsed=None) -> list[Event]:
         """A frame sync line ("Sync: +DMR  [SLOT1]  slot2  | Color Code=12 | VC1")."""
         rest = line.split("Sync:", 1)[1].strip().lstrip("+-").split()
         if not rest:
@@ -262,11 +273,13 @@ class DigitalVoiceMode(RadioMode):
             events = self._ended(now) if tx is not None else []
             tx = self._tx = {"proto": proto, "start": now, "last": now, "frames": 0, "slots": collections.Counter(),
                              "cc": collections.Counter(), "kinds": collections.Counter(), "errors": 0,
-                             "shown": False, "reported": now}
+                             "shown": False, "reported": now, "chan": dsd.Channel(None)}
         else:
             events = []
         tx["last"] = now
         tx["frames"] += 1
+        if parsed is not None:
+            tx["chan"].add(parsed)
         slot = SLOT.search(line)
         if slot:
             tx["slots"][slot.group(1)] += 1
@@ -282,19 +295,12 @@ class DigitalVoiceMode(RadioMode):
         if not tx["shown"] and (cc or tx["frames"] >= HEARD_AFTER):
             tx["shown"] = True
             tx["reported"] = now
-            parts = []
-            if tx["slots"]:
-                parts.append(" and ".join(f"slot {s}" for s in sorted(tx["slots"])))
-            if tx["cc"]:
-                parts.append(f"colour code {tx['cc'].most_common(1)[0][0]}")
-            if tx["kinds"]:
-                parts.append(tx["kinds"].most_common(1)[0][0])
-            text = f"{time.strftime('%H:%M:%S')}  {proto} signal" + (f": {', '.join(parts)}" if parts else "")
-            events += [Event("line", text), Event("status", f"hearing {proto} {time.strftime('%H:%M:%S')}")]
+            events += [Event("line", self._opening(tx)),
+                       Event("status", f"hearing {tx['chan'].name()} {time.strftime('%H:%M:%S')}")]
         elif tx["shown"] and now - tx["reported"] >= PROGRESS:
             tx["reported"] = now
-            events.append(Event("line", f"{time.strftime('%H:%M:%S')}  {proto} still heard: {self._summary(tx)}",
-                                style="dim"))
+            events.append(Event("line", f"{time.strftime('%H:%M:%S')}  {tx['chan'].what()} still heard: "
+                                        f"{self._summary(tx)}", style="dim"))
         return events
 
     @staticmethod
@@ -302,8 +308,14 @@ class DigitalVoiceMode(RadioMode):
         s = f"{tx['last'] - tx['start']:.1f} s, {tx['frames']} frames"
         if tx["slots"]:
             s += " (" + ", ".join(f"slot {k}: {n}" for k, n in sorted(tx["slots"].items())) + ")"
-        if tx["kinds"]:
-            s += ", " + ", ".join(f"{n} {k}" for k, n in tx["kinds"].most_common())
+        chan = tx.get("chan")
+        if chan is not None and chan.kinds:
+            s += ", " + ", ".join(f"{n} {k}" for k, n in chan.kinds.most_common())
+            decoded = chan.contents()
+            if decoded:
+                s += f" (decoded: {decoded})"
+            elif chan.kinds["data"]:
+                s += " (the data wasn't decoded further: DSD-FME didn't recognise its format)"
         if tx["cc"]:
             s += f", colour code {tx['cc'].most_common(1)[0][0]}"
         if tx["errors"]:
@@ -314,16 +326,56 @@ class DigitalVoiceMode(RadioMode):
         tx, self._tx = self._tx, None
         if tx is None or not tx["shown"]:
             return []
-        return [Event("line", f"{time.strftime('%H:%M:%S')}  {tx['proto']} ended: {self._summary(tx)}")]
+        return [Event("line", f"{time.strftime('%H:%M:%S')}  {tx['chan'].what()} ended: {self._summary(tx)}")]
 
     def parse(self, line):
         line = ANSI.sub("", line)
         events = []
+        parsed = dsd.parse(line)
         if "Sync:" in line:
-            events = self._heard(line, time.monotonic())
-        elif self._tx is not None and ("ERR" in line or "Err" in line):
-            self._tx["errors"] += 1
+            events = self._heard(line, time.monotonic(), parsed)
+        elif self._tx is not None:
+            if "ERR" in line or "Err" in line:
+                self._tx["errors"] += 1
+            if parsed is not None:
+                self._tx["chan"].add(parsed)
+        if parsed is not None:
+            events.append(Event("dsd", data=parsed))        # for the explorer: frames, calls, control
+            if parsed["what"] == "call":
+                c = parsed
+                events.append(Event("line", f"{time.strftime('%H:%M:%S')}  "
+                                            f"{'Group' if c['group'] else 'Private'} call"
+                                            f"{' (emergency)' if c['emergency'] else ''} to {c['tgt']} from radio "
+                                            f"{c['src']}" + (f", slot {c['slot']}" if c['slot'] else "")
+                                            + (": encrypted, no audio" if c["encrypted"] else ""),
+                                    style="dim" if self._same_call(c) else ""))
+            elif parsed["what"] in ("position", "text", "data", "control"):
+                text = {"position": lambda e: f"GPS position: {e['lat']:.5f}, {e['lon']:.5f}",
+                        "text": lambda e: f"Text message: {e['text']}",
+                        "data": lambda e: f"Data: {e['name']}",
+                        "control": lambda e: f"Control: {e.get('name') or e['text']}"}[parsed["what"]](parsed)
+                repeat = parsed["what"] in ("data", "control") and self._seen_recently(text)
+                events.append(Event("line", f"{time.strftime('%H:%M:%S')}  {text}",
+                                    style="dim" if repeat or parsed["what"] in ("data", "control") else ""))
         return events + self._parse(line)
+
+    def _seen_recently(self, text, window=10.0) -> bool:
+        now = time.monotonic()
+        seen = getattr(self, "_texts_seen", {})
+        self._texts_seen = {k: t for k, t in seen.items() if now - t < window}
+        repeat = text in self._texts_seen
+        self._texts_seen[text] = now
+        return repeat
+
+    def _same_call(self, c) -> bool:
+        """DSD-FME repeats a call's line every superframe: say it once (until 5 s of quiet)."""
+        key = (c["slot"], c["tgt"], c["src"])
+        now = time.monotonic()
+        seen = getattr(self, "_calls_seen", {})
+        self._calls_seen = {k: t for k, t in seen.items() if now - t < 5}
+        repeat = key in self._calls_seen
+        self._calls_seen[key] = now
+        return repeat
 
     def _parse(self, line):
         problem = self.device_problem(line)

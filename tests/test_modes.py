@@ -581,6 +581,53 @@ def test_dmr_recording_of_noise_shows_no_calls(tmp_path):
     assert any(e.kind == "status" and "recording finished" in e.text for e in ev)
 
 
+def test_dsd_lines_explained():
+    """DSD-FME's lines (in the formats its source prints) become what a channel is, in plain words."""
+    from sdr_toolkit.receiver import dsd
+    f = dsd.parse("\x1b[32m17:34:46 Sync: +DMR  [SLOT1]  slot2  | Color Code=01 | VC3 \x1b[0m")
+    assert f == {"what": "frame", "proto": "DMR", "encrypted": False, "slot": 1, "cc": 1, "kind": "voice"}
+    c = dsd.parse(" SLOT 1 TGT=505 SRC=3125678 Group Call")
+    assert c == {"what": "call", "slot": 1, "tgt": 505, "src": 3125678, "group": True, "encrypted": False,
+                 "emergency": False, "all": False}
+    assert dsd.parse(" SLOT 2 TGT=9 SRC=12 Private Encrypted Call")["encrypted"]
+    voice = dsd.Channel(438.8e6)
+    for line in ("Sync: +DMR  [SLOT1]  slot2  | Color Code=01 | VLC", " SLOT 1 TGT=505 SRC=3125678 Group Call",
+                 "Sync: +DMR  [SLOT1]  slot2  | Color Code=01 | VC1", "Sync: +DMR  [SLOT1]  slot2  | Color Code=01 | VC2"):
+        voice.add(dsd.parse(line))
+    assert voice.what() == "DMR voice channel" and voice.code() == "colour code 1" and voice.calls == 1
+    assert "group call to 505 from radio 3125678" in voice.line() and "colour code" in voice.explain()
+    control = dsd.Channel(419.9875e6)
+    for line in ["Sync: +P25p1   NAC: 654; TSBK"] * 5 + ["  WACN [BEE00] SYSID [658] NAC [654]"]:
+        control.add(dsd.parse(line))
+    assert control.what() == "P25 phase 1 control channel" and control.code() == "NAC 654"
+    assert control.sysinfo == {"wacn": "BEE00", "sysid": "658", "nac": "654"} and "control channel" in control.explain()
+    idle = dsd.Channel(1)
+    for _ in range(3):
+        idle.add(dsd.parse("Sync: +DMR   slot1  [SLOT2] | Color Code=00 | IDLE"))
+    assert idle.what() == "DMR repeater, idle" and "0 and 1 are common defaults" in idle.explain()
+    data = dsd.Channel(2)
+    data.add(dsd.parse("Sync: +DMR  [SLOT1]  slot2  | Color Code=00 | DATA"))
+    assert data.what() == "DMR data channel"
+    cap = dsd.Channel(3)
+    cap.add(dsd.parse(" Capacity Plus Channel Status - FL: 3 TS: 1 RS: 0 - Rest LSN: 1"))
+    assert cap.system == "Motorola Capacity Plus"
+    # What data frames carried: positions, texts, data kinds, control messages; "no sync" isn't a protocol.
+    assert dsd.parse(" Lat: -27.61234 Lon: 153.10456 (-27.61234, 153.10456)") == {
+        "what": "position", "lat": -27.61234, "lon": 153.10456}
+    assert dsd.parse(" UTF8 Text: hello world") == {"what": "text", "text": "hello world"}
+    assert dsd.parse(" Data Header - LRRP;") == {"what": "data", "name": "GPS report (LRRP)"}
+    g = dsd.parse(" Talkgroup Voice Channel Grant (TV_GRANT) - LPCN: 12; TS: 1;")
+    assert g["what"] == "control" and g["name"] == "Talkgroup Voice Channel Grant (TV_GRANT)"
+    assert dsd.parse("Sync: no sync") is None
+    mix = dsd.Channel(4)
+    for line in ("Sync: +DMR  [SLOT1]  slot2  | Color Code=02 | DATA", " Lat: -27.6 Lon: 153.1 (-27.6, 153.1)",
+                 " UTF8 Text: on my way", " Talkgroup Voice Channel Grant (TV_GRANT) - LPCN: 12;"):
+        mix.add(dsd.parse(line))
+    assert mix.contents() == ("1 GPS positions, 1 text messages, "
+                              "1 control message (most: Talkgroup Voice Channel Grant (TV_GRANT))")
+    assert mix.positions[0][1:] == (-27.6, 153.1) and mix.texts[0][1] == "on my way"
+
+
 @needs_dsd
 def test_dmr_frames_show_before_any_call(tmp_path):
     # DSD-FME's call log only fills once a call has been decoded; until then the frame syncs say a
@@ -596,8 +643,8 @@ def test_dmr_frames_show_before_any_call(tmp_path):
         w.writeframes((a * 32767).astype("<i2").tobytes())
     mode, ev = run_radio("dmr", path, wait=60, voice=False)
     out = [e.text for e in ev if e.kind == "line" and e.style != "dim"]
-    heard = [t for t in out if " DMR signal: " in t]
-    ended = [t for t in out if " DMR ended: " in t]
+    heard = [t for t in out if "  DMR " in t and " ended: " not in t]
+    ended = [t for t in out if " ended: " in t]
     assert len(heard) == 1 and "slot" in heard[0] and "colour code" in heard[0], out
     assert len(ended) == 1 and "frames" in ended[0], out
 

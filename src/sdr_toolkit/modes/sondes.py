@@ -161,7 +161,16 @@ class SondeMode(RadioMode):
             events += self._tables()
         return events
 
+    def finished(self, code):
+        """The recording ended (or the engine stopped): show the last updates too."""
+        return (self._tables() if getattr(self, "_dirty", False) else []) + super().finished(code)
+
+    def stop(self):
+        events = super().stop()
+        return events + (self._tables() if getattr(self, "_dirty", False) else [])
+
     def _tables(self):
+        self._dirty = False
         now = time.time()
         ttl = float(self.values["ttl"]) * 60
         self._sondes = {k: s for k, s in self._sondes.items() if now - s["last"] < ttl}
