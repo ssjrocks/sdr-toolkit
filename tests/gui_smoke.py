@@ -489,11 +489,15 @@ _cleared = []
 sp.map.cleared.connect(lambda: _cleared.append(1))
 from PyQt6.QtCore import QPoint as _QPoint  # noqa: E402
 from PyQt6.QtTest import QTest as _QTest  # noqa: E402
+_cat0 = sp.category.currentIndex()
+sp.category.setCurrentIndex(sp.category.findData("has:FM repeaters (ham)"))   # a list narrower than all
 _QTest.mouseClick(sp.map, _Qt.MouseButton.LeftButton, pos=_QPoint(3, sp.map.height() - 3))   # away from markers
 app.processEvents()
 results["sat_map_clear"] = (bool(_cleared) and sp.selected is None and not sp.list.selectionModel().selectedRows()
                             and sp.radio_table.rowCount() == 0 and not sp.map.footprints
-                            and all(not p_.get("track") for p_ in sp.map.points))    # the ones up, no single one
+                            and {p_["id"] for p_ in sp.map.points} == {f"sat{s_.norad}" for s_ in sp.shown()}
+                            and 0 < len(sp.shown()) < len(sp.catalogue))    # the list as filtered, not all
+sp.category.setCurrentIndex(_cat0)
 sp.select(25544)
 sp.tabs.setCurrentIndex(0)
 # The list by what satellites carry: every one with an FM (ham) repeater, every one sending SSTV.

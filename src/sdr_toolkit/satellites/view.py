@@ -27,6 +27,7 @@ from ..widgets import FitLabel, SortItem, filling, jump_to, reselect, sortable, 
 from .data import CATEGORIES, FEATURES, pick, short
 
 COMING_HOURS = 12                   # the Coming over tab looks this far ahead
+MAX_ON_MAP = 300                    # satellites shown on the map with none picked
 REFRESH = 1.5                       # s between refreshes while the next passes are coming in
 KIND_NAMES = {"listen": "Listen", "decode": "Decode", "pictures": "Pictures", "telemetry": "Telemetry",
               "out": "Out of range"}
@@ -416,7 +417,7 @@ class SatellitePanel(QWidget):
         self.map.select(None)
         self.map.footprints = []
         self.map.set_points([], self.home)                 # (the ones up, if any, come next)
-        self._show_up_now()
+        self._show_listed()
         self.map.refit()
 
     def _picked_coming(self):
@@ -530,7 +531,7 @@ class SatellitePanel(QWidget):
             return
         sat = self.selected
         if sat is None or self._sat is None:
-            self._show_up_now()
+            self._show_listed()
             return
         now = time.time()
         here = self.home or (0.0, 0.0)
@@ -566,21 +567,29 @@ class SatellitePanel(QWidget):
         self.map.set_points([{"id": f"sat{sat.norad}", "kind": "satellite", "lat": lat, "lon": lon,
                               "label": sat.name, "track": self._ground["track"]}], self.home)
 
-    def _show_up_now(self):
-        """With nothing picked: every listed satellite that's up, on the map."""
-        if not self.home or not self.next_passes:
+    def _show_listed(self):
+        """With nothing picked: every satellite in the list as it's filtered now, where it is on the map
+        (the ones up over you marked "up")."""
+        from . import orbit
+        if not self.catalogue:
             return
         now = time.time()
-        up = [self.catalogue[n] for n, ps in self.next_passes.items() if n in self.catalogue
-              and any(p.start <= now <= p.end for p in ps)]
-        from . import orbit
-        pts = []
-        for s in up[:40]:
-            tr = orbit.track(orbit.satrec(s.line1, s.line2), [now], self.home)
-            if tr.ok[0]:
-                pts.append({"id": f"sat{s.norad}", "kind": "satellite", "lat": float(tr.lat[0]),
-                            "lon": float(tr.lon[0]), "label": s.name, "track": []})
+        listed = sorted(self.shown(), key=lambda s: s.name)
+        cache = self.__dict__.setdefault("_satrecs", {})
+        pts, up = [], 0
+        for s in listed[:MAX_ON_MAP]:
+            rec = cache.get(s.norad)
+            if rec is None or rec[0] != s.line1:
+                rec = cache[s.norad] = (s.line1, orbit.satrec(s.line1, s.line2))
+            tr = orbit.track(rec[1], [now], self.home or (0.0, 0.0))
+            if not tr.ok[0]:
+                continue
+            is_up = self.home is not None and float(tr.el[0]) > 0
+            up += is_up
+            pts.append({"id": f"sat{s.norad}", "kind": "satellite", "lat": float(tr.lat[0]),
+                        "lon": float(tr.lon[0]), "label": s.name + (" (up)" if is_up else ""), "track": []})
         self.map.footprints = []
         self.map.set_points(pts, self.home)
-        self.now_label.setText(f"{len(up)} of the listed satellites are up now" if up else
-                               "Pick a satellite: its passes, radios and where it is")
+        more = f" (the first {MAX_ON_MAP} on the map)" if len(listed) > MAX_ON_MAP else ""
+        text = f"{len(listed)} satellites in the list{more}" + (f", {up} up over you now" if self.home else "")
+        self.now_label.setText(text + " · click one for its passes and radios")
