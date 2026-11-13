@@ -13,10 +13,9 @@ import functools
 import re
 from contextlib import contextmanager
 
-from PyQt6.QtCore import QRect, QSize, Qt
-from PyQt6.QtWidgets import (QComboBox, QHeaderView, QLabel, QListView, QProxyStyle, QSizePolicy, QStyle,
-                             QStyledItemDelegate,
-                             QStyleOptionViewItem, QTableWidgetItem, QToolButton)
+from PyQt6.QtCore import QItemSelectionModel, QRect, QSize, Qt
+from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QHeaderView, QLabel, QListView, QProxyStyle, QSizePolicy,
+                             QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTableWidgetItem, QToolButton)
 
 NUMBER = re.compile(r"[-+]?\d+(?:\.\d+)?")
 ORDER = Qt.ItemDataRole.UserRole + 1          # a row's arrival number, on its first cell
@@ -55,12 +54,129 @@ def unsorted(table):
     table.horizontalHeader().setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
 
 
+MAX_FIT = 400                                  # px: the widest a column is made to fit its contents
+
+
+def user_columns(table, stretch_last=True):
+    """Columns the user can resize and drag into another order. They start sized to their contents
+    and widen as wider ones come (never narrower, so they don't twitch), until the user sizes one
+    by hand; from then on that one is left alone. The last fills the rest of the width."""
+    hh = table.horizontalHeader()
+    hh.setSectionsMovable(True)
+    hh.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+    hh.setStretchLastSection(stretch_last)
+    if not hasattr(table, "_by_hand"):
+        table._by_hand = set()
+        table._sizing = False
+
+        def resized(i, _old, _new, t=table):
+            if not t._sizing and t.isVisible():
+                t._by_hand.add(i)
+        hh.sectionResized.connect(resized)
+    return table
+
+
+def new_columns(table):
+    """The table is about to get new columns (another mode): call before changing them. Their
+    sizes are worked out afresh, and the old ones' layout is no longer saved (it would be
+    overwritten by the new columns' as they're set up)."""
+    table._columns_key = None
+    if hasattr(table, "_by_hand"):
+        table._by_hand.clear()
+
+
+def fit_columns(table):
+    """Widen the columns not sized by hand to what their visible cells need."""
+    hh = table.horizontalHeader()
+    if not table.rowCount() or not hasattr(table, "_by_hand"):
+        return
+    last = hh.logicalIndex(hh.count() - 1) if hh.stretchLastSection() and hh.count() else -1
+    table._sizing = True
+    try:
+        for i in range(table.columnCount()):
+            if i in table._by_hand or i == last or hh.isSectionHidden(i):
+                continue
+            want = min(max(table.sizeHintForColumn(i), hh.sectionSizeHint(i)), MAX_FIT)
+            if want > hh.sectionSize(i):
+                hh.resizeSection(i, want)
+    finally:
+        table._sizing = False
+
+
+def remember_columns(table, settings, key):
+    """Keep the user's column order, widths and sort between sessions (under key)."""
+    hh = table.horizontalHeader()
+    key = f"columns/{key}/{table.columnCount()}"        # a different set of columns starts afresh
+    state = settings.value(key)
+    table._sizing = True
+    try:
+        for i in range(table.columnCount()):          # its own order, not the last columns' (Qt keeps that)
+            if hh.visualIndex(i) != i:
+                hh.moveSection(hh.visualIndex(i), i)
+    finally:
+        table._sizing = False
+    if state is not None:
+        table._sizing = True
+        try:
+            hh.restoreState(state)
+        finally:
+            table._sizing = False
+        table._by_hand = set(range(table.columnCount()))  # as the user left them
+    save = getattr(table, "_save_columns", None)
+    if save is not None:
+        for sig in (hh.sectionMoved, hh.sectionResized, hh.sortIndicatorChanged):
+            try:
+                sig.disconnect(save)
+            except TypeError:
+                pass
+
+    def save(*_a, t=table, k=key, n=table.columnCount()):
+        if not t._sizing and getattr(t, "_columns_key", None) == k and t.columnCount() == n:
+            settings.setValue(k, t.horizontalHeader().saveState())
+    table._columns_key = key
+    table._save_columns = save
+    for sig in (hh.sectionMoved, hh.sectionResized, hh.sortIndicatorChanged):
+        sig.connect(save)
+
+
+def following(table) -> bool:
+    """Whether new rows (added at the end) should be scrolled to: only while the user is at the end
+    of a table in arrival order, as in a log. Scrolled up, or sorted by a column, it stays put."""
+    bar = table.verticalScrollBar()
+    return table.horizontalHeader().sortIndicatorSection() < 0 and bar.value() >= bar.maximum() - 2
+
+
+def reselect(table, row):
+    """Select a row again after the table was rewritten, without scrolling to it (only the user's
+    own choices move the view)."""
+    sm = table.selectionModel()
+    sm.blockSignals(True)
+    try:
+        flags = (QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows)
+        sm.select(table.model().index(row, 0), flags)
+    finally:
+        sm.blockSignals(False)
+    table.viewport().update()
+
+
+def jump_to(table, row):
+    """The user picked something elsewhere (a plane on the map): select its row and show it."""
+    sm = table.selectionModel()
+    sm.blockSignals(True)
+    try:
+        table.selectRow(row)
+    finally:
+        sm.blockSignals(False)
+    table.scrollToItem(table.item(row, 0) or table.item(row, table.columnCount() - 1),
+                       QAbstractItemView.ScrollHint.PositionAtCenter)
+
+
 @contextmanager
 def filling(table):
     """Sorting paused while cells are written (it would move rows halfway through), then re-applied.
     Columns sized to their contents are fixed meanwhile and sized once afterwards: otherwise every
     cell written re-measures its column over the rows (rows x rows: a thousand-row table took
-    seconds, long enough for "not responding")."""
+    seconds, long enough for "not responding"). The view stays where the user scrolled it."""
     on = table.isSortingEnabled()
     table.setSortingEnabled(False)
     hh = table.horizontalHeader()
@@ -68,6 +184,8 @@ def filling(table):
            if hh.sectionResizeMode(i) == QHeaderView.ResizeMode.ResizeToContents]
     for i in fit:
         hh.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+    vbar, hbar = table.verticalScrollBar(), table.horizontalScrollBar()
+    where = (vbar.value(), hbar.value())
     table.setUpdatesEnabled(False)
     try:
         yield
@@ -75,9 +193,12 @@ def filling(table):
         for i in fit:
             if i < table.columnCount():
                 hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
-        table.setUpdatesEnabled(True)
         if on:
             table.setSortingEnabled(True)
+        fit_columns(table)
+        vbar.setValue(min(where[0], vbar.maximum()))
+        hbar.setValue(min(where[1], hbar.maximum()))
+        table.setUpdatesEnabled(True)
 
 
 def drop_oldest(table):

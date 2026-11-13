@@ -7,7 +7,6 @@ from PyQt6.QtGui import QFontDatabase
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
-    QHeaderView,
     QPlainTextEdit,
     QPushButton,
     QTableWidget,
@@ -16,7 +15,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .widgets import FitLabel, SortItem, filling, sortable
+from .widgets import FitLabel, SortItem, filling, reselect, sortable, user_columns
 
 
 def ago(t, now=None) -> str:
@@ -37,10 +36,10 @@ def _table(headings, stretch):
     t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     t.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
     t.verticalHeader().setVisible(False)
-    hh = t.horizontalHeader()
-    for i in range(len(headings)):
-        hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
-    hh.setSectionResizeMode(stretch, QHeaderView.ResizeMode.Stretch)
+    user_columns(t)
+    if stretch != len(headings) - 1:                    # a wide column in the middle: start it wider
+        t.horizontalHeader().resizeSection(stretch, 260)
+        t._by_hand.add(stretch)
     return t
 
 
@@ -63,9 +62,7 @@ def _fill(table, rows):
     if keep is not None:
         for r in range(table.rowCount()):
             if table.item(r, 0).data(Qt.ItemDataRole.UserRole) == keep:
-                table.blockSignals(True)
-                table.selectRow(r)
-                table.blockSignals(False)
+                reselect(table, r)
                 break
 
 

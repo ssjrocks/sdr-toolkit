@@ -22,7 +22,6 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
-    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -48,7 +47,8 @@ from PyQt6.QtWidgets import (
 from . import APP_ID, APP_NAME, __version__, aircraftdb, appreports, coverage, deps, updater
 from .explorer_view import ExplorerPane
 from .satellites.view import SatellitePanel
-from .widgets import ORDER, BoxCombo, FitLabel, SortItem, drop_oldest, filling, sortable, unsorted
+from .widgets import (ORDER, BoxCombo, FitLabel, SortItem, drop_oldest, filling, following, jump_to, new_columns,
+                      remember_columns, reselect, sortable, unsorted, user_columns)
 from .capture import AudioCapture, list_outputs
 from .logbook import Logbook
 from .mapview import MapView
@@ -529,12 +529,14 @@ class DecodeArea(QWidget):
         hi = min(M.rate / 2, 3500 if M.rate <= 12000 else 4000)
         self.waterfall.set_range(0, hi)
         if M.output == "table":
+            new_columns(self.table)
             self.table.clear()
             self.table.setRowCount(0)
             unsorted(self.table)
             self.table.setColumnCount(len(M.columns))
             self.table.setHorizontalHeaderLabels([h for _, h in M.columns])
-            self.table.horizontalHeader().setStretchLastSection(True)
+            user_columns(self.table)
+            remember_columns(self.table, self.win.settings, f"decoder/{M.id}")
             self.stack.setCurrentWidget(self.table)
         elif M.output == "image":
             self.stack.setCurrentWidget(self.picture)
@@ -557,6 +559,7 @@ class DecodeArea(QWidget):
             self.live.setText(e.text)
         elif e.kind == "row":
             t = self.table
+            follow = following(t)
             with filling(t):
                 r = t.rowCount()
                 t.insertRow(r)
@@ -568,7 +571,8 @@ class DecodeArea(QWidget):
                     t.setItem(r, c, item)
                 if t.rowCount() > 2000:
                     drop_oldest(t)
-            t.scrollToBottom()
+            if follow:
+                t.scrollToBottom()
             return "  ".join(f"{h}: {e.data[k]}" for k, h in M.columns if str(e.data.get(k, "")) != "")
         elif e.kind == "image":
             self.picture.show_image(to_qimage(e.image), e.row, getattr(M, "aspect", None))
@@ -705,7 +709,7 @@ class MainWindow(QMainWindow):
         self.table.setFont(mono)
         self.picture = PictureView()
         self.map = MapView()
-        self.map.picked.connect(self.select_craft)
+        self.map.picked.connect(lambda key: self.select_craft(key, jump=True))
         self.table.itemSelectionChanged.connect(self._on_table_pick)
         self.table_page = QSplitter(Qt.Orientation.Vertical)
         self.table_page.addWidget(self.map)
@@ -984,15 +988,16 @@ class MainWindow(QMainWindow):
         self.picture.show_image(None)
         self._last_image = None
         if m.output == "table":
+            new_columns(self.table)
             self.table.clear()
             self.table.setRowCount(0)
             unsorted(self.table)
             self.table.setColumnCount(len(m.columns))
             self.table.setHorizontalHeaderLabels([h for _, h in m.columns])
-            hh = self.table.horizontalHeader()
-            for i in range(len(m.columns) - 1):
-                hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
-            hh.setSectionResizeMode(len(m.columns) - 1, QHeaderView.ResizeMode.Stretch)
+            user_columns(self.table)
+            for i in range(len(m.columns)):
+                self.table.horizontalHeader().resizeSection(i, 90)
+            remember_columns(self.table, self.settings, m.id)
             self.output.setCurrentWidget(self.table_page)
         elif m.output == "receiver":
             self.receiver_panel.show_values(m.values)
@@ -1790,18 +1795,13 @@ class MainWindow(QMainWindow):
             for r in range(t.rowCount()):
                 item = t.item(r, c)
                 if item is not None and self._craft_key(item.text()) == self._selected:
-                    if t.currentRow() != r:
-                        sm = t.selectionModel()
-                        sm.blockSignals(True)
-                        t.selectRow(r)
-                        sm.blockSignals(False)
-                        t.viewport().update()
+                    if not t.selectionModel().isRowSelected(r):
+                        reselect(t, r)                # where it is now, without moving the view
                     break
 
     def _add_row(self, data):
         t = self.table
-        bar = t.verticalScrollBar()
-        follow = bar.value() >= bar.maximum() - 2
+        follow = following(t)
         style = data.get("_style")
         brush = {"cq": QBrush(QColor(60, 160, 90, 70)), "highlight": QBrush(QColor(255, 200, 0, 110))}.get(style)
         with filling(t):
@@ -1876,9 +1876,18 @@ class MainWindow(QMainWindow):
         """The map / logbook id for a table key (ADS-B shows hex in capitals, readsb uses lower case)."""
         return str(key).lower() if self.mode.id == "adsb" else str(key)
 
-    def select_craft(self, key):
+    def select_craft(self, key, jump=False):
+        """A craft picked in the table, or on the map (jump: its row is selected and scrolled to)."""
         key = self._craft_key(key)
         self._selected = key
+        col = getattr(self.mode, "key_column", "")
+        c = next((i for i, (k, _) in enumerate(getattr(self.mode, "columns", ())) if k == col), None)
+        if jump and c is not None:
+            for r in range(self.table.rowCount()):
+                item = self.table.item(r, c)
+                if item is not None and self._craft_key(item.text()) == key:
+                    jump_to(self.table, r)
+                    break
         self.map.select(key if self.mode.id != "ais" else int(key) if key.isdigit() else key)
         self.side.setCurrentWidget(self.details)
         self.refresh_details()

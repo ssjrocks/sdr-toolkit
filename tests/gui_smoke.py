@@ -397,10 +397,48 @@ win._selected = "aa0001"
 win._set_rows([{"hex": "AA0001", "seen": "11 s"}, {"hex": "AA0002", "seen": "1 s"}, {"hex": "AA0003", "seen": "121 s"}])
 after = [t.item(r, 0).text() for r in range(3)]
 results["table_sorting"] = (before == ["AA0001", "AA0002", "AA0003"] and after == ["AA0002", "AA0001", "AA0003"]
-                            and t.currentRow() == 1 and t.isSortingEnabled())
+                            and t.selectionModel().isRowSelected(1) and t.isSortingEnabled())
 win._selected = None
 t.sortByColumn(-1, _Qt.SortOrder.AscendingOrder)
+# Tables stay where the user scrolled them as data comes; only a pick elsewhere (the map) moves them.
+from PyQt6.QtWidgets import QHeaderView as _QHV  # noqa: E402
+_rows = [{"hex": f"AB{i:04d}", "seen": f"{i} s"} for i in range(300)]
+win._set_rows(_rows)
+app.processEvents()
+_bar = t.verticalScrollBar()
+_bar.setValue(_bar.maximum() // 2)
+_v0 = _bar.value()
+win._selected = "ab0003"                               # selected, far above what's shown
+win._set_rows(list(reversed(_rows)) + [{"hex": "AB9999", "seen": "1 s"}])
+app.processEvents()
+_r3 = next(r for r in range(t.rowCount()) if t.item(r, 0).text() == "AB0003")
+results["table_stays"] = _v0 > 0 and _bar.value() == _v0 and t.selectionModel().isRowSelected(_r3)
+win.map.picked.emit("ab0003")                          # a click on its plane on the map
+app.processEvents()
+results["table_map_jump"] = (_bar.value() != _v0
+                             and t.visualItemRect(t.item(_r3, 0)).intersects(t.viewport().rect()))
+_hh = t.horizontalHeader()
+results["table_columns"] = _hh.sectionsMovable() and _hh.sectionResizeMode(0) == _QHV.ResizeMode.Interactive
+_seen_c = cols.index("seen")
+_hh.resizeSection(_seen_c, 41)                         # as a drag on its edge does
+win._set_rows([{"hex": "AB0001", "seen": "a much longer value than the column has room for"}])
+app.processEvents()
+results["table_columns"] = results["table_columns"] and _hh.sectionSize(_seen_c) == 41
+win._selected = None
 win._set_rows([])
+# The user's column order is kept per mode, through other modes' tables (each its own layout).
+_hh.moveSection(_hh.visualIndex(0), 2)
+_was_running = win.running
+win._stop()                                            # only the tables here: not ADS-B started again
+for _m in ("ais", "adsb"):
+    win.tree.setCurrentItem(win._items[_m])
+    app.processEvents()
+    if _m == "ais":
+        _ais = [_hh.sectionSize(i) for i in range(t.columnCount())]
+        _ais_ok = all(x >= 30 for x in _ais) and _hh.visualIndex(0) == 0
+results["table_layout_kept"] = (_ais_ok and win.mode.id == "adsb" and _hh.visualIndex(0) == 2
+                                and _hh.sectionSize(_seen_c) == 41
+                                and all(_hh.sectionSize(i) >= 30 or i == _seen_c for i in range(t.columnCount())))
 from sdr_toolkit.widgets import ORDER, SortItem, drop_oldest, filling, sortable  # noqa: E402
 from PyQt6.QtWidgets import QTableWidget  # noqa: E402
 lt = sortable(QTableWidget(0, 1))
@@ -597,6 +635,29 @@ rp = win.receiver_panel
 results["saved_decoder_runs"] = win.mode.decoder is not None and win.mode.decoder.id == "tones"
 results["receiver"] = (win.output.currentWidget() is rp and rp.view.db is not None and rp.view.center == 100.5e6
                        and "Signal" in rp.meter.text())
+# Typing a frequency isn't interrupted: nothing writes into the box until Enter (or leaving it).
+from PyQt6.QtTest import QTest as _QT  # noqa: E402
+import traceback as _tb  # noqa: E402
+_writes = []
+_orig_set = rp.freq.setValue
+rp.freq.setValue = lambda v: (_writes.append("".join(_tb.format_stack(limit=6))), _orig_set(v))
+_le = rp.freq.lineEdit()
+rp.freq.setFocus()
+_le.selectAll()
+_QT.keyClicks(_le, "10")
+for _ in range(10):
+    pump(1)
+    time.sleep(0.05)
+win._receiver_changed("freq_mhz", 101.13)            # as Doppler following retunes, every second
+for _ in range(10):
+    pump(1)
+    time.sleep(0.05)
+_typed = _le.text()
+rp.freq.setValue = _orig_set
+results["freq_typing"] = _typed.startswith("10") and not _writes
+_le.setText(f"{101.2:.6f}")
+_QT.keyClick(_le, _Qt.Key.Key_Return)
+app.processEvents()
 # A settings dropdown opens at its box's width (a wide one ran off the window onto the next monitor).
 _dm = win.form.widgets["demod"][1]
 _dm.showPopup()

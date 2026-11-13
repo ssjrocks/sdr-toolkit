@@ -18,7 +18,6 @@ from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -33,7 +32,7 @@ from PyQt6.QtWidgets import (
 
 from . import photos
 from .mapview import MapView
-from .widgets import SortItem, filling, sortable
+from .widgets import SortItem, filling, sortable, user_columns
 
 CRAFT_MODES = {"adsb": "ADS-B aircraft", "ais": "AIS ships"}
 
@@ -276,10 +275,7 @@ class LogbookWindow(QDialog):
         t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         t.verticalHeader().setVisible(False)
-        hh = t.horizontalHeader()
-        for i in range(len(headings) - 1):
-            hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(len(headings) - 1, QHeaderView.ResizeMode.Stretch)
+        user_columns(t)
         return t
 
     def show_mode(self, mode_id):
@@ -479,7 +475,7 @@ class RelayDialog(QDialog):
             t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
             t.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
             t.verticalHeader().setVisible(False)
-            t.horizontalHeader().setStretchLastSection(True)
+            user_columns(t)
             t.doubleClicked.connect(self.connect_selected)
         scan = QPushButton("Scan this network")
         scan.clicked.connect(self.scan)
@@ -533,7 +529,6 @@ class RelayDialog(QDialog):
                     if c == 0:
                         item.setData(Qt.ItemDataRole.UserRole, data[r])
                     table.setItem(r, c, item)
-        table.resizeColumnsToContents()
         if rows:
             table.selectRow(0)
 

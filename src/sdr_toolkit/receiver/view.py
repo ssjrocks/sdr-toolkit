@@ -541,6 +541,11 @@ class ReceiverPanel(QWidget):
         lay.addWidget(self.split, 1)
         self._quiet = False
         self.freq.valueChanged.connect(lambda v: self._emit("freq_mhz", round(v, 6)))
+        # While a frequency is being typed nothing writes into the box (Doppler following retunes every
+        # second, and it overwrote what was typed); it's applied on Enter or leaving the box.
+        self._typing = False
+        self.freq.lineEdit().textEdited.connect(lambda _: setattr(self, "_typing", True))
+        self.freq.editingFinished.connect(lambda: setattr(self, "_typing", False))
         self.step.currentIndexChanged.connect(self._step_changed)
         self.mode.currentIndexChanged.connect(lambda _: self._emit("demod", self.mode.currentData()))
         self.bw.valueChanged.connect(lambda v: self._emit("bandwidth", int(v)))
@@ -590,7 +595,8 @@ class ReceiverPanel(QWidget):
         """Put the settings on the toolbar without sending them back."""
         self._quiet = True
         try:
-            self.freq.setValue(float(v.get("freq_mhz", 100.0)))
+            if not self._typing:
+                self.freq.setValue(float(v.get("freq_mhz", 100.0)))
             i = self.step.findData(int(v.get("step", 100000)))
             self.step.setCurrentIndex(max(i, 0))
             self.freq.setSingleStep((self.step.currentData() or 100000) / 1e6)

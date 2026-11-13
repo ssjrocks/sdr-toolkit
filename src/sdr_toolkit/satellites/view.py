@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QMenu,
     QLineEdit,
@@ -24,7 +23,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..widgets import FitLabel, SortItem, filling, sortable, unsorted
+from ..widgets import FitLabel, SortItem, filling, reselect, sortable, unsorted, user_columns
 from .data import CATEGORIES, pick, short
 
 COMING_HOURS = 12                   # the Coming over tab looks this far ahead
@@ -61,10 +60,10 @@ def _table(headings, stretch=-1):
     t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     t.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
     t.verticalHeader().setVisible(False)
-    hh = t.horizontalHeader()
-    for i in range(len(headings)):
-        hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
-    hh.setSectionResizeMode(stretch % len(headings), QHeaderView.ResizeMode.Stretch)
+    user_columns(t)
+    if stretch % len(headings) != len(headings) - 1:   # a wide column in the middle: start it wider
+        t.horizontalHeader().resizeSection(stretch % len(headings), 260)
+        t._by_hand.add(stretch % len(headings))
     return t
 
 
@@ -303,9 +302,7 @@ class SatellitePanel(QWidget):
         if self.selected is not None:
             for r in range(self.list.rowCount()):
                 if _key(self.list, r) == self.selected.norad:
-                    self.list.blockSignals(True)
-                    self.list.selectRow(r)
-                    self.list.blockSignals(False)
+                    reselect(self.list, r)
                     break
 
     def _next(self, sat, now):
