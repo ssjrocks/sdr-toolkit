@@ -23,8 +23,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..widgets import FitLabel, SortItem, filling, reselect, sortable, unsorted, user_columns
-from .data import CATEGORIES, pick, short
+from ..widgets import FitLabel, SortItem, filling, jump_to, reselect, sortable, unsorted, user_columns
+from .data import CATEGORIES, FEATURES, pick, short
 
 COMING_HOURS = 12                   # the Coming over tab looks this far ahead
 REFRESH = 1.5                       # s between refreshes while the next passes are coming in
@@ -68,7 +68,16 @@ def _table(headings, stretch=-1):
 
 
 def _fill(table, rows, keys=None):
-    """rows: lists of cell texts; keys: something to keep on each row's first cell."""
+    """rows: lists of cell texts; keys: something to keep on each row's first cell. The table's
+    selection signals are quiet meanwhile: rows changing under the selection isn't the user picking."""
+    blocked = table.blockSignals(True)
+    try:
+        _write(table, rows, keys)
+    finally:
+        table.blockSignals(blocked)
+
+
+def _write(table, rows, keys):
     with filling(table):
         table.setRowCount(len(rows))
         for r, row in enumerate(rows):
@@ -163,7 +172,11 @@ class SatellitePanel(QWidget):
         self.category.addItem("Everything", "")
         for c in CATEGORIES:
             self.category.addItem(c, c)
+        self.category.insertSeparator(self.category.count())
+        for f in FEATURES:                              # what they carry: all with a ham repeater, all SSTV...
+            self.category.addItem(f"With {f[0].lower() + f[1:]}", f"has:{f}")
         self.category.setCurrentIndex(self.category.findData("Fun to listen to"))
+        self.category.setToolTip("Which satellites to list: a kind, or the ones carrying something (heard lately)")
         self.list = _table(["Satellite", "Next pass", "Highest", "Kind"], stretch=3)
         self.list.setToolTip("Click a satellite for its passes and radios. Click a heading to sort.")
         # The map, and what it's doing now
@@ -243,6 +256,8 @@ class SatellitePanel(QWidget):
         self.radio_table.itemSelectionChanged.connect(self._picked_radio)
         self.radio_table.doubleClicked.connect(lambda _: self._listen())
         self.listen_btn.clicked.connect(self._listen)
+        self.map.picked.connect(self._map_picked)
+        self.map.cleared.connect(self.deselect)
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self.tick)
@@ -278,7 +293,10 @@ class SatellitePanel(QWidget):
         for s in self.catalogue.values():
             if self.only_hear and not s.can_hear:
                 continue
-            if cat and cat not in s.categories:
+            if cat and cat.startswith("has:"):
+                if cat[4:] not in s.features:
+                    continue
+            elif cat and cat not in s.categories:
                 continue
             if q and q not in s.name.lower() and q not in s.names.lower() and q != str(s.norad):
                 continue
@@ -299,11 +317,15 @@ class SatellitePanel(QWidget):
                 pass_text, high = when(nxt[1].start, now), f"{nxt[1].max_el:.0f}°"
             rows.append([s.name, pass_text, high, ", ".join(c for c in s.categories if c != "Other")])
         _fill(self.list, rows, [s.norad for s in sats])
-        if self.selected is not None:
-            for r in range(self.list.rowCount()):
-                if _key(self.list, r) == self.selected.norad:
-                    reselect(self.list, r)
-                    break
+        for r in range(self.list.rowCount()):
+            if self.selected is not None and _key(self.list, r) == self.selected.norad:
+                reselect(self.list, r)
+                break
+        else:                                           # not listed now: no row stays lit for it
+            sm = self.list.selectionModel()
+            sm.blockSignals(True)
+            self.list.clearSelection()
+            sm.blockSignals(False)
 
     def _next(self, sat, now):
         for p in self.next_passes.get(sat.norad, []):
@@ -356,6 +378,46 @@ class SatellitePanel(QWidget):
             a.triggered.connect(lambda _=False, sat=sat, r=r: self.listen.emit(sat, r))
         menu.setToolTipsVisible(True)
         menu.exec(table.viewport().mapToGlobal(pos))
+
+    def _map_picked(self, key):
+        """A satellite clicked on the map: picked as if in the list (shown there, its tabs filled)."""
+        key = str(key)
+        if not key.startswith("sat") or not key[3:].isdigit():
+            return
+        n = int(key[3:])
+        if self.selected is not None and self.selected.norad == n:
+            return
+        for r in range(self.list.rowCount()):
+            if _key(self.list, r) == n:
+                jump_to(self.list, r)
+                break
+        else:
+            self.list.clearSelection()                  # not in the list as filtered: picked all the same
+        self.select(n)
+
+    def deselect(self):
+        """A click on the map away from the satellite: nothing picked, every one that's up shown."""
+        if self.selected is None:
+            return
+        self.selected, self._sat, self._passes, self._ground = None, None, [], {}
+        sm = self.list.selectionModel()
+        sm.blockSignals(True)
+        self.list.clearSelection()
+        sm.blockSignals(False)
+        for t in (self.pass_table, self.radio_table):
+            t.setRowCount(0)
+        self._shown_passes = []
+        self.sky.now = None
+        self.sky.set_pass(None, None, "")
+        self.about.setText("")
+        self.radio_note.setText("")
+        self.listen_btn.setEnabled(False)
+        self.now_label.setText("Pick a satellite: its passes, radios and where it is")
+        self.map.select(None)
+        self.map.footprints = []
+        self.map.set_points([], self.home)                 # (the ones up, if any, come next)
+        self._show_up_now()
+        self.map.refit()
 
     def _picked_coming(self):
         n = _key(self.coming, self.coming.currentRow())

@@ -105,6 +105,17 @@ def test_downlinks_sorted_into_what_you_can_do():
     assert classify("LRPT", 72000, 137.9e6)[0] == "pictures"
 
 
+def test_satellites_listed_by_what_they_carry():
+    from sdr_toolkit.satellites import data
+    cat = data.load(offline=True, folder=DATA)
+    iss = cat[25544]
+    assert {"FM repeaters (ham)", "SSTV pictures", "APRS / packet"} <= set(iss.features)
+    assert "FM repeaters (ham)" in cat[27607].features                    # SO-50
+    assert "Weather pictures" in cat[57166].features and "SSTV pictures" not in cat[57166].features
+    with_sstv = [s.name for s in cat.values() if "SSTV pictures" in s.features]
+    assert with_sstv == ["ISS"]
+
+
 def test_telemetry_downlinks_go_to_gr_satellites():
     from sdr_toolkit.modes import sat_telemetry as T
     from sdr_toolkit.satellites.data import classify
@@ -178,3 +189,27 @@ def test_satellite_mode_finds_the_next_passes():
     assert set(cat) == set(nxt)
     assert all(p.max_el >= 10 for ps in nxt.values() for p in ps)
     m.stop()
+    # Back on the page (a new SatelliteMode): the list and passes from the last visit, at once.
+    m2 = SatelliteMode()
+    m2.folder, m2.offline = DATA, True
+    t0 = time.time()
+    m2.start(dict(m2.values, lat="-27.47", lon="153.03"))
+    events = []
+    while time.time() < t0 + 5 and not any(e.kind == "sat_next" and e.data["done"] for e in events):
+        time.sleep(0.02)
+        events += m2.poll()
+    again = next(e.data["passes"] for e in events if e.kind == "sat_next" and e.data["done"])
+    assert time.time() - t0 < 1 and not getattr(m2, "_procs", None) and set(again) == set(nxt)
+    assert not any(e.kind == "status" and "Loading" in (e.text or "") for e in events)
+    m2.stop()
+    # Somewhere else: worked out again.
+    m3 = SatelliteMode()
+    m3.folder, m3.offline = DATA, True
+    m3.start(dict(m3.values, lat="51.5", lon="-0.1"))
+    end = time.time() + 30
+    events = []
+    while time.time() < end and not any(e.kind == "sat_next" and e.data["done"] for e in events):
+        time.sleep(0.1)
+        events += m3.poll()
+    assert getattr(m3, "_procs", None)
+    m3.stop()

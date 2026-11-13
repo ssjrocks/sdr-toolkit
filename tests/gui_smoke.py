@@ -475,6 +475,35 @@ results["sat_detail"] = (sp.pass_table.rowCount() > 5 and sp.radio_table.rowCoun
 sp.best.setChecked(True)
 highs = [float(sp.pass_table.item(r, 2).text().split("°")[0]) for r in range(sp.pass_table.rowCount())]
 results["sat_best_passes"] = highs == sorted(highs, reverse=True)
+# A satellite clicked on the map is picked in the list too, its tabs filled (the Radio tab stays
+# open); a click on empty map lets it go and shows every one that's up again.
+sp.tabs.setCurrentIndex(2)
+sp.map.picked.emit("sat27607")
+app.processEvents()
+_lr = sp.list.selectionModel().selectedRows()
+results["sat_map_pick"] = (sp.selected is not None and sp.selected.norad == 27607 and len(_lr) == 1
+                           and sp.list.item(_lr[0].row(), 0).data(_Qt.ItemDataRole.UserRole) == 27607
+                           and sp.radio_table.rowCount() == len(sp.selected.radios) > 0
+                           and sp.tabs.currentIndex() == 2)
+_cleared = []
+sp.map.cleared.connect(lambda: _cleared.append(1))
+from PyQt6.QtCore import QPoint as _QPoint  # noqa: E402
+from PyQt6.QtTest import QTest as _QTest  # noqa: E402
+_QTest.mouseClick(sp.map, _Qt.MouseButton.LeftButton, pos=_QPoint(3, sp.map.height() - 3))   # away from markers
+app.processEvents()
+results["sat_map_clear"] = (bool(_cleared) and sp.selected is None and not sp.list.selectionModel().selectedRows()
+                            and sp.radio_table.rowCount() == 0 and not sp.map.footprints
+                            and all(not p_.get("track") for p_ in sp.map.points))    # the ones up, no single one
+sp.select(25544)
+sp.tabs.setCurrentIndex(0)
+# The list by what satellites carry: every one with an FM (ham) repeater, every one sending SSTV.
+_cat = sp.category.currentIndex()
+sp.category.setCurrentIndex(sp.category.findData("has:FM repeaters (ham)"))
+_reps = {sp.list.item(r, 0).text() for r in range(sp.list.rowCount())}
+sp.category.setCurrentIndex(sp.category.findData("has:SSTV pictures"))
+_sstv = {sp.list.item(r, 0).text() for r in range(sp.list.rowCount())}
+results["sat_filters"] = {"ISS", "SAUDISAT 1C"} <= _reps and _sstv == {"ISS"}
+sp.category.setCurrentIndex(_cat)
 if shots:
     win.grab().save(str(shots / "satellites.png"))
     sp.tabs.setCurrentIndex(2)

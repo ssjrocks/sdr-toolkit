@@ -59,6 +59,7 @@ def from_world(x, y, zoom) -> tuple[float, float]:
 
 class MapView(QWidget):
     picked = pyqtSignal(object)          # a marker's id
+    cleared = pyqtSignal()               # a click on the map away from any marker
 
     def __init__(self, cache_dir: Path | None = None, online=True):
         super().__init__()
@@ -536,6 +537,8 @@ class MapView(QWidget):
             if key is not None:
                 self.select(key)
                 self.picked.emit(key)
+            else:
+                self.cleared.emit()
 
     def mouseDoubleClickEvent(self, ev):
         self.refit()

@@ -98,6 +98,7 @@ class Satellite:
     launched: str = ""
     website: str = ""
     image: str = ""
+    features: list = field(default_factory=list)     # what it carries that's heard: FEATURES' names
 
     @property
     def can_hear(self) -> bool:
@@ -107,6 +108,32 @@ class Satellite:
     @property
     def fun(self) -> bool:
         return any(r.alive and r.kind in ("listen", "decode") for r in self.radios)
+
+
+def _fm_repeater(r):
+    return r.kind == "listen" and r.mode in ("FM", "FMN") and bool(r.uplink)
+
+
+def _linear(r):
+    d = (r.description or "").lower()
+    return r.kind == "listen" and r.mode in ("USB", "LSB", "CW") and (r.downlink_high > r.downlink or "linear" in d
+                                                                      or "transponder" in d)
+
+
+# The list's "what it carries" filters: a satellite has one if a heard downlink (in an RTL-SDR's range) does.
+FEATURES = {
+    "FM repeaters (ham)": _fm_repeater,
+    "Linear transponders (SSB)": _linear,
+    "SSTV pictures": lambda r: r.decoder == "sstv",
+    "APRS / packet": lambda r: r.decoder == "aprs",
+    "CW beacons": lambda r: r.decoder == "morse",
+    "Telemetry you can decode": lambda r: r.decoder == "sattlm",
+    "Weather pictures": lambda r: r.kind == "pictures",
+}
+
+
+def features(sat) -> list:
+    return [name for name, has in FEATURES.items() if any(r.alive and r.kind != "out" and has(r) for r in sat.radios)]
 
 
 def classify(mode, baud, freq, description="", norad=None) -> tuple:
@@ -155,6 +182,15 @@ def _norads(tle_text: str) -> set:
             except ValueError:
                 pass
     return out
+
+
+def due(folder: Path | None = None) -> bool:
+    """Whether loading will download something (a cached file is missing or past its FRESH age)."""
+    folder = folder or cache_dir()
+    files = [(folder / f"satnogs_{n}.json", FRESH[n]) for n in ("satellites", "transmitters", "tle")]
+    files += [(folder / f"celestrak_{g}.txt", FRESH["group"]) for g in GROUPS]
+    now = time.time()
+    return any(not f.is_file() or now - f.stat().st_mtime >= age for f, age in files)
 
 
 def load(offline=False, folder: Path | None = None) -> dict[int, Satellite]:
@@ -209,6 +245,7 @@ def load(offline=False, folder: Path | None = None) -> dict[int, Satellite]:
             sat.categories.append("Fun to listen to")
         if not sat.categories:
             sat.categories.append("Other")
+        sat.features = features(sat)
     return sats
 
 

@@ -14,6 +14,10 @@ log = logging.getLogger(__name__)
 NEXT_HOURS = 24                     # the list's "next pass" looks this far ahead
 WORKERS = 3                         # processes working out the next passes (satellites/worker.py)
 REPORT_EVERY = 1.0                  # s between progress reports while they do
+KEEP_LIST = 3600                    # s the catalogue is kept between visits to the page (then re-read: the
+                                    # files are downloaded again only when they're due, satellites/data.FRESH)
+KEEP_PASSES = 3600                  # s the next passes are kept between visits, for the same place and settings
+_kept: dict = {}                    # what the last visit worked out (the page is a new SatelliteMode each time)
 
 
 class SatelliteMode(Mode):
@@ -60,13 +64,22 @@ class SatelliteMode(Mode):
 
     def _load(self):
         from ..satellites import data
-        self._events.append(Event("status", "Getting the satellite list (SatNOGS, CelesTrak)…"))
-        try:
-            cat = data.load(offline=self.offline, folder=self.folder)
-        except Exception as e:  # a bad download mustn't take the window down
-            log.exception("satellites")
-            self._events.append(Event("status", f"Couldn't get the satellite list: {e}"))
-            return
+        where = (str(self.folder), self.offline)
+        kept = _kept.get("catalogue")
+        if kept is not None and kept[0] == where and time.time() - kept[1] < KEEP_LIST:
+            cat = kept[2]                                  # read on an earlier visit
+        else:
+            downloading = not self.offline and data.due(self.folder)
+            self._events.append(Event("status", "Updating the satellite list (downloading from SatNOGS, CelesTrak)…"
+                                      if downloading else "Loading the satellite list…"))
+            try:
+                cat = data.load(offline=self.offline, folder=self.folder)
+            except Exception as e:  # a bad download mustn't take the window down
+                log.exception("satellites")
+                self._events.append(Event("status", f"Couldn't get the satellite list: {e}"))
+                return
+            _kept["catalogue"] = (where, time.time(), cat)
+            _kept.pop("passes", None)                      # new elements: passes worked out again
         self.catalogue = cat
         self._events.append(Event("sat_catalogue", data={"catalogue": cat}))
         self._events.append(Event("status", f"{len(cat)} satellites, {sum(s.can_hear for s in cat.values())} "
@@ -79,6 +92,13 @@ class SatelliteMode(Mode):
         # the window's Python busy for seconds. The ones you can listen to come first.
         from ..satellites.worker import to_passes
         now = time.time()
+        setup = (tuple(here), float(self.values.get("min_el", 10)), where)
+        kept = _kept.get("passes")
+        if kept is not None and kept[0] == setup and now - kept[1] < KEEP_PASSES:
+            found = {n: [p for p in ps if p.end > now] for n, ps in kept[2].items()}
+            self.next_passes = found
+            self._events.append(Event("sat_next", data={"passes": found, "done": True}))
+            return
         sats = sorted(cat.values(), key=lambda s: (not s.fun, not s.can_hear))
         job = {"home": list(here), "start": now - 1800, "days": NEXT_HOURS / 24 + 1 / 48,
                "min_el": float(self.values.get("min_el", 10)), "step": 60.0}
@@ -116,6 +136,7 @@ class SatelliteMode(Mode):
             proc.wait()
         if self._halt.is_set():
             return
+        _kept["passes"] = (setup, now, found)
         self.next_passes = found
         self._events.append(Event("sat_next", data={"passes": found, "done": True}))
 
