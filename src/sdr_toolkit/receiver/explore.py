@@ -108,6 +108,32 @@ class Explorer:
             s["last"] = max(s["last"], ch.last)
         return sorted(out.values(), key=lambda s: -s["last"])
 
+    # ---- networks: what keeps several systems heard at once apart --------------------------------
+
+    def channel_near(self, freq, within=50.0):
+        """The channel at freq (a call's folder names it to 10 Hz), if there is one."""
+        ch = self.channels.get(freq)
+        if ch is None:
+            near = [f for f in self.channels if abs(f - freq) <= within]
+            ch = self.channels[min(near, key=lambda f: abs(f - freq))] if near else None
+        return ch
+
+    def network_of(self, freq) -> str:
+        """The network a channel belongs to, in words: its protocol and access code (a DMR colour
+        code, a P25 NAC), or a P25 system's WACN and system ID. "" until it's known."""
+        ch = self.channel_near(freq)
+        if ch is None or not ch.proto:
+            return ""
+        if ch.sysinfo:
+            return f"{ch.name()} · WACN {ch.sysinfo['wacn']} SYSID {ch.sysinfo['sysid']}"
+        return f"{ch.name()} · {ch.code() or 'no access code yet'}"
+
+    def networks(self) -> list[str]:
+        return sorted({n for f in self.channels if (n := self.network_of(f))})
+
+    def network_freqs(self, network) -> set:
+        return {f for f in self.channels if self.network_of(f) == network}
+
     # ---- listening ----------------------------------------------------------------------------
 
     def audible(self, freq, now=None) -> bool:

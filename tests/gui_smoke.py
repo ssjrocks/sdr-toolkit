@@ -597,6 +597,9 @@ if not gui.deps.missing(["radiosonde"]):
         app.processEvents()
         win.grab().save(str(shots / "sondes.png"))
 # The DMR / P25 explorer: its lists show under the spectrum; a call fills the talkgroup and radio lists.
+_calls_dir = Path(tempfile.mkdtemp(prefix="smoke-calls-"))
+win.settings.setValue("explorer/calls_folder", str(_calls_dir))
+_calls_tab_elsewhere = win.side.isTabVisible(win.side.indexOf(win.calls_panel))
 win.tree.setCurrentItem(win._items["explorer"])
 for _ in range(10):
     time.sleep(0.05)
@@ -612,6 +615,61 @@ xp = win.explorer_pane
 results["explorer"] = (xp.isVisible() and xp.talkgroups.rowCount() >= 1 and xp.radios.rowCount() >= 1
                        and "digital voice channel" in xp.title.text() and xp.channels.rowCount() >= 1
                        and not win.decode_area.points_box.isVisible())
+# Calls: each saved call listed in the sidebar's Calls tab, by network, with its details and Play.
+import os as _os  # noqa: E402
+import wave as _wave  # noqa: E402
+from sdr_toolkit.receiver.calls import folder_for as _folder_for  # noqa: E402
+for _line in ["Sync: +P25p1   NAC: 654; TSBK"] * 4:
+    win._explorer_event(419.9875e6, _Ev("dsd", data=_dsd.parse(_line)))
+for _f, _name in ((438.8e6, "20261113_123000_05682__GROUP_TGT_505_SRC_3125678.wav"),
+                  (419.9875e6, "20261113_123500_00001__GROUP_TGT_9_SRC_42.wav")):
+    _d = _folder_for(_calls_dir, _f)
+    _d.mkdir(parents=True, exist_ok=True)
+    with _wave.open(str(_d / _name), "wb") as _w:
+        _w.setnchannels(1)
+        _w.setsampwidth(2)
+        _w.setframerate(8000)
+        _w.writeframes(b"\0\0" * 8000)
+    _os.utime(_d / _name, (time.time() - 30, time.time() - 30))
+win._calls_scanned = 0.0
+win._ex_timer.timeout.emit()
+cp = win.calls_panel
+_tab_shown = win.side.isTabVisible(win.side.indexOf(cp))
+_rows = cp.table.rowCount()
+cp.network.setCurrentIndex(cp.network.findData("DMR · colour code 1"))
+_dmr_only = cp.table.rowCount() == 1 and cp.table.item(0, 1).text() == "505"
+cp.table.selectRow(0)
+app.processEvents()
+results["calls"] = (not _calls_tab_elsewhere and _tab_shown and _rows == 2 and _dmr_only
+                    and "3125678" in cp.details.text() and cp.play_btn.isEnabled() and cp.folder_btn.isEnabled())
+cp.network.setCurrentIndex(0)
+if shots:
+    win.side.setCurrentWidget(cp)
+    app.processEvents()
+    win.grab().save(str(shots / "explorer_calls.png"))
+# "Only the selected" takes the radio the user picked, though the list re-sorts under it (another radio's
+# calls move it down), never the one now in its row.
+xp.tabs.setCurrentWidget(xp.radios)
+for _src in (42, 77, 88):                                                # more radios
+    win._explorer_event(438.8e6, _Ev("dsd", data=_dsd.parse(f" SLOT 2 TGT=505 SRC={_src} Group Call")))
+xp.radios.sortByColumn(2, _Qt.SortOrder.DescendingOrder)              # by calls, as a click on it does
+win._ex_timer.timeout.emit()
+_r = next(r for r in range(xp.radios.rowCount()) if xp.radios.item(r, 0).text() == "3125678")
+xp.radios.selectRow(_r)
+_seen_rows = set()
+for _src, _n in ((42, 10), (77, 20), (88, 30), (42, 40)):              # one after another, others overtake it
+    win.explorer.radios[_src]["calls"] = _n
+    win._ex_timer.timeout.emit()
+    _sel = xp.radios.selectionModel().selectedRows()
+    _seen_rows.add(_sel[0].row() if _sel else -1)
+_picked = []
+xp.only.connect(_picked.append)
+xp.only_btn.click()
+_sel = xp.radios.selectionModel().selectedRows()
+results["explorer_pick_stays"] = (_picked == [("radio", 3125678)] and len(_sel) == 1
+                                  and xp.radios.item(_sel[0].row(), 0).text() == "3125678"
+                                  and len(_seen_rows) > 1)                   # it did move about
+win._explorer_only(None)
 if shots:
     win.grab().save(str(shots / "explorer.png"))
 # Connect relay: by address to a relay playing a recording, then disconnect.

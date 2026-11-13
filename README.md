@@ -193,6 +193,15 @@ The lists under the spectrum fill as things are heard:
   a talkgroup and which talkgroups a radio calls, and a radio's last GPS position.
 - **Activity**: what happened, as it happened ("Group call to 505 from radio 3125678, slot 1").
 
+Several networks are often heard at once (a DMR repeater's colour code, a P25 system's WACN and system
+ID or its NAC): the **All networks** box above the lists shows one network's channels, talkgroups and
+radios at a time, and the Channels list says which network each channel is on.
+
+Every call is saved as its own WAV (in `Music/SDR Toolkit calls`, a folder per frequency; turn it off or
+move it in Settings) and listed in the **Calls** tab of the sidebar: time, talkgroup, radio, length,
+network and frequency, filtered by network or a search (a talkgroup, a radio ID, MHz). Click one for
+its details at the bottom, with **Play**, **Show in folder** and **Copy details**; double-click to play.
+
 All channels' voice plays at once by default. Select a channel, talkgroup or radio and press
 **Only the selected** to hear just that one (a talkgroup or radio is let through on whichever
 channel its call is on), or **Listen to everything** to go back; double-click a channel to single it

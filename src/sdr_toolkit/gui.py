@@ -45,10 +45,11 @@ from PyQt6.QtWidgets import (
 )
 
 from . import APP_ID, APP_NAME, __version__, aircraftdb, appreports, coverage, deps, updater
+from .calls_view import CallsPanel
 from .explorer_view import ExplorerPane
 from .satellites.view import SatellitePanel
-from .widgets import (ORDER, BoxCombo, FitLabel, SortItem, drop_oldest, filling, following, jump_to, new_columns,
-                      remember_columns, reselect, sortable, unsorted, user_columns)
+from .widgets import (ORDER, BoxCombo, FitLabel, SortItem, drop_oldest, filling, following, hovered, jump_to,
+                      new_columns, remember_columns, reselect, sortable, unsorted, user_columns)
 from .capture import AudioCapture, list_outputs
 from .logbook import Logbook
 from .mapview import MapView
@@ -776,6 +777,11 @@ class MainWindow(QMainWindow):
         self.side.addTab(self.settings_area, "Settings")
         self.details = DetailsPanel(self.photos)
         self.side.addTab(self.details, "Details")
+        self.calls_panel = CallsPanel()               # the DMR / P25 explorer's saved calls
+        self.side.addTab(self.calls_panel, "Calls")
+        self.side.setTabVisible(self.side.indexOf(self.calls_panel), False)
+        self.call_log = None
+        self._calls_scanned = 0.0
         self.side.setMinimumWidth(300)
 
         clear_btn = QPushButton("Clear")
@@ -981,6 +987,7 @@ class MainWindow(QMainWindow):
 
     def _setup_output(self):
         m = self.mode
+        self.side.setTabVisible(self.side.indexOf(self.calls_panel), bool(getattr(m, "explorer", False)))
         self.title.setText("")
         self._warned = False
         self.live.setText("")
@@ -1257,11 +1264,16 @@ class MainWindow(QMainWindow):
         return system.data_dir() / "explorer.json"
 
     def _explorer_start(self):
+        from .receiver.calls import CallLog
         from .receiver.explore import Explorer
         if self.explorer is None:
             self.explorer = Explorer.load(self._explorer_path())
             for t, f, text in self.explorer.log[-200:]:
                 self.explorer_pane.add_log(t, f, text)
+        root = self.mode.values.get("calls_folder")
+        if root and (self.call_log is None or str(self.call_log.root) != str(Path(root).expanduser())):
+            self.call_log = CallLog(root)                 # the calls saved before are listed too
+            self.calls_panel.add(self.call_log.scan(self.explorer.network_of))
         self._ex_muted = {}
         self._ex_timer.start()
         self._explorer_tick()
@@ -1315,6 +1327,11 @@ class MainWindow(QMainWindow):
                      else f"only talkgroup {only[1]}" if only[0] == "tg" else f"only radio {only[1]}")
         decoding = [st["freq"] for st in self.mode.point_states()] if self.running else []
         self.mode.known_channels = frozenset(f for f, s in ex.states.items() if s == "digital")
+        self.calls_panel.set_networks(ex.networks())
+        if self.call_log is not None and time.time() - self._calls_scanned >= 2.0:
+            self._calls_scanned = time.time()
+            self.calls_panel.add(self.call_log.scan(ex.network_of))
+        self.calls_panel.tick()
         self.explorer_pane.refresh(ex, decoding, listening)
         self._explorer_listen()
         if time.time() - self._ex_saved > 30:
@@ -1776,8 +1793,11 @@ class MainWindow(QMainWindow):
                     self.settings.setValue(self._key(self.mode, key), value)
 
     def _set_rows(self, rows):
-        """Replace the whole table (a list that updates in place, like aircraft)."""
+        """Replace the whole table (a list that updates in place, like aircraft). Not while the mouse is
+        over it: the next update after it leaves catches up (rows re-sorted under the pointer)."""
         t = self.table
+        if hovered(t):
+            return
         with filling(t):                          # re-sorted afterwards, if a column is chosen
             t.setRowCount(len(rows))
             for r, data in enumerate(rows):

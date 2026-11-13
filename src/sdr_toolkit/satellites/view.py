@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..mapview import mercator
-from ..widgets import FitLabel, SortItem, filling, jump_to, reselect, sortable, unsorted, user_columns
+from ..widgets import FitLabel, SortItem, filling, hovered, jump_to, reselect, sortable, unsorted, user_columns
 from .data import CATEGORIES, FEATURES, pick, short
 
 COMING_HOURS = 12                   # the Coming over tab looks this far ahead
@@ -288,6 +288,10 @@ class SatellitePanel(QWidget):
         refreshed at most every REFRESH s: each refresh of a thousand rows takes a moment."""
         self.next_passes = passes
         if not done and time.time() - self._refreshed < REFRESH:
+            return
+        if hovered(self.list) or hovered(self.coming):     # not under the mouse: rows would move as it clicks
+            if done:
+                QTimer.singleShot(500, lambda: self.set_next(self.next_passes, True))
             return
         self._refreshed = time.time()
         self.refresh_list()

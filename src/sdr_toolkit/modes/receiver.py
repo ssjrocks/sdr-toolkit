@@ -626,6 +626,10 @@ class ReceiverMode(Mode):
                     from .digital_voice import RECEIVER_AUDIO
                     vals["input"] = RECEIVER_AUDIO
                     vals["voice_volume"] = 0 if muted else int(self.values.get("voice_volume", 100))
+                    if self.values.get("record_calls"):      # the explorer: every call as a WAV of its own
+                        from ..receiver.calls import folder_for
+                        vals["save_calls"] = True
+                        vals["folder"] = str(folder_for(self.values["calls_folder"], freq))
                 try:
                     host = DecoderHost(M(), vals)
                 except Exception as e:  # missing parts or a bad setting: said, and not added

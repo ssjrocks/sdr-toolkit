@@ -147,16 +147,35 @@ def following(table) -> bool:
 
 
 def reselect(table, row):
-    """Select a row again after the table was rewritten, without scrolling to it (only the user's
-    own choices move the view)."""
+    """Select a row again after the table was rewritten (its item has moved), current row included,
+    without scrolling to it (only the user's own choices move the view)."""
     sm = table.selectionModel()
+    idx = table.model().index(row, 0)
+    auto = table.hasAutoScroll()
+    table.setAutoScroll(False)
     sm.blockSignals(True)
     try:
         flags = (QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows)
-        sm.select(table.model().index(row, 0), flags)
+        sm.select(idx, flags)
+        sm.setCurrentIndex(idx, QItemSelectionModel.SelectionFlag.NoUpdate)
     finally:
         sm.blockSignals(False)
+        table.setAutoScroll(auto)
     table.viewport().update()
+
+
+def hovered(table) -> bool:
+    """The mouse is over the table. A live table isn't rewritten meanwhile: its rows moving (re-sorted
+    by new data) as the user goes to click one made them pick the one that moved into its place."""
+    return table.isVisible() and (table.underMouse() or table.viewport().underMouse())
+
+
+def selected_key(table, column=0, role=Qt.ItemDataRole.UserRole):
+    """What the selected row holds (its first cell's data): the item the user picked, wherever the
+    rows have moved since (never the current row's number, which may hold another item by now)."""
+    rows = table.selectionModel().selectedRows(column)
+    item = table.item(rows[0].row(), column) if rows else None
+    return item.data(role) if item is not None else None
 
 
 def jump_to(table, row):

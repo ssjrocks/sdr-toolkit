@@ -7,6 +7,7 @@ or a radio.
 """
 
 from dataclasses import replace
+from pathlib import Path
 
 from .base import Setting, Tuning
 from .receiver import ReceiverMode
@@ -28,6 +29,11 @@ class ExplorerMode(ReceiverMode):
         Setting("discover_snr", "Find signals stronger than", 12, "int", 6, 40, 1, suffix=" dB over the noise",
                 help="Signals this far above the band's noise get a decoder to try them. Lower finds weaker ones "
                      "but tries more noise."),
+        Setting("record_calls", "Save each call", True, "bool", restart=True,
+                help="Every call DSD-FME decodes is saved as its own WAV (in a folder per frequency) and listed "
+                     "in the Calls tab, to play again. Encrypted calls' audio can't be decoded."),
+        Setting("calls_folder", "Save calls to", str(Path.home() / "Music" / "SDR Toolkit calls"), "text",
+                restart=True),
     )
     tuning = Tuning(
         sdr_mode="Raw IQ from the RTL-SDR; slide along the band (the grab bar, ◀ ▶) to where digital radios are",

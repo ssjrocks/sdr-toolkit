@@ -636,6 +636,37 @@ def test_satellite_telemetry_from_the_receivers_iq(monkeypatch, tmp_path):
         m.stop()
 
 
+def test_call_log_lists_finished_calls_with_their_network(tmp_path):
+    import os
+    import wave as _wave
+    from sdr_toolkit.receiver.calls import CallLog, folder_for
+
+    def call_file(freq, name, seconds, age):
+        d = folder_for(tmp_path, freq)
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / name
+        with _wave.open(str(f), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(8000)
+            w.writeframes(b"\0\0" * int(8000 * seconds))
+        os.utime(f, (time.time() - age, time.time() - age))
+        return f
+    done = call_file(438.8e6, "20261113_123000_05682__GROUP_TGT_505_SRC_3125678.wav", 2.5, 60)
+    call_file(438.8e6, "20261113_123100_05682__GROUP_TGT_505_SRC_42.wav", 1.0, 0.5)   # still being written
+    log = CallLog(tmp_path)
+    calls = log.scan(lambda f: "DMR · colour code 1" if abs(f - 438.8e6) < 1 else "")
+    assert len(calls) == 1
+    c = calls[0]
+    assert (c.talkgroup, c.radio, c.kind, c.network) == (505, 3125678, "group", "DMR · colour code 1")
+    assert abs(c.length - 2.5) < 0.01 and abs(c.freq - 438.8e6) < 1 and c.path == str(done)
+    assert abs(c.start - (time.time() - 60 - 2.5)) < 2
+    assert log.scan() == []                                       # listed once
+    # After a restart the call keeps the network it had when it was saved.
+    again = CallLog(tmp_path).scan(lambda f: "something else")
+    assert len(again) == 1 and again[0].network == "DMR · colour code 1"
+
+
 def test_explorer_lists_and_listening(tmp_path):
     from sdr_toolkit.receiver import dsd
     from sdr_toolkit.receiver.explore import Explorer
@@ -666,6 +697,11 @@ def test_explorer_lists_and_listening(tmp_path):
     assert back.channels[419.9875e6].what() == "P25 phase 1 control channel" and back.talkgroups[505]["radios"] == {3125678}
     assert back.radios[3125678]["position"] == (-27.6, 153.1) and len(back.log) == len(ex.log)
     assert Explorer.load(tmp_path / "missing.json").channels == {}
+    # Networks: what keeps systems heard at once apart.
+    assert ex.network_of(438.8e6) == "DMR · colour code 1"
+    assert ex.network_of(419.9875e6) == "P25 phase 1 · WACN BEE00 SYSID 658"
+    assert ex.network_of(438.80003e6) == "DMR · colour code 1"           # a call folder's 10 Hz rounding
+    assert "DMR · colour code 1" in ex.networks() and ex.network_freqs("DMR · colour code 1") == {438.8e6}
 
 
 def test_explorer_finds_signals_and_lets_go_of_non_digital(monkeypatch, tmp_path):
@@ -682,7 +718,8 @@ def test_explorer_finds_signals_and_lets_go_of_non_digital(monkeypatch, tmp_path
     monkeypatch.setattr(R, "AudioOut", FakeAudio)
     from sdr_toolkit.modes.explorer import ExplorerMode
     m = ExplorerMode()
-    m.start(dict(m.values, input="file", file=str(rec), file_rate=RATE, freq_mhz=101.1))
+    m.start(dict(m.values, input="file", file=str(rec), file_rate=RATE, freq_mhz=101.1,
+                 calls_folder=str(tmp_path / "calls")))
     try:
         centre = None
         states = {}
@@ -709,6 +746,11 @@ def test_explorer_finds_signals_and_lets_go_of_non_digital(monkeypatch, tmp_path
         assert set(states) == {dmr_f, cw_f}, states.keys()             # its side bands aren't signals
     finally:
         m.stop()
+    # Its call was saved as a WAV of its own, in the folder for its frequency.
+    from sdr_toolkit.receiver.calls import folder_for
+    saved = list(folder_for(tmp_path / "calls", dmr_f).glob("*.wav"))
+    assert saved and all(f.stat().st_size > 44 for f in saved), list((tmp_path / "calls").rglob("*"))
+    assert not list((tmp_path / "calls").glob("WAV")) and not Path("WAV").exists()
 
 
 def keyed_carrier(text, offset, wpm=20):

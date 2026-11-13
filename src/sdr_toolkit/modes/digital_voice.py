@@ -232,6 +232,9 @@ class DigitalVoiceMode(RadioMode):
 
         threading.Thread(target=run, daemon=True, name="dsd-volume").start()
 
+    def workdir(self):
+        return str(self._dir)                 # with -P it makes a ./WAV folder where it runs: not the user's
+
     def _stop_dsd(self):
         # DSD-FME ends on SIGINT (Ctrl+C) and ignores SIGTERM for seconds. Reading the receiver's
         # audio it only sees the signal once its read returns, so that connection is closed first.
