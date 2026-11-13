@@ -1273,7 +1273,7 @@ class MainWindow(QMainWindow):
         root = self.mode.values.get("calls_folder")
         if root and (self.call_log is None or str(self.call_log.root) != str(Path(root).expanduser())):
             self.call_log = CallLog(root)                 # the calls saved before are listed too
-            self.calls_panel.add(self.call_log.scan(self.explorer.network_of))
+            self.calls_panel.add(*self.call_log.scan(self.explorer.network_of))
         self._ex_muted = {}
         self._ex_timer.start()
         self._explorer_tick()
@@ -1330,7 +1330,7 @@ class MainWindow(QMainWindow):
         self.calls_panel.set_networks(ex.networks())
         if self.call_log is not None and time.time() - self._calls_scanned >= 2.0:
             self._calls_scanned = time.time()
-            self.calls_panel.add(self.call_log.scan(ex.network_of))
+            self.calls_panel.add(*self.call_log.scan(ex.network_of))
         self.calls_panel.tick()
         self.explorer_pane.refresh(ex, decoding, listening)
         self._explorer_listen()

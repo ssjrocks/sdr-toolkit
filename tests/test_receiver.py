@@ -655,16 +655,63 @@ def test_call_log_lists_finished_calls_with_their_network(tmp_path):
     done = call_file(438.8e6, "20261113_123000_05682__GROUP_TGT_505_SRC_3125678.wav", 2.5, 60)
     call_file(438.8e6, "20261113_123100_05682__GROUP_TGT_505_SRC_42.wav", 1.0, 0.5)   # still being written
     log = CallLog(tmp_path)
-    calls = log.scan(lambda f: "DMR · colour code 1" if abs(f - 438.8e6) < 1 else "")
+    calls, _ = log.scan(lambda f: "DMR · colour code 1" if abs(f - 438.8e6) < 1 else "")
     assert len(calls) == 1
     c = calls[0]
     assert (c.talkgroup, c.radio, c.kind, c.network) == (505, 3125678, "group", "DMR · colour code 1")
     assert abs(c.length - 2.5) < 0.01 and abs(c.freq - 438.8e6) < 1 and c.path == str(done)
     assert abs(c.start - (time.time() - 60 - 2.5)) < 2
-    assert log.scan() == []                                       # listed once
+    assert log.scan() == ([], [])                                 # listed once
     # After a restart the call keeps the network it had when it was saved.
-    again = CallLog(tmp_path).scan(lambda f: "something else")
+    again, _ = CallLog(tmp_path).scan(lambda f: "something else")
     assert len(again) == 1 and again[0].network == "DMR · colour code 1"
+
+
+def test_call_names_as_dsd_fme_writes_them_live():
+    from sdr_toolkit.receiver.calls import parse_name
+    assert parse_name("20261113_133614_20467_DMR_CC_1_GROUP_TGT_10140027_SRC_140205.wav") == {
+        "kind": "group", "talkgroup": 10140027, "radio": 140205, "named": "DMR · colour code 1"}
+    assert parse_name("20261113_133404_18529_DMR_CC_1__TGT_10140026_SRC_140915.wav")["talkgroup"] == 10140026
+    assert parse_name("20261113_133608_10329___TGT_3000250_SRC_42065.wav") == {
+        "kind": "", "talkgroup": 3000250, "radio": 42065, "named": ""}
+    assert parse_name("19700101_100000_05682__GROUP_TGT_0_SRC_0.wav")["kind"] == "group"
+
+
+def test_only_the_best_copy_of_a_transmission_is_kept(tmp_path):
+    """A wide-area network sends each call out on several sites: DSD-FME saves it once per channel heard.
+    The longest copy stays; pieces of one call on one channel aren't copies; unknown radios aren't matched."""
+    import os
+    import wave as _wave
+    from sdr_toolkit.receiver.calls import CallLog, folder_for
+    now = time.time()
+
+    def call_file(freq, name, seconds, end):
+        d = folder_for(tmp_path, freq)
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / name
+        with _wave.open(str(f), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(8000)
+            w.writeframes(b"\0\0" * int(8000 * seconds))
+        os.utime(f, (end, end))
+        return f
+    best = call_file(464.97510e6, "20261113_133614_46075_DMR_CC_1__TGT_10140027_SRC_140205.wav", 9.0, now - 100)
+    worse = call_file(464.78650e6, "20261113_133614_20467_DMR_CC_1_GROUP_TGT_10140027_SRC_140205.wav", 8.0, now - 99.9)
+    piece1 = call_file(465.5987e6, "20261113_133700_00001_DMR_CC_1_GROUP_TGT_1049283_SRC_1053483.wav", 3.0, now - 80)
+    piece2 = call_file(465.5987e6, "20261113_133704_00002_DMR_CC_1_GROUP_TGT_1049283_SRC_1053483.wav", 4.0, now - 75.5)
+    anon1 = call_file(464.0e6, "20261113_133800_00003___TGT_9_SRC_0.wav", 2.0, now - 60)
+    anon2 = call_file(464.1e6, "20261113_133800_00004___TGT_9_SRC_0.wav", 3.0, now - 60)
+    log = CallLog(tmp_path)
+    calls, removed = log.scan()
+    kept = {c.path for c in calls}
+    assert kept == {str(best), str(piece1), str(piece2), str(anon1), str(anon2)} and removed == []
+    assert not worse.exists() and best.exists()
+    # A better copy that finishes later replaces the one listed already.
+    later = call_file(466.0377e6, "20261113_133614_00009_DMR_CC_1_GROUP_TGT_10140027_SRC_140205.wav", 12.0, now - 98)
+    calls, removed = log.scan()
+    assert [c.path for c in calls] == [str(later)] and removed == [str(best)] and not best.exists()
+    assert set(log.calls) == {str(later), str(piece1), str(piece2), str(anon1), str(anon2)}
 
 
 def test_explorer_lists_and_listening(tmp_path):

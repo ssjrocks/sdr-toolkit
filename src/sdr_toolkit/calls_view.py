@@ -102,9 +102,16 @@ class CallsPanel(QWidget):
             if n and n not in have:
                 self.network.addItem(n, n)
 
-    def add(self, calls):
-        """New calls (receiver/calls.Call). Shown at once unless the mouse is over the table: then
-        when it leaves (the next add or tick)."""
+    def add(self, calls, removed=()):
+        """New calls (receiver/calls.Call), and ones gone (paths: a better copy of the same transmission
+        replaced them). Shown at once unless the mouse is over the table: then when it leaves."""
+        gone = set(removed)
+        if gone:
+            if self._playing in gone and self._player is not None:
+                self._player.stop()
+            self.calls = [c for c in self.calls if c.path not in gone]
+            for path in gone:
+                self._by_path.pop(path, None)
         for c in calls:
             if c.path not in self._by_path:
                 self._by_path[c.path] = c
@@ -112,7 +119,7 @@ class CallsPanel(QWidget):
                 if c.network:
                     self.set_networks([c.network])
         del self.calls[:-KEEP]
-        if calls or self._pending:
+        if calls or gone or self._pending:
             self._show()
 
     def tick(self):
