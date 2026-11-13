@@ -629,6 +629,7 @@ class MainWindow(QMainWindow):
         self._tail = np.zeros(0, np.float32)
         self._last_image = None
         self.logbook = Logbook()
+        QTimer.singleShot(0, self._log_saved_pictures)
         self.logbook.prune()
         self.photos = Photos(self)
         self._selected = None
@@ -1263,6 +1264,53 @@ class MainWindow(QMainWindow):
         from . import system
         return system.data_dir() / "explorer.json"
 
+    def _log_saved_pictures(self):
+        """Pictures SSTV and weather fax saved before the logbook kept them: listed in it too (by their
+        names, "2026-11-08_18-22-22_Robot36.png", so nothing else in the folders is taken)."""
+        import re
+        name = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})_(\w+)\.png$")
+        for M in MODES:
+            if M.id not in ("sstv", "wefax"):
+                continue
+            folder = self._values(M).get("folder")
+            try:
+                files = list(Path(folder).expanduser().glob("*.png")) if folder else []
+            except OSError:
+                continue
+            for f in files:
+                m = name.match(f.name)
+                if not m:
+                    continue
+                try:
+                    t = time.mktime(time.strptime(m.group(1), "%Y-%m-%d_%H-%M-%S"))
+                except ValueError:
+                    continue
+                self.logbook.add_file(M.id, "picture", f, f"{m.group(2)} picture",
+                                      {"source": "saved before the logbook kept pictures"}, t=t)
+        self.logbook.flush()
+
+    def _keep_picture(self, mode_id, mode_name, ev, source):
+        """A finished picture the mode saved (SSTV, weather fax: their Save settings): into the
+        logbook's Recordings & pictures, with where it was heard."""
+        path = (ev.data or {}).get("path")
+        if not path:
+            return                                        # not saved (Save off, or the picture too short)
+        h, w = ev.image.shape[:2]
+        self.logbook.add_file(mode_id, "picture", path, ev.title.split(" · saved ")[0],
+                              {"source": source, "size": f"{w} x {h}"})
+
+    def _calls_in(self, new, removed):
+        """The call log's news: into the Calls tab and the logbook (copies replaced by a better one, out)."""
+        self.calls_panel.add(new, removed)
+        for c in new:
+            who = (f"talkgroup {c.talkgroup}" if c.talkgroup is not None else "a talkgroup") + \
+                  (f" from radio {c.radio}" if c.radio else "")
+            self.logbook.add_file("explorer", "call", c.path, f"{(c.kind or 'call').capitalize()} call to {who}",
+                                  {"freq_mhz": round(c.freq / 1e6, 5), "network": c.network, "length_s":
+                                   round(c.length, 1), "talkgroup": c.talkgroup, "radio": c.radio}, t=c.start)
+        for path in removed:
+            self.logbook.remove_file(path)
+
     def _explorer_start(self):
         from .receiver.calls import CallLog
         from .receiver.explore import Explorer
@@ -1273,7 +1321,7 @@ class MainWindow(QMainWindow):
         root = self.mode.values.get("calls_folder")
         if root and (self.call_log is None or str(self.call_log.root) != str(Path(root).expanduser())):
             self.call_log = CallLog(root)                 # the calls saved before are listed too
-            self.calls_panel.add(*self.call_log.scan(self.explorer.network_of))
+            self._calls_in(*self.call_log.scan(self.explorer.network_of))
         self._ex_muted = {}
         self._ex_timer.start()
         self._explorer_tick()
@@ -1330,7 +1378,7 @@ class MainWindow(QMainWindow):
         self.calls_panel.set_networks(ex.networks())
         if self.call_log is not None and time.time() - self._calls_scanned >= 2.0:
             self._calls_scanned = time.time()
-            self.calls_panel.add(*self.call_log.scan(ex.network_of))
+            self._calls_in(*self.call_log.scan(ex.network_of))
         self.calls_panel.tick()
         self.explorer_pane.refresh(ex, decoding, listening)
         self._explorer_listen()
@@ -1738,6 +1786,9 @@ class MainWindow(QMainWindow):
                 self.title.setText(e.title)
                 self.decoded_log.add(e.title)
                 self.logbook.add(self.mode.id, e.title)
+                source = (f"from {self.mode.name}" if self._is_radio()
+                          else f"heard on {self.source_combo.currentText()}")      # a WebSDR, a radio's audio...
+                self._keep_picture(self.mode.id, self.mode.name, e, source)
             elif e.kind == "image":
                 self._last_image = e.image
                 self.picture.show_image(to_qimage(e.image), e.row, getattr(self.mode, "aspect", None))
@@ -1749,6 +1800,13 @@ class MainWindow(QMainWindow):
                 if text:
                     self.decoded_log.add(text)
                     self.logbook.add(e.data["id"], text)
+                ev = e.data["event"]
+                if ev.kind == "image" and ev.done:            # a picture decoded from the receiver's audio
+                    M = next((m for m in MODES if m.id == e.data["id"]), None)
+                    v = self.mode.values if self.mode is not None else {}
+                    self._keep_picture(e.data["id"], M.name if M else e.data["id"], ev,
+                                       f"Spectrum & receiver, {float(v.get('freq_mhz', 0)):.4f} MHz "
+                                       f"{v.get('demod', '')}".strip())
             elif e.kind == "sat_catalogue":
                 self.satellite_panel.set_catalogue(e.data["catalogue"])
             elif e.kind == "sat_next":

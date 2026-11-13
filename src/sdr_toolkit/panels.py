@@ -6,6 +6,7 @@ import html
 import json
 import time
 from datetime import datetime
+from pathlib import Path
 
 from PyQt6.QtCore import QDateTime, QObject, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QPixmap
@@ -24,6 +25,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
+    QSplitter,
     QTableWidget,
     QTabWidget,
     QVBoxLayout,
@@ -32,7 +34,7 @@ from PyQt6.QtWidgets import (
 
 from . import photos
 from .mapview import MapView
-from .widgets import SortItem, filling, sortable, user_columns
+from .widgets import SortItem, filling, reselect, selected_key, sortable, user_columns
 
 CRAFT_MODES = {"adsb": "ADS-B aircraft", "ais": "AIS ships"}
 
@@ -231,6 +233,157 @@ class DetailsPanel(QScrollArea):
 
 # ---- Logbook window ---------------------------------------------------------
 
+class FilesPage(QWidget):
+    """The logbook's Recordings & pictures: pictures decoded and calls recorded, with a preview of the
+    picked one (the picture, or Play for a call), Show in folder and Open."""
+
+    def __init__(self, mode_names):
+        super().__init__()
+        self.mode_names = mode_names
+        self.rows: list[dict] = []
+        self.table = QTableWidget(0, 5)
+        sortable(self.table)
+        self.table.setHorizontalHeaderLabels(("Time", "Mode", "What", "Description", "From"))
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.verticalHeader().setVisible(False)
+        user_columns(self.table)
+        self.preview = QLabel("Pick one to see it, or to play a call.")
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setMinimumHeight(160)
+        self.preview.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.details = QLabel("")
+        self.details.setWordWrap(True)
+        self.details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.play_btn = QPushButton("Play")
+        self.folder_btn = QPushButton("Show in folder")
+        self.open_btn = QPushButton("Open")
+        for b in (self.play_btn, self.folder_btn, self.open_btn):
+            b.setEnabled(False)
+        btns = QHBoxLayout()
+        for b in (self.play_btn, self.folder_btn, self.open_btn):
+            btns.addWidget(b)
+        btns.addStretch(1)
+        side = QVBoxLayout()
+        side.addWidget(self.preview, 1)
+        side.addWidget(self.details)
+        side.addLayout(btns)
+        right = QWidget()
+        right.setLayout(side)
+        split = QSplitter(Qt.Orientation.Horizontal)
+        split.addWidget(self.table)
+        split.addWidget(right)
+        split.setSizes([560, 340])
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(split)
+        self.table.itemSelectionChanged.connect(self._picked)
+        self.table.doubleClicked.connect(lambda _: self._activate())
+        self.play_btn.clicked.connect(self.play)
+        self.folder_btn.clicked.connect(lambda: self._open(folder=True))
+        self.open_btn.clicked.connect(lambda: self._open(folder=False))
+        self._player = None
+        self._playing = None
+
+    def show_rows(self, rows):
+        """rows: Logbook.files()."""
+        keep = selected_key(self.table)
+        self.rows = rows
+        by_path = {r["path"]: r for r in rows}
+        self._by_path = by_path
+        blocked = self.table.blockSignals(True)
+        try:
+            with filling(self.table):
+                self.table.setRowCount(len(rows))
+                for i, r in enumerate(rows):
+                    gone = "" if Path(r["path"]).exists() else " (file gone)"
+                    what = {"call": "Call", "picture": "Picture"}.get(r["kind"], r["kind"])
+                    info = r["info"]
+                    src = info.get("source") or (f"{info['freq_mhz']:.5f} MHz" if info.get("freq_mhz") else "")
+                    if info.get("network"):
+                        src += f" · {info['network']}"
+                    cells = (when(r["t"]), self.mode_names.get(r["mode"], r["mode"]), what + gone, r["title"], src)
+                    for c, text in enumerate(cells):
+                        item = SortItem(str(text))
+                        if c == 0:
+                            item.setData(Qt.ItemDataRole.UserRole, r["path"])
+                        self.table.setItem(i, c, item)
+        finally:
+            self.table.blockSignals(blocked)
+        if keep in by_path:
+            for i in range(self.table.rowCount()):
+                if self.table.item(i, 0).data(Qt.ItemDataRole.UserRole) == keep:
+                    reselect(self.table, i)
+                    break
+
+    def selected(self):
+        path = selected_key(self.table)
+        return getattr(self, "_by_path", {}).get(path) if path else None
+
+    def _picked(self):
+        r = self.selected()
+        there = r is not None and Path(r["path"]).exists()
+        self.folder_btn.setEnabled(there)
+        self.open_btn.setEnabled(there)
+        self.play_btn.setEnabled(there and r["kind"] == "call")
+        if r is None:
+            self.preview.setPixmap(QPixmap())
+            self.preview.setText("Pick one to see it, or to play a call.")
+            self.details.setText("")
+            return
+        lines = [f"{when(r['t'])} · {self.mode_names.get(r['mode'], r['mode'])}", r["title"]]
+        lines += [f"{k.replace('_', ' ')}: {v}" for k, v in r["info"].items() if v not in (None, "")]
+        lines.append(r["path"] + ("" if there else " (not there any more)"))
+        self.details.setText("\n".join(lines))
+        if r["kind"] == "picture" and there:
+            pix = QPixmap(r["path"])
+            self.preview.setText("")
+            self.preview.setPixmap(pix.scaled(self.preview.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                                              Qt.TransformationMode.SmoothTransformation))
+        else:
+            self.preview.setPixmap(QPixmap())
+            self.preview.setText("A recorded call: Play to hear it" if r["kind"] == "call" else "")
+        self.play_btn.setText("Stop" if self._playing == r["path"] else "Play")
+
+    def _activate(self):
+        r = self.selected()
+        if r is not None and r["kind"] == "call":
+            self.play()
+        else:
+            self._open(folder=False)
+
+    def play(self):
+        r = self.selected()
+        if r is None or r["kind"] != "call":
+            return
+        if self._player is None:
+            from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
+            self._player = QMediaPlayer(self)
+            self._audio = QAudioOutput(self)
+            self._player.setAudioOutput(self._audio)
+            self._player.playbackStateChanged.connect(self._state)
+        if self._playing == r["path"] and self._player.playbackState() == self._player.PlaybackState.PlayingState:
+            self._player.stop()
+            return
+        self._playing = r["path"]
+        self._player.setSource(QUrl.fromLocalFile(r["path"]))
+        self._player.play()
+        self.play_btn.setText("Stop")
+
+    def _state(self, state):
+        if state == self._player.PlaybackState.StoppedState:
+            self._playing = None
+            self.play_btn.setText("Play")
+
+    def _open(self, folder):
+        from PyQt6.QtGui import QDesktopServices
+        r = self.selected()
+        if r is not None:
+            path = Path(r["path"])
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent if folder else path)))
+
+
 class LogbookWindow(QDialog):
     def __init__(self, win, logbook, mode_names: dict):
         super().__init__(win)
@@ -254,6 +407,8 @@ class LogbookWindow(QDialog):
         self.received = self._table(("Time", "Mode", "Received"))
         self.spotted = self._table(("Mode", "ID", "Name", "Details", "First seen", "Last seen", "Times seen"))
         self.tabs.addTab(self.received, "Received")
+        self.files = FilesPage(mode_names)
+        self.tabs.addTab(self.files, "Recordings && pictures")
         self.tabs.addTab(self.spotted, "Aircraft and ships")
         self.note = QLabel()
         btns = QHBoxLayout()
@@ -281,7 +436,7 @@ class LogbookWindow(QDialog):
     def show_mode(self, mode_id):
         i = self.mode.findData(mode_id)
         self.mode.setCurrentIndex(max(i, 0))
-        self.tabs.setCurrentIndex(1 if mode_id in CRAFT_MODES else 0)
+        self.tabs.setCurrentWidget(self.spotted if mode_id in CRAFT_MODES else self.received)
         self.refresh()
 
     def refresh(self):
@@ -294,8 +449,10 @@ class LogbookWindow(QDialog):
                                    ", ".join(f"{v}" for k, v in c["info"].items()
                                              if k in ("r", "t", "desc", "type", "callsign", "destination", "ownOp")),
                                    when(c["first"]), when(c["last"]), c["sightings"]) for c in craft])
+        self.files.show_rows(self.logbook.files(mode or None, search))
         n = self.logbook.counts(mode or None)
-        self.note.setText(f"{n['entries']} received, {n['craft']} aircraft/ships, {n['positions']} positions")
+        self.note.setText(f"{n['entries']} received, {n['files']} recordings and pictures, {n['craft']} "
+                          f"aircraft/ships, {n['positions']} positions")
 
     def _fill(self, table, rows):
         with filling(table):
@@ -306,6 +463,7 @@ class LogbookWindow(QDialog):
 
     def export(self):
         table = self.tabs.currentWidget()
+        table = table.table if isinstance(table, FilesPage) else table
         path, _ = QFileDialog.getSaveFileName(self, "Export", "logbook.csv", "CSV (*.csv)")
         if not path:
             return

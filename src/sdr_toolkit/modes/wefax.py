@@ -89,10 +89,12 @@ class WefaxMode(Mode):
         n = len(self.dec.rows)
         title = f"WEFAX {self.values['lpm']} LPM · started {time.strftime('%H:%M:%S', time.localtime(self._started))}"
         title += f" · {n} lines"
+        path = None
         if done:
             path = self._save()
             title += f" · saved {path.name}" if path else ""
-        return Event("image", image=self.dec.picture(), title=title, done=done, row=None if done else n)
+        return Event("image", image=self.dec.picture(), title=title, done=done, row=None if done else n,
+                     data={"path": str(path)} if path else {})        # for the logbook's pictures
 
     def _save(self):
         if len(self.dec.rows) < 20:

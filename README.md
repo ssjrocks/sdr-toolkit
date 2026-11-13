@@ -19,7 +19,11 @@ DSD-FME output). Both keep the last 5,000 lines while closed, and can be paused,
 and every aircraft and ship seen (first and last seen, how many times, its details). Search it,
 filter by mode, export to CSV, or clear it. ADS-B and AIS positions are kept too (one per craft
 every 10 s or 300 m, for 30 days), for **Replay**: pick a time range and play the traffic back on
-a map at up to 1000× speed.
+a map at up to 1000× speed. **Recordings & pictures** lists the files received: every SSTV and
+weather fax picture saved (from the radio or heard through the speakers, a WebSDR say, and the ones
+saved before the logbook kept them) and every DMR / P25 call recorded, with where each came from.
+Pick one for a preview (or **Play** for a call), **Show in folder** or **Open**. Clearing the
+logbook takes them off the list; the files stay.
 
 ## Modes (phase 1: speaker audio)
 

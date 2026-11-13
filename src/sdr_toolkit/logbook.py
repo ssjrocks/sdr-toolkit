@@ -1,4 +1,5 @@
-"""The logbook: everything decoded, the aircraft and ships seen, and their positions over time.
+"""The logbook: everything decoded, the aircraft and ships seen, their positions over time, and
+the files received (pictures decoded, calls recorded).
 
 One SQLite file (``~/.local/share/sdr-toolkit/logbook.sqlite``). Positions are kept
 one per craft every 10 s or 300 m, which is enough to replay the traffic and small
@@ -46,6 +47,9 @@ class Logbook:
             CREATE TABLE IF NOT EXISTS coverage (mode TEXT, site TEXT, data TEXT, PRIMARY KEY (mode, site));
             CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY, freq REAL, label TEXT, demod TEXT,
                                              bandwidth INTEGER, decoder TEXT, note TEXT, created REAL);
+            CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, t REAL, mode TEXT, kind TEXT, title TEXT,
+                                              info TEXT);
+            CREATE INDEX IF NOT EXISTS files_t ON files (mode, t);
         """)
         self._last_pos: dict[tuple, tuple] = {}         # (mode, key) -> (t, lat, lon) last stored
         self._craft_seen: dict[tuple, float] = {}        # (mode, key) -> last craft-row update
@@ -55,6 +59,16 @@ class Logbook:
 
     def add(self, mode: str, text: str, t: float | None = None):
         self.db.execute("INSERT INTO entries VALUES (?, ?, ?)", (t or time.time(), mode, text))
+        self._dirty = True
+
+    def add_file(self, mode: str, kind: str, path, title: str, info: dict | None = None, t: float | None = None):
+        """A file received: kind "picture" (decoded) or "call" (recorded). Listed once per path."""
+        self.db.execute("INSERT OR IGNORE INTO files VALUES (?, ?, ?, ?, ?, ?)",
+                        (str(path), t or time.time(), mode, kind, title, json.dumps(info or {})))
+        self._dirty = True
+
+    def remove_file(self, path):
+        self.db.execute("DELETE FROM files WHERE path=?", (str(path),))
         self._dirty = True
 
     def see(self, mode: str, key: str, name="", info: dict | None = None, lat=None, lon=None, alt=None,
@@ -97,7 +111,7 @@ class Logbook:
         self.db.commit()
 
     def clear(self, mode: str | None = None):
-        for table in ("entries", "craft", "positions", "coverage"):
+        for table in ("entries", "craft", "positions", "coverage", "files"):     # (the files themselves stay)
             if mode:
                 self.db.execute(f"DELETE FROM {table} WHERE mode=?", (mode,))
             else:
@@ -118,6 +132,22 @@ class Logbook:
             q += " AND text LIKE ?"
             args.append(f"%{search}%")
         return self.db.execute(q + " ORDER BY t DESC LIMIT ?", args + [limit]).fetchall()
+
+    def files(self, mode=None, search="", kind=None, limit=20000) -> list[dict]:
+        """The files received, newest first: {path, t, mode, kind, title, info}."""
+        q, args = "SELECT path, t, mode, kind, title, info FROM files WHERE 1", []
+        if mode:
+            q += " AND mode=?"
+            args.append(mode)
+        if kind:
+            q += " AND kind=?"
+            args.append(kind)
+        if search:
+            q += " AND (title LIKE ? OR info LIKE ? OR path LIKE ?)"
+            args += [f"%{search}%"] * 3
+        rows = self.db.execute(q + " ORDER BY t DESC LIMIT ?", args + [limit]).fetchall()
+        return [{"path": p, "t": t, "mode": m, "kind": k, "title": ti, "info": json.loads(i or "{}")}
+                for p, t, m, k, ti, i in rows]
 
     def craft(self, mode=None, search="", limit=5000) -> list[dict]:
         q, args = "SELECT mode, key, name, first, last, sightings, info FROM craft WHERE 1", []
@@ -151,7 +181,7 @@ class Logbook:
     def counts(self, mode=None) -> dict:
         where, args = (" WHERE mode=?", (mode,)) if mode else ("", ())
         return {table: self.db.execute(f"SELECT COUNT(*) FROM {table}{where}", args).fetchone()[0]
-                for table in ("entries", "craft", "positions")}
+                for table in ("entries", "craft", "positions", "files")}
 
     # ---- coverage (see coverage.py) -------------------------------------
 

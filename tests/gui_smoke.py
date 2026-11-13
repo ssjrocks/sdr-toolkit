@@ -91,6 +91,14 @@ if DONGLE:
         if getattr(M, "source", "audio") == "radio":
             pre.setValue(f"{M.id}/input", "file")
     pre.sync()
+# Pictures go to folders of the test's own, and none from ~/Pictures are taken into its logbook.
+pre = QSettings(ini, QSettings.Format.IniFormat)
+for _mid in ("sstv", "wefax"):
+    pre.setValue(f"{_mid}/folder", tempfile.mkdtemp(prefix=f"smoke-{_mid}-"))
+pre.sync()
+_old_pic = Path(pre.value("sstv/folder")) / "2026-11-08_18-22-22_Robot36.png"
+_old_pic.write_bytes(b"")                                   # a picture saved before the logbook kept them
+(Path(pre.value("sstv/folder")) / "holiday.png").write_bytes(b"")   # and something else: left alone
 shots = Path(sys.argv[1]) if len(sys.argv) > 1 else None
 
 app = QApplication([])
@@ -183,6 +191,12 @@ cells = [win.table.item(r, 5).text() for r in range(win.table.rowCount()) if win
 results["pager"] = "HELLO PAGER" in cells
 if shots:
     win.grab().save(str(shots / "pager_decoded.png"))
+# Pictures saved before: listed in the logbook (by their name), other files in the folder not.
+app.processEvents()
+_before = win.logbook.files(kind="picture")
+results["old_pictures"] = (len(_before) == 1 and _before[0]["path"] == str(_old_pic)
+                           and time.localtime(_before[0]["t"])[:6] == (2026, 11, 8, 18, 22, 22))
+win.logbook.remove_file(_old_pic)
 # SSTV: picture output.
 folder = tempfile.mkdtemp()
 win.settings.setValue("sstv/folder", folder)
@@ -191,6 +205,11 @@ SIGNALS[12000] = np.concatenate([np.zeros(6000, np.float32), encode(color_bars(3
 win.tree.setCurrentItem(win._items["sstv"])
 pump(420)
 results["sstv"] = "complete" in win.title.text() and len(list(Path(folder).glob("*.png"))) == 1
+# ...kept in the logbook's Recordings & pictures, with where it was heard.
+win.logbook.flush()
+_pics = win.logbook.files(kind="picture")
+results["sstv_logbook"] = (len(_pics) == 1 and _pics[0]["path"] == str(next(Path(folder).glob("*.png")))
+                           and _pics[0]["info"]["source"].startswith("heard on ") and "saved" not in _pics[0]["title"])
 if shots:
     win.grab().save(str(shots / "sstv_decoded.png"))
 # Click-to-tune on the waterfall changes the PSK frequency in the form.
@@ -643,6 +662,38 @@ app.processEvents()
 results["calls"] = (not _calls_tab_elsewhere and _tab_shown and _rows == 2 and _dmr_only
                     and "3125678" in cp.details.text() and cp.play_btn.isEnabled() and cp.folder_btn.isEnabled())
 cp.network.setCurrentIndex(0)
+# The calls are in the logbook too, beside the pictures, each with a preview or Play.
+from PyQt6.QtGui import QImage as _QImage  # noqa: E402
+_png = _calls_dir / "picture.png"
+_img = _QImage(64, 48, _QImage.Format.Format_RGB888)
+_img.fill(0x3366CC)
+_img.save(str(_png))
+win.logbook.add_file("sstv", "picture", _png, "Robot 36 complete", {"source": "heard on a WebSDR"})
+win.logbook.flush()
+_lcalls = win.logbook.files(kind="call")
+win.show_logbook()
+app.processEvents()
+lw = win._logbook_window
+lw.mode.setCurrentIndex(0)
+lw.refresh()
+lw.tabs.setCurrentWidget(lw.files)
+_ft = lw.files.table
+_kinds = sorted(_ft.item(r, 2).text() for r in range(_ft.rowCount()))
+_pic_row = next(r for r in range(_ft.rowCount()) if _ft.item(r, 2).text() == "Picture")
+_ft.selectRow(_pic_row)
+app.processEvents()
+_preview = not lw.files.preview.pixmap().isNull() and lw.files.open_btn.isEnabled() and not lw.files.play_btn.isEnabled()
+_call_row = next(r for r in range(_ft.rowCount()) if _ft.item(r, 2).text() == "Call")
+_ft.selectRow(_call_row)
+app.processEvents()
+results["logbook_files"] = (len(_lcalls) == 2 and "Group call to talkgroup" in _lcalls[0]["title"]
+                            and _kinds == ["Call", "Call", "Picture"] and _preview and lw.files.play_btn.isEnabled()
+                            and "talkgroup" in lw.files.details.text())
+if shots:
+    lw.files.table.selectRow(_pic_row)
+    app.processEvents()
+    lw.grab().save(str(shots / "logbook_files.png"))
+lw.close()
 if shots:
     win.side.setCurrentWidget(cp)
     app.processEvents()

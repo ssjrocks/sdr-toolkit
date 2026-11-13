@@ -1018,6 +1018,24 @@ from sdr_toolkit import coverage  # noqa: E402
 from sdr_toolkit.logbook import Logbook  # noqa: E402
 
 
+def test_logbook_keeps_the_files_received(tmp_path):
+    from sdr_toolkit.logbook import Logbook
+    lb = Logbook(tmp_path / "lb.sqlite")
+    lb.add_file("sstv", "picture", tmp_path / "a.png", "Robot 36 complete", {"source": "heard on a WebSDR"}, t=100)
+    lb.add_file("sstv", "picture", tmp_path / "a.png", "again", t=200)          # listed once
+    lb.add_file("explorer", "call", tmp_path / "c.wav", "Group call to talkgroup 505 from radio 42",
+                {"network": "DMR · colour code 1", "talkgroup": 505}, t=150)
+    files = lb.files()
+    assert [f["path"] for f in files] == [str(tmp_path / "c.wav"), str(tmp_path / "a.png")]   # newest first
+    assert files[1]["title"] == "Robot 36 complete" and files[1]["info"]["source"] == "heard on a WebSDR"
+    assert [f["kind"] for f in lb.files(kind="call")] == ["call"] and len(lb.files(mode="sstv")) == 1
+    assert len(lb.files(search="colour code")) == 1 and lb.counts()["files"] == 2
+    lb.remove_file(tmp_path / "c.wav")
+    assert lb.counts()["files"] == 1
+    lb.clear()
+    assert lb.files() == []
+
+
 def test_logbook_entries_craft_and_positions(tmp_path):
     lb = Logbook(tmp_path / "log.sqlite")
     lb.add("ft8", "CQ VK2ABC QF56", t=1000)

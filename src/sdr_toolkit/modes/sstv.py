@@ -77,12 +77,14 @@ class SSTVMode(Mode):
         if not img.vis:
             bits.append("no VIS (joined part way through)")
         title = " · ".join(bits)
+        saved = None
         if kind == "done":
             saved = self._save(img)
             if saved:
                 title += f" · saved {saved.name}"
         return Event("image", image=img.pixels, title=title, done=kind == "done",
-                     row=None if kind == "done" else img.rows_done)
+                     row=None if kind == "done" else img.rows_done,
+                     data={"path": str(saved)} if saved else {})      # for the logbook's pictures
 
     def _save(self, img):
         if not self.values["save"] or img.rows_done < self.values["min_rows"] / 100 * img.mode.height:
