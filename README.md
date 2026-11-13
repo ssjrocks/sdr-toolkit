@@ -343,10 +343,11 @@ decode APRS, SSTV, Morse or telemetry) or what it needs instead (SatDump for wea
 for **Listen for its beacon** (a CW beacon, decoded as Morse, or another beacon), **Listen for its
 telemetry** or **Listen to its repeater / transponder output** (an FM repeater, or the middle of a
 linear transponder's passband in SSB). Each one names the downlink it will use, or says the satellite
-has none. With none picked, the map shows every satellite in the list (as filtered, e.g. **With FM
-repeaters (ham)** or **With SSTV pictures**), each with its ground track 12 hours back (faint) and 12
-hours ahead (dashed) and a dot for each hour ahead; click one to pick it, or empty map to go back to
-the list. **Coming over** lists every pass in the next 12 hours. Set your location in Settings
+has none. With none picked, the map shows where every satellite in the list is (as filtered, e.g.
+**With FM repeaters (ham)** or **With SSTV pictures**); click one to pick it. A picked satellite shows
+its ground track 12 hours back (faint) and 12 hours ahead (dashed), with a numbered dot for each hour
+ahead. Click empty map to let it go: the list's satellites come back and the view stays where it is
+(**Fit** sizes it to them again). **Coming over** lists every pass in the next 12 hours. Set your location in Settings
 first; it's shared with the RTL-SDR modes.
 
 **Satellite telemetry** is decoded by [gr-satellites](https://github.com/daniestevez/gr-satellites)

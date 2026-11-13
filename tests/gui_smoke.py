@@ -472,6 +472,7 @@ pt = win.satellite_panel.map.points
 results["sat_detail"] = (sp.pass_table.rowCount() > 5 and sp.radio_table.rowCount() > 20 and sp.sky.path is not None
                          and pt and pt[0]["kind"] == "satellite" and len(pt[0]["past_xy"]) > 700
                          and len(pt[0]["ahead_xy"]) > 700 and len(pt[0]["ticks_xy"]) == 12
+                         and pt[0].get("hour_labels")
                          and sp.map.footprints and "ISS" in sp.now_label.text())
 sp.best.setChecked(True)
 highs = [float(sp.pass_table.item(r, 2).text().split("°")[0]) for r in range(sp.pass_table.rowCount())]
@@ -492,27 +493,26 @@ from PyQt6.QtCore import QPoint as _QPoint  # noqa: E402
 from PyQt6.QtTest import QTest as _QTest  # noqa: E402
 _cat0 = sp.category.currentIndex()
 sp.category.setCurrentIndex(sp.category.findData("has:FM repeaters (ham)"))   # a list narrower than all
+_view0 = (sp.map.zoom, sp.map.center)
 _QTest.mouseClick(sp.map, _Qt.MouseButton.LeftButton, pos=_QPoint(3, sp.map.height() - 3))   # away from markers
 app.processEvents()
 results["sat_map_clear"] = (bool(_cleared) and sp.selected is None and not sp.list.selectionModel().selectedRows()
                             and sp.radio_table.rowCount() == 0 and not sp.map.footprints
                             and {p_["id"] for p_ in sp.map.points} == {f"sat{s_.norad}" for s_ in sp.shown()}
-                            and 0 < len(sp.shown()) < len(sp.catalogue))    # the list as filtered, not all
-# Each one in the list gets its ±12 h ground track (worked out in the background) and hourly dots.
-for _ in range(50):
+                            and 0 < len(sp.shown()) < len(sp.catalogue)     # the list as filtered, not all
+                            and (sp.map.zoom, sp.map.center) == _view0)       # and the view left where it was
+# The list's satellites are shown without tracks (only a picked one has its ±12 h track and hour dots).
+for _ in range(5):
     sp.tick()
     app.processEvents()
-    if sp.map.points and all("ahead_xy" in p_ for p_ in sp.map.points):
-        break
-    time.sleep(0.1)
 sp.map.refit()
 app.processEvents()
 _in_view = all(0 <= sp.map._screen(p_["lat"], p_["lon"]).x() <= sp.map.width()
                and 0 <= sp.map._screen(p_["lat"], p_["lon"]).y() <= sp.map.height() for p_ in sp.map.points)
-results["sat_list_tracks"] = _in_view and (len(sp.map.points) >= 2 and all(
-    len(p_.get("past_xy", ())) > 700 and 700 < len(p_.get("ahead_xy", ())) <= 721 and len(p_.get("ticks_xy", ())) == 12
-    and p_.get("hour_labels") for p_ in sp.map.points)) and sp.category.itemText(
-        sp.category.findData("has:FM repeaters (ham)")) == "With FM repeaters (ham)"
+results["sat_list_tracks"] = (_in_view and len(sp.map.points) >= 2
+                              and not any("ahead_xy" in p_ or p_.get("track") for p_ in sp.map.points)
+                              and sp.category.itemText(sp.category.findData("has:FM repeaters (ham)"))
+                              == "With FM repeaters (ham)")
 if shots:
     sp.map.refit()
     app.processEvents()
