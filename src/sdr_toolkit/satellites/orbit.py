@@ -105,6 +105,18 @@ def track(sat, times, home):
     return Track(t, lat, lon, alt, az, el, rng, rate, ok, rf)
 
 
+def ground(sat, times):
+    """Just the ground track: (lat, lon, ok) arrays at unix `times` (no observer: quicker than track)."""
+    t = np.atleast_1d(np.asarray(times, float))
+    jd, fr = _jd(t)
+    err, r, _v = sat.sgp4_array(jd, fr)
+    th = gmst(t)
+    c, s = np.cos(th), np.sin(th)
+    rf = np.stack([c * r[:, 0] + s * r[:, 1], -s * r[:, 0] + c * r[:, 1], r[:, 2]], axis=1)
+    lat, lon, _alt = ecef_to_geodetic(rf)
+    return lat, lon, err == 0
+
+
 def doppler(freq_hz, rate_km_s):
     """The frequency heard from a transmitter on freq_hz moving away at rate_km_s."""
     return freq_hz * (1 - rate_km_s / C_KM_S)

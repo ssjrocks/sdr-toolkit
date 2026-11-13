@@ -501,6 +501,14 @@ class ReceiverPanel(QWidget):
                                    "(the audio pauses). Zoom in to sweep less, faster.")
         self.survey_btn.toggled.connect(self._survey_toggled)
         row2.addWidget(self.survey_btn)
+        self.lock_btn = QToolButton()
+        self.lock_btn.setText("Lock")
+        self.lock_btn.setCheckable(True)
+        self.lock_btn.setChecked(True)
+        self.lock_btn.setToolTip("Lock decode points onto their signal: DMR / P25 points follow a signal that's a "
+                                 "little off their frequency (up to 4 kHz). Off: each stays where it was put.")
+        self.lock_btn.toggled.connect(lambda on: self._emit("afc", bool(on)))
+        row2.addWidget(self.lock_btn)
         self.dwell_label = QLabel()
         self.dwell_label.setMinimumWidth(95)
         self.dwell = QSlider(Qt.Orientation.Horizontal)
@@ -615,6 +623,7 @@ class ReceiverPanel(QWidget):
             self.dwell.setValue(int(v.get("dwell_ms", 0)) // 10)
             self._show_dwell(self.dwell.value() * 10)
             self.decoder.setCurrentIndex(max(self.decoder.findData(v.get("decoder", "")), 0))
+            self.lock_btn.setChecked(bool(v.get("afc", True)))
         finally:
             self._quiet = False
 

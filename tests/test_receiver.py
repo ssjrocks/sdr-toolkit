@@ -601,6 +601,10 @@ def test_dmr_points_follow_their_signal(monkeypatch, tmp_path):
         assert frames.get((300000, True), 0) > 0, frames    # decoding once it's on the signal
         assert 900 < afc[-400000] < 1900, afc            # about 1.4 kHz up by now
         assert afc[700000] == 0, afc
+        # Lock off: each point back on its own frequency, and it stays there.
+        m.apply(dict(m.values, afc=False))
+        poll_for(m, 1.5)
+        assert all(st["afc"] == 0 for st in m.point_states()), m.point_states()
     finally:
         m.stop()
 

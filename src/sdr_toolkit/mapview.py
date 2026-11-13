@@ -14,6 +14,7 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
+import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
@@ -50,6 +51,26 @@ def to_world(lat, lon, zoom) -> tuple[float, float]:
     return x, y
 
 
+def mercator(lat, lon) -> np.ndarray:
+    """Web Mercator positions of (arrays of) lat, lon, as fractions of the world (0-1): times the
+    world's size in pixels at a zoom, they're to_world's."""
+    lat = np.clip(np.asarray(lat, float), -85.0511, 85.0511)
+    r = np.radians(lat)
+    x = (np.asarray(lon, float) + 180.0) / 360.0
+    y = (1 - np.log(np.tan(r) + 1 / np.cos(r)) / np.pi) / 2
+    return np.stack([x, y], axis=1)
+
+
+def _polygon(xy) -> QPolygonF:
+    """A QPolygonF filled straight from an (n, 2) array (a QPointF is two doubles)."""
+    poly = QPolygonF()
+    poly.resize(len(xy))
+    ptr = poly.data()
+    ptr.setsize(len(xy) * 16)
+    np.frombuffer(ptr, dtype=np.float64).reshape(-1, 2)[:] = xy
+    return poly
+
+
 def from_world(x, y, zoom) -> tuple[float, float]:
     n = TILE * 2**zoom
     lon = x / n * 360.0 - 180.0
@@ -67,6 +88,7 @@ class MapView(QWidget):
         self.cache_dir = cache_dir or system.cache_dir() / "tiles"
         self.online = online
         self.zoom = 3
+        self.min_zoom = MIN_ZOOM        # the satellite map goes out further: its points span the world
         self.center = (0.0, 0.0)
         self.points: list[dict] = []
         self.home = None
@@ -217,7 +239,7 @@ class MapView(QWidget):
             return
         lats, lons = [c[0] for c in coords], [c[1] for c in coords]
         w, h = max(self.width() - 80, 100), max(self.height() - 80, 100)
-        for z in range(13, MIN_ZOOM - 1, -1):
+        for z in range(13, self.min_zoom - 1, -1):
             x0, y0 = to_world(max(lats), min(lons), z)
             x1, y1 = to_world(min(lats), max(lons), z)
             if x1 - x0 <= w and y1 - y0 <= h:
@@ -381,6 +403,47 @@ class MapView(QWidget):
         runs.append(run)
         return [QPolygonF(r) for r in runs if len(r) > 1]
 
+    def _fast_lines(self, xy):
+        """Screen lines through mercator() positions (an array, drawn in bulk: a satellite's day of
+        ground track is over a thousand points), broken where they cross the date line."""
+        if xy is None or len(xy) < 2:
+            return []
+        n = TILE * 2 ** self.zoom
+        ox, oy = self._origin()
+        scr = xy * n - (ox, oy)
+        cut = np.flatnonzero(np.abs(np.diff(scr[:, 0])) > n / 2) + 1
+        return [_polygon(part) for part in np.split(scr, cut) if len(part) > 1]
+
+    def _draw_ground(self, p, pt, colour, labels):
+        """A satellite's ground track: the past faint, the way ahead dashed, a dot every hour ahead."""
+        thin = 1.2 if not labels else 1.8
+        past = QPen(QColor(colour.red(), colour.green(), colour.blue(), 60), thin)
+        ahead = QPen(QColor(colour.red(), colour.green(), colour.blue(), 170), thin)
+        ahead.setStyle(Qt.PenStyle.DashLine)
+        for key, pen in (("past_xy", past), ("ahead_xy", ahead)):
+            p.setPen(pen)
+            for line in self._fast_lines(pt.get(key)):
+                p.drawPolyline(line)
+        ticks = pt.get("ticks_xy")
+        if ticks is None or not len(ticks):
+            return
+        n = TILE * 2 ** self.zoom
+        ox, oy = self._origin()
+        p.setPen(QPen(QColor(255, 255, 255, 200), 1))
+        p.setBrush(QColor(colour.red(), colour.green(), colour.blue(), 220))
+        font = p.font()
+        small = QFont(font)
+        small.setPointSizeF(max(font.pointSizeF() * 0.75, 6))
+        for hour, (x, y) in enumerate(ticks, 1):
+            c = QPointF(x * n - ox, y * n - oy)
+            p.drawEllipse(c, 3, 3)
+            if labels:
+                p.setFont(small)
+                p.setPen(QColor(40, 40, 40))
+                p.drawText(QPointF(c.x() + 5, c.y() + 4), f"{hour}h")
+                p.setPen(QPen(QColor(255, 255, 255, 200), 1))
+        p.setFont(font)
+
     def _draw_footprints(self, p):
         for lat, lon, km in self.footprints:
             ring = [destination((lat, lon), b, km) for b in range(0, 361, 4)]
@@ -418,6 +481,8 @@ class MapView(QWidget):
                   "landing": QColor(150, 60, 210)}.get(pt.get("kind"), QColor(20, 120, 60))
         if faded:
             colour = QColor(colour.red(), colour.green(), colour.blue(), 110)
+        if pt.get("past_xy") is not None or pt.get("ahead_xy") is not None:
+            self._draw_ground(p, pt, colour, pt["id"] == self.selected or pt.get("hour_labels", False))
         track = pt.get("track") or []
         if len(track) > 1:
             pen = QPen(QColor(colour.red(), colour.green(), colour.blue(), 70 if faded else 140), 2)
@@ -485,7 +550,7 @@ class MapView(QWidget):
     # ---- interaction ---------------------------------------------------
 
     def _zoom_by(self, dz, at=None):
-        z = max(MIN_ZOOM, min(MAX_ZOOM, self.zoom + dz))
+        z = max(self.min_zoom, min(MAX_ZOOM, self.zoom + dz))
         if z == self.zoom:
             return
         self.follow = False

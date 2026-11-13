@@ -117,6 +117,9 @@ class ReceiverMode(Mode):
         Setting("decoder", "Decode with", "", "choice", choices=(("", "Nothing (just listen)"),) + DECODER_CHOICES,
                 help="Run one of the audio decoders on what you're hearing; choosing one also sets the mode and "
                      "bandwidth it wants. Its settings: Decoder settings… above the decoded output."),
+        Setting("afc", "Lock decode points onto their signal", True, "bool",
+                help="DMR / P25 decode points follow their signal's centre (up to 4 kHz either way) while the "
+                     "spectrum shows one there. Off: each stays on its own frequency. Also the Lock button."),
         Setting("auto_id", "Identify automatically", True, "bool",
                 help="Every few seconds, guess what the signal you're tuned to is (shown above the waterfall)."),
         Setting("settle_ms", "Survey settle time", 150, "int", 20, 2000, 10, suffix=" ms",
@@ -292,6 +295,11 @@ class ReceiverMode(Mode):
             if v["fft"] != old["fft"]:
                 self.spectrum = dsp.Spectrum(int(v["fft"]), float(v["average"]))
             self.spectrum.average = float(v["average"])
+            if not v.get("afc", True) and old.get("afc", True):
+                for pt in self.points.values():          # unlocked: each back on its own frequency
+                    pt["afc"] = 0.0
+                    pt.pop("afc_acc", None)
+                self._chz_center = None                  # its channel placed again, at the next block
             if v.get("voice_volume") != old.get("voice_volume"):
                 vol = int(v["voice_volume"])
                 if self.decoder is not None:
@@ -688,7 +696,7 @@ class ReceiverMode(Mode):
             return
         wf, w, _ = acc
         pt["afc_acc"] = [0.0, 0.0, 0]
-        if w <= 0 or not self._signal_at(freq + pt.get("afc", 0.0)):
+        if w <= 0 or not self.values.get("afc", True) or not self._signal_at(freq + pt.get("afc", 0.0)):
             return
         afc = float(np.clip(pt.get("afc", 0.0) + AFC_GAIN * wf / w, -AFC_MAX, AFC_MAX))
         if abs(afc - pt.get("afc", 0.0)) >= 20:

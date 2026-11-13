@@ -470,7 +470,8 @@ sp.select(25544)
 sp.tick()
 pt = win.satellite_panel.map.points
 results["sat_detail"] = (sp.pass_table.rowCount() > 5 and sp.radio_table.rowCount() > 20 and sp.sky.path is not None
-                         and pt and pt[0]["kind"] == "satellite" and len(pt[0]["track"]) > 100
+                         and pt and pt[0]["kind"] == "satellite" and len(pt[0]["past_xy"]) > 700
+                         and len(pt[0]["ahead_xy"]) > 700 and len(pt[0]["ticks_xy"]) == 12
                          and sp.map.footprints and "ISS" in sp.now_label.text())
 sp.best.setChecked(True)
 highs = [float(sp.pass_table.item(r, 2).text().split("°")[0]) for r in range(sp.pass_table.rowCount())]
@@ -497,6 +498,25 @@ results["sat_map_clear"] = (bool(_cleared) and sp.selected is None and not sp.li
                             and sp.radio_table.rowCount() == 0 and not sp.map.footprints
                             and {p_["id"] for p_ in sp.map.points} == {f"sat{s_.norad}" for s_ in sp.shown()}
                             and 0 < len(sp.shown()) < len(sp.catalogue))    # the list as filtered, not all
+# Each one in the list gets its ±12 h ground track (worked out in the background) and hourly dots.
+for _ in range(50):
+    sp.tick()
+    app.processEvents()
+    if sp.map.points and all("ahead_xy" in p_ for p_ in sp.map.points):
+        break
+    time.sleep(0.1)
+sp.map.refit()
+app.processEvents()
+_in_view = all(0 <= sp.map._screen(p_["lat"], p_["lon"]).x() <= sp.map.width()
+               and 0 <= sp.map._screen(p_["lat"], p_["lon"]).y() <= sp.map.height() for p_ in sp.map.points)
+results["sat_list_tracks"] = _in_view and (len(sp.map.points) >= 2 and all(
+    len(p_.get("past_xy", ())) > 700 and 700 < len(p_.get("ahead_xy", ())) <= 721 and len(p_.get("ticks_xy", ())) == 12
+    and p_.get("hour_labels") for p_ in sp.map.points)) and sp.category.itemText(
+        sp.category.findData("has:FM repeaters (ham)")) == "With FM repeaters (ham)"
+if shots:
+    sp.map.refit()
+    app.processEvents()
+    win.grab().save(str(shots / "satellite_tracks.png"))
 sp.category.setCurrentIndex(_cat0)
 sp.select(25544)
 sp.tabs.setCurrentIndex(0)
@@ -691,6 +711,13 @@ results["freq_typing"] = _typed.startswith("10") and not _writes
 _le.setText(f"{101.2:.6f}")
 _QT.keyClick(_le, _Qt.Key.Key_Return)
 app.processEvents()
+# The Lock button turns decode points' following of their signal off and on.
+rp.lock_btn.setChecked(False)
+app.processEvents()
+_unlocked = win.mode.values.get("afc") is False and not win.form.widgets["afc"][1].isChecked()
+rp.lock_btn.setChecked(True)
+app.processEvents()
+results["lock_button"] = _unlocked and win.mode.values.get("afc") is True
 # A settings dropdown opens at its box's width (a wide one ran off the window onto the next monitor).
 _dm = win.form.widgets["demod"][1]
 _dm.showPopup()

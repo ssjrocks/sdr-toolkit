@@ -1,7 +1,7 @@
 """The Satellite tracker page: the list, the map, passes, radios and the sky plot."""
 
 import html
-import math
+import threading
 import time
 
 import numpy as np
@@ -23,11 +23,16 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ..mapview import mercator
 from ..widgets import FitLabel, SortItem, filling, jump_to, reselect, sortable, unsorted, user_columns
 from .data import CATEGORIES, FEATURES, pick, short
 
 COMING_HOURS = 12                   # the Coming over tab looks this far ahead
 MAX_ON_MAP = 300                    # satellites shown on the map with none picked
+TRACK_HOURS = 12                    # ground tracks: this far back and ahead of where each satellite is
+TRACK_STEP = 60.0                   # s between a track's points
+TRACK_EVERY = 600.0                 # s before a track is worked out again (around the time then)
+HOUR_LABELS = 20                    # with this many satellites on the map or fewer, the hour dots are numbered
 REFRESH = 1.5                       # s between refreshes while the next passes are coming in
 KIND_NAMES = {"listen": "Listen", "decode": "Decode", "pictures": "Pictures", "telemetry": "Telemetry",
               "out": "Out of range"}
@@ -165,7 +170,9 @@ class SatellitePanel(QWidget):
         self.selected = None              # Satellite
         self._sat = None                  # its satrec
         self._passes: list = []
-        self._ground: dict = {}
+        self._tracks: dict = {}            # norad -> its ground track (see _track_of)
+        self._satrecs: dict = {}
+        self._tracking = False
         # The list
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search: name, NORAD number…")
@@ -175,7 +182,8 @@ class SatellitePanel(QWidget):
             self.category.addItem(c, c)
         self.category.insertSeparator(self.category.count())
         for f in FEATURES:                              # what they carry: all with a ham repeater, all SSTV...
-            self.category.addItem(f"With {f[0].lower() + f[1:]}", f"has:{f}")
+            name = f if f[1].isupper() else f[0].lower() + f[1:]      # "FM repeaters" stays as it is
+            self.category.addItem(f"With {name}", f"has:{f}")
         self.category.setCurrentIndex(self.category.findData("Fun to listen to"))
         self.category.setToolTip("Which satellites to list: a kind, or the ones carrying something (heard lately)")
         self.list = _table(["Satellite", "Next pass", "Highest", "Kind"], stretch=3)
@@ -183,6 +191,7 @@ class SatellitePanel(QWidget):
         # The map, and what it's doing now
         self.map = map_view
         self.map.keep_session = False       # where satellites were isn't worth keeping: their passes are
+        self.map.min_zoom = 1                 # the whole world, which satellites go round
         self.map.tracks_btn.hide()
         self.now_label = FitLabel("Pick a satellite")
         self.now_label.setFont(QFont(self.now_label.font().family(), -1, QFont.Weight.Bold))
@@ -400,7 +409,7 @@ class SatellitePanel(QWidget):
         """A click on the map away from the satellite: nothing picked, every one that's up shown."""
         if self.selected is None:
             return
-        self.selected, self._sat, self._passes, self._ground = None, None, [], {}
+        self.selected, self._sat, self._passes = None, None, []
         sm = self.list.selectionModel()
         sm.blockSignals(True)
         self.list.clearSelection()
@@ -442,7 +451,6 @@ class SatellitePanel(QWidget):
         self._show_passes()
         self._show_radios()
         self._show_about()
-        self._ground = {}
         self.tick()
         if self.map.follow:
             self.map.fit()
@@ -540,12 +548,9 @@ class SatellitePanel(QWidget):
             self.now_label.setText(f"{sat.name}: no position (old elements?)")
             return
         lat, lon, alt = float(tr.lat[0]), float(tr.lon[0]), float(tr.alt[0])
-        # The ground track: an orbit's worth around now, worked out again every minute.
-        if not self._ground or now - self._ground["t"] > 60:
-            period = 2 * math.pi / self._sat.no_kozai * 60 if self._sat.no_kozai else 5400
-            ts = np.arange(now - period / 2, now + period, 30.0)
-            g = orbit.track(self._sat, ts, here)
-            self._ground = {"t": now, "track": [(float(a), float(b)) for a, b, ok in zip(g.lat, g.lon, g.ok) if ok]}
+        kept = self._tracks.get(sat.norad)
+        if kept is None or now - kept["t0"] > TRACK_EVERY or kept["line1"] != sat.line1:
+            self._tracks[sat.norad] = self._track_of(sat, now)
         text = f"{sat.name}: over {lat:.2f}°, {lon:.2f}° at {alt:,.0f} km"
         self.sky.now = None
         if self.home is not None:
@@ -564,8 +569,57 @@ class SatellitePanel(QWidget):
         self.now_label.setText(text)
         self.sky.update()
         self.map.footprints = [(lat, lon, orbit.footprint_km(alt))]
-        self.map.set_points([{"id": f"sat{sat.norad}", "kind": "satellite", "lat": lat, "lon": lon,
-                              "label": sat.name, "track": self._ground["track"]}], self.home)
+        self.map.set_points([dict({"id": f"sat{sat.norad}", "kind": "satellite", "lat": lat, "lon": lon,
+                                   "label": sat.name}, **self._ground_fields(sat.norad, now))], self.home)
+
+    # ---- ground tracks ----------------------------------------------------------------------
+
+    def _satrec(self, sat):
+        from . import orbit
+        rec = self._satrecs.get(sat.norad)
+        if rec is None or rec[0] != sat.line1:
+            rec = self._satrecs[sat.norad] = (sat.line1, orbit.satrec(sat.line1, sat.line2))
+        return rec[1]
+
+    def _track_of(self, sat, now):
+        """TRACK_HOURS either side of now, every TRACK_STEP: times and mercator positions."""
+        from . import orbit
+        # A little more ahead than shown: still TRACK_HOURS ahead when it's TRACK_EVERY old.
+        ts = np.arange(now - TRACK_HOURS * 3600, now + TRACK_HOURS * 3600 + TRACK_EVERY + 1, TRACK_STEP)
+        try:
+            lat, lon, ok = orbit.ground(self._satrec(sat), ts)
+        except Exception:  # elements SGP4 can't use
+            return {"t0": now, "line1": sat.line1, "t": ts[:0], "xy": np.zeros((0, 2))}
+        return {"t0": now, "line1": sat.line1, "t": ts[ok], "xy": mercator(lat[ok], lon[ok])}
+
+    def _update_tracks(self, sats, now):
+        """Work out the missing and old tracks of sats in the background (a few hundred take a
+        second or so); the map shows each as it's ready."""
+        need = [s for s in sats if (t := self._tracks.get(s.norad)) is None or now - t["t0"] > TRACK_EVERY
+                or t["line1"] != s.line1]
+        if not need or self._tracking:
+            return
+        self._tracking = True
+
+        def work():
+            try:
+                for s in need:
+                    self._tracks[s.norad] = self._track_of(s, time.time())
+            finally:
+                self._tracking = False
+        threading.Thread(target=work, daemon=True, name="satellite-tracks").start()
+
+    def _ground_fields(self, norad, now) -> dict:
+        """A map point's ground track, split at now (behind / ahead), and a dot each hour ahead."""
+        tr = self._tracks.get(norad)
+        if tr is None or not len(tr["t"]):
+            return {}
+        t, xy = tr["t"], tr["xy"]
+        a, i, b = np.searchsorted(t, [now - TRACK_HOURS * 3600, now, now + TRACK_HOURS * 3600 + 1])
+        hours = now + 3600.0 * np.arange(1, TRACK_HOURS + 1)
+        hours = hours[hours <= t[-1]]
+        j = np.clip(np.searchsorted(t, hours), 0, len(t) - 1)
+        return {"past_xy": xy[a:i], "ahead_xy": xy[i:b], "ticks_xy": xy[j]}
 
     def _show_listed(self):
         """With nothing picked: every satellite in the list as it's filtered now, where it is on the map
@@ -575,19 +629,19 @@ class SatellitePanel(QWidget):
             return
         now = time.time()
         listed = sorted(self.shown(), key=lambda s: s.name)
-        cache = self.__dict__.setdefault("_satrecs", {})
+        on_map = listed[:MAX_ON_MAP]
+        self._update_tracks(on_map, now)
+        labels = len(on_map) <= HOUR_LABELS
         pts, up = [], 0
-        for s in listed[:MAX_ON_MAP]:
-            rec = cache.get(s.norad)
-            if rec is None or rec[0] != s.line1:
-                rec = cache[s.norad] = (s.line1, orbit.satrec(s.line1, s.line2))
-            tr = orbit.track(rec[1], [now], self.home or (0.0, 0.0))
+        for s in on_map:
+            tr = orbit.track(self._satrec(s), [now], self.home or (0.0, 0.0))
             if not tr.ok[0]:
                 continue
             is_up = self.home is not None and float(tr.el[0]) > 0
             up += is_up
-            pts.append({"id": f"sat{s.norad}", "kind": "satellite", "lat": float(tr.lat[0]),
-                        "lon": float(tr.lon[0]), "label": s.name + (" (up)" if is_up else ""), "track": []})
+            pts.append(dict({"id": f"sat{s.norad}", "kind": "satellite", "lat": float(tr.lat[0]),
+                             "lon": float(tr.lon[0]), "label": s.name + (" (up)" if is_up else ""),
+                             "hour_labels": labels}, **self._ground_fields(s.norad, now)))
         self.map.footprints = []
         self.map.set_points(pts, self.home)
         more = f" (the first {MAX_ON_MAP} on the map)" if len(listed) > MAX_ON_MAP else ""

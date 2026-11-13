@@ -171,7 +171,9 @@ decode area, each line marked with its frequency, and in the decoded log. The ch
 out of the dongle's samples together, from one FFT per block, so a dozen cost less CPU than the
 receiver's own demodulator; each point runs its own decoder program, though, so up to 24 at once.
 Points outside the band the dongle sends wait until it's back there; they're kept between sessions. DMR voice from every point plays at the Voice volume (mute one
-from its right-click menu); right-click a point to stop it, or **Stop all channels**.
+from its right-click menu); right-click a point to stop it, or **Stop all channels**. DMR / P25 points
+follow their signal when it's a little off their frequency (up to 4 kHz, while the spectrum shows a
+signal there); **Lock** on the toolbar turns that off and puts each back on its own frequency.
 
 **DMR / P25 / digital voice** is the receiver with an explorer on top, for mapping the digital
 voice around you. Slide the spectrum to a busy part of the band (430-520 MHz, say) and leave it:
@@ -341,7 +343,10 @@ decode APRS, SSTV, Morse or telemetry) or what it needs instead (SatDump for wea
 for **Listen for its beacon** (a CW beacon, decoded as Morse, or another beacon), **Listen for its
 telemetry** or **Listen to its repeater / transponder output** (an FM repeater, or the middle of a
 linear transponder's passband in SSB). Each one names the downlink it will use, or says the satellite
-has none. **Coming over** lists every pass in the next 12 hours. Set your location in Settings
+has none. With none picked, the map shows every satellite in the list (as filtered, e.g. **With FM
+repeaters (ham)** or **With SSTV pictures**), each with its ground track 12 hours back (faint) and 12
+hours ahead (dashed) and a dot for each hour ahead; click one to pick it, or empty map to go back to
+the list. **Coming over** lists every pass in the next 12 hours. Set your location in Settings
 first; it's shared with the RTL-SDR modes.
 
 **Satellite telemetry** is decoded by [gr-satellites](https://github.com/daniestevez/gr-satellites)
