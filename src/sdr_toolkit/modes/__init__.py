@@ -13,6 +13,7 @@ from .sondes import SondeMode
 from .morse import MorseMode
 from .ism import ISMMode
 from .lora import LoRaMode
+from .lora_find import LoRaFinderMode
 from .pager import PagerMode
 from .sstv import SSTVMode
 from .text_modes import NavtexMode, PSKMode, RTTYMode
@@ -26,7 +27,8 @@ MODES = [
     SSTVMode, WefaxMode,
     APRSMode, PagerMode,
     TonesMode,
-    ReceiverMode, ADSBMode, AISMode, SondeMode, ISMMode, LoRaMode, ExplorerMode, DigitalVoiceMode, GPSFixMode,
+    ReceiverMode, ADSBMode, AISMode, SondeMode, ISMMode, LoRaMode, LoRaFinderMode, ExplorerMode, DigitalVoiceMode,
+    GPSFixMode,
     SatelliteMode, SatTelemetryMode,
 ]
 GROUPS = ["Text", "Digital (weak signal)", "Pictures", "Packet & paging", "Tones", "RTL-SDR", "Satellites"]

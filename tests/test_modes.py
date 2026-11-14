@@ -562,6 +562,58 @@ def test_lora_meshcore_anz(tmp_path):
     assert "advert: Hilltop RPT (repeater) at -33.80000, 151.20000" in out, out
 
 
+def lora_burst(path, frames, bw, sf, cr, sync, preamble):
+    """gr-lora_sdr's transmitter at 1 MS/s: complex IQ."""
+    import subprocess
+    c64 = str(path) + ".c64"
+    subprocess.run([sys.executable, str(Path(__file__).parent / "lora_tx.py"), c64, "--rate", "1000000",
+                    "--bw", str(bw), "--sf", str(sf), "--cr", str(cr), "--sync", sync, "--preamble",
+                    str(preamble)] + [f.hex() for f in frames], env=lora_available(), check=True, timeout=120)
+    return np.fromfile(c64, dtype=np.complex64)
+
+
+@needs_lora
+def test_lora_finder_works_out_every_burst(tmp_path):
+    """A band with no settings given: Meshtastic, MeshCore, a LoRaWAN uplink and an (inverted) downlink, at
+    their own widths, spreading factors and sync words, and an FSK burst. Each is found, named and read."""
+    from scipy.signal import resample_poly
+    key = mesh.DEFAULT_PSK
+    mt = lora_burst(tmp_path / "mt", [mesh.build_meshtastic(0xA1B2C3D4, 1001, mesh.pb_encode(
+        [(1, 1), (2, "Hello from the toolkit")]), key, 8)], 250000, 11, 1, "0x2B", 16)
+    mc = lora_burst(tmp_path / "mc", [mesh.build_meshcore(5, mesh.build_group_text(
+        mesh.PUBLIC_KEY, 1794200000, "Alice", "hi from the hill"))], 62500, 7, 3, "0x12", 8)
+    up = bytes.fromhex("40" "3412012680" "0200" "02" "0102030405060708" "aabbccdd")    # TTN DevAddr 26011234
+    lw = lora_burst(tmp_path / "up", [up], 125000, 9, 1, "0x34", 8)
+    down = bytes.fromhex("60" "3412012620" "0700" "aabbccdd")                           # an ACK to it
+    dn = np.conj(lora_burst(tmp_path / "dn", [down], 500000, 10, 1, "0x34", 8))
+    rate, total = 2400000, int(2400000 * 4.4)
+    t = np.arange(total) / rate
+    band = np.zeros(total, np.complex64)
+    for x, off, at in ((mt, -600000, 0.3), (mc, 200000, 1.2), (lw, -200000, 1.7), (dn, 500000, 2.6)):
+        y = resample_poly(x, 12, 5).astype(np.complex64)
+        i = int(at * rate)
+        y = y[: total - i]
+        band[i:i + len(y)] += 0.3 * y * np.exp(2j * np.pi * off * t[i:i + len(y)])
+    i0, n = int(3.4 * rate), int(0.1 * rate)                                           # FSK at -300 kHz
+    bits = np.repeat(np.random.default_rng(1).integers(0, 2, n // 250 + 1) * 2 - 1, 250)[:n]
+    band[i0:i0 + n] += 0.3 * np.exp(2j * np.pi * np.cumsum(-300000 + 5000 * bits) / rate)
+    rng = np.random.default_rng(0)
+    band += 0.02 * (rng.standard_normal(total) + 1j * rng.standard_normal(total))
+    write_cu8(tmp_path / "band.cu8", band)
+    _, ev = run_radio("lora_find", tmp_path / "band.cu8", wait=180, centre_mhz=917.0, file_rate=rate)
+    rows = {r["freq"]: r for r in (e.data for e in ev if e.kind == "row")}
+    assert set(rows) == {"916.400", "917.200", "916.800", "917.500", "916.700"}, rows
+    assert rows["916.400"]["what"] == "Meshtastic" and "Hello from the toolkit" in rows["916.400"]["details"]
+    assert rows["916.400"]["settings"] == "SF11 · 250 kHz · sync 0x2B"
+    assert rows["917.200"]["what"] == "MeshCore" and "hi from the hill" in rows["917.200"]["details"]
+    assert rows["917.200"]["settings"] == "SF7 · 62.5 kHz · sync 0x12"
+    assert rows["916.800"]["what"] == "LoRaWAN uplink" and rows["916.800"]["settings"] == "SF9 · 125 kHz · sync 0x34"
+    assert "device 26011234 (The Things Network), frame 2, port 2, 8 bytes encrypted" in rows["916.800"]["details"]
+    assert rows["917.500"]["what"] == "LoRaWAN downlink" and "inverted" in rows["917.500"]["settings"]
+    assert "to device 26011234 (The Things Network), frame 7, acknowledging" in rows["917.500"]["details"]
+    assert rows["916.700"]["what"] == "not LoRa" and "FSK" in rows["916.700"]["details"]
+
+
 # ---- DMR / P25 (DSD-FME). No test signal generator exists for these protocols here, so the
 # tests cover the plumbing; decoding real signals needs a dongle.
 

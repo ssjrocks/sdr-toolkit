@@ -55,12 +55,25 @@ it), set under **Settings → Input**: handy without a dongle, or to decode some
 | AIS ships (161.975 / 162.025 MHz) | rtl_fm + direwolf, sentences decoded by the toolkit | channel, how long ships stay listed |
 | Radiosondes (weather balloons, 400–406 MHz) | rs1729's decoders (RS41, DFM, M10/M20, RS92, iMet-54, Meisei...) and dft_detect | centre frequency, frequencies or found by themselves, ground height for the landing estimate, how long sondes stay listed |
 | LoRa / Meshtastic / MeshCore | gr-lora_sdr (built separately, see below) | network preset, region, frequency, SF/BW/CR/sync word, channel keys |
+| LoRa finder | the toolkit's own (finding and measuring bursts) and gr-lora_sdr | centre frequency, sample rate, how strong a burst must be, Meshtastic and MeshCore keys |
 | DMR / P25 / digital voice (the explorer) | DSD-FME with mbelib (built separately, see below), on every signal found | everything Spectrum & receiver has, how strong a signal must be to be tried, listen to everything or one channel, talkgroup or radio |
 | Spectrum & receiver | the toolkit's own (rtl_tcp to the dongle) | frequency and step, mode (WFM, NFM, AM, USB, LSB, CW), bandwidth, de-emphasis, squelch, volume, sample rate, gain mode and gain steps, RTL AGC, ppm, direct sampling (HF), offset tuning, bias tee, FFT size, averaging, peak hold |
 | GPS position fix (1575.42 MHz) | GNSS-SDR | search range, satellites tracked at once, fill in my location |
 
 The LoRa decoder corrects the transmitter's and dongle's crystal error (tested to ±20 ppm, an 18 kHz
 offset at 920 MHz) as long as the frequency setting is the network's real centre frequency.
+
+**LoRa finder** is for when you don't know the settings: it watches the 2.2 MHz around its centre
+frequency and works out each burst by itself. It measures the burst's width from its spectrum (LoRa
+fills 62.5, 125, 250 or 500 kHz evenly; narrower is FSK, OOK or a carrier, and it says so), then
+its spreading factor: one sample per chip, cut into symbol-long pieces and multiplied by the base
+down-chirp, each LoRa symbol becomes a single tone, but only at the right spreading factor (tried
+both ways round, as LoRaWAN downlinks are inverted). gr-lora_sdr then decodes it with each likely
+sync word (0x34 LoRaWAN, 0x2B Meshtastic, 0x12 MeshCore and private LoRa); it finds the frame only
+with the right one. Each burst is a row: frequency, what it is, what it says, the settings found,
+width, length and signal. LoRaWAN shows what's readable without the network's keys: the kind of
+message, device address (The Things Network's recognised), frame counter, port and payload size,
+and a join request's device and join EUIs.
 
 Device, gain, frequency correction (ppm) and your location are set once for all RTL-SDR modes.
 Above the output, each mode shows what it's doing: the frequency, how long it's listened, the noise
