@@ -146,18 +146,37 @@ sample rate: about 38 Mbit/s for ADS-B, 4 for AIS and ISM, 16 for LoRa. While co
 button's menu says whether the relay is up to date and offers **Update the relay to …** when a
 newer SDR Tools Relay is out (the relay must have a password, and relays from 0.1.2 on).
 
-**A HackRF on a relay** (SDR Tools Relay 0.2.0 on): every SDR mode uses it as it would a dongle.
-If the device set in the relay's window isn't plugged in, the toolkit uses one the relay has; with
-several, pick one under **Device** in the relay button's menu (remembered for that relay).
-Tuning goes to 6 GHz, Spectrum & receiver offers the HackRF's 4.8-19.2 MS/s, and lower rates are
-narrowed down here from the nearest rate the HackRF takes (2 MS/s and up). **HackRF…** next to
-Start sets the amp, antenna power, manual LNA / VGA gain and baseband filter; a running receiver
-takes them at once, other modes start again with them.
+**A HackRF on a relay** (SDR Tools Relay 0.2.0 on, 0.3.0 for everything below): every SDR mode uses
+it as it would a dongle. If the device set in the relay's window isn't plugged in, the toolkit uses
+one the relay has; with several, pick one under **Device** in the relay button's menu (remembered
+for that relay). Tuning goes to 6 GHz, and Spectrum & receiver offers 4.8 to 19.2 MS/s.
+
+- **The HackRF bar** (under the link meters on the SDR pages) has its controls, and every change
+  reaches the HackRF at once, on whatever is streaming from it:
+  - **Auto gain** or **Manual gain**. The HackRF has no gain control of its own, so the toolkit
+    makes one: once a second it reads the input level the relay measured over the whole band, and
+    steps the LNA and VGA to keep it in the green band of the **level meter** (-26 to -14 dBFS),
+    backing off at once when samples clip. In manual, the LNA (0-40 dB, 8 dB steps) and VGA (0-62,
+    2 dB) stay where you set them; the meter still shows how hard the input is driven.
+  - **Amp** (+14 dB at the antenna input) and **Antenna power** (3.3 V for an active antenna).
+  - **Filter**: the baseband filter, for this page only (the right one depends on the page's sample
+    rate). Auto follows the rate (0.75 x); a narrow one set for DMR doesn't black out the receiver's
+    wide view.
+- **The DC spike** (a HackRF's local oscillator leaking through, a spike in the middle of every
+  view) is taken out at the relay before the samples are sent.
+- **Rates below 2 MS/s** (the HackRF's lowest) are sampled at a whole multiple and narrowed at the
+  relay, so only what the mode needs crosses the network.
+- **Survey** uses the HackRF's own sweep: 20 MHz a hop, about 1 MHz to 6 GHz in under a second, at
+  19.5 kHz a bin. The receiver's stream pauses meanwhile (a relay serves one connection at a time).
+
+Each MS/s is 2 MB/s over the network: 19.2 MS/s needs gigabit Ethernet; a 100 Mbit link carries up
+to about 5.5 MS/s. The network meter says when samples are being lost, and how much the link carries.
 
 **Link meters:** the SDR pages show two bars at the top: the device's **USB link** (this PC's
-dongle, or the relay's device) and the **relay network link**. Each fills against what the sample
-rate needs (green keeping up, orange short, red dropping buffers), with the data rate, and for the
-network the ping and the buffers the relay dropped (relays from 0.2.0 on).
+dongle, or the relay's device, with the HackRF's own count of overruns) and the **relay network
+link**. Each fills against what the sample rate needs (green keeping up, orange short, red losing
+samples), with the data rate, and for the network the ping and the buffers the relay dropped
+(relays from 0.2.0 on).
 
 **On Android:** [`android/`](android/README.md) has a phone version of Spectrum & receiver and
 ADS-B, with an RTL-SDR plugged into the phone (through the free Rtl-sdr driver app) or any relay

@@ -47,6 +47,8 @@ from PyQt6.QtWidgets import (
 from . import APP_ID, APP_NAME, __version__, aircraftdb, appreports, coverage, deps, updater
 from .calls_view import CallsPanel
 from .explorer_view import ExplorerPane
+from .hackrf_agc import AGC
+from .hackrf_bar import HackRFBar
 from .links_view import LinksBar
 from .satellites.view import SatellitePanel
 from .widgets import (ORDER, BoxCombo, FitLabel, SortItem, drop_oldest, filling, following, hovered, jump_to,
@@ -699,16 +701,18 @@ class MainWindow(QMainWindow):
         # The SDR pages have their links instead: the device's USB link and the relay's network link.
         self.links_bar = LinksBar()
         self.links_bar.setVisible(False)
-        self.hackrf_btn = QPushButton("HackRF…")
-        self.hackrf_btn.setToolTip("The relay's HackRF: RF amp, antenna power, LNA and VGA gain, baseband filter")
-        self.hackrf_btn.clicked.connect(self.hackrf_settings)
-        self.hackrf_btn.setVisible(False)
+        # And while the relay's device is a HackRF, its controls (gain, amp, antenna power, filter, level).
+        self.hackrf_bar = HackRFBar()
+        self.hackrf_bar.setVisible(False)
+        self.hackrf_bar.changed.connect(self._hackrf_changed)
+        self._agc = None
+        self._dropped_last = None
+        self._usb_lost_last = None
         self._links_busy = False
         self._link_last = (0.0, 0)
         top = QHBoxLayout()
         top.addWidget(self.links_bar, 1)
         top.addStretch(0)
-        top.addWidget(self.hackrf_btn)
         top.addWidget(self.start_btn)
         self.relay_btn = QPushButton("Connect relay…")
         self.relay_btn.setToolTip("Use an RTL-SDR on another PC running SDR Tools Relay")
@@ -891,6 +895,7 @@ class MainWindow(QMainWindow):
         central = QWidget()
         cl = QVBoxLayout(central)
         cl.addLayout(top)
+        cl.addWidget(self.hackrf_bar)
         cl.addWidget(split, 1)
         self.setCentralWidget(central)
         self.status = FitLabel("")
@@ -1014,7 +1019,7 @@ class MainWindow(QMainWindow):
         self.waterfall.setVisible(not radio)
         sdr = self._is_radio()
         self.links_bar.setVisible(sdr)
-        self._show_hackrf_btn()
+        self._show_hackrf_bar()
         if sdr:
             self._update_links()
         self._mode_specific = False
@@ -2097,85 +2102,71 @@ class MainWindow(QMainWindow):
 
     # ---- the SDR links and the HackRF ------------------------------------------------------------
 
-    HACKRF_KEYS = ("amp", "antenna", "filter", "lna", "vga")
+    HACKRF_GLOBAL = (("gain", "auto"), ("lna", 16), ("vga", 20), ("amp", 0), ("antenna", 0))
 
     def _hackrf_saved(self) -> dict:
+        """The HackRF's settings: gain, amp and antenna power for every page, the filter this page's own (the
+        right one depends on its sample rate)."""
         out = {}
-        for k in self.HACKRF_KEYS:
-            v = self.settings.value(f"hackrf/{k}", None)
-            out[k] = None if v in (None, "", "none") else int(v)
+        for k, default in self.HACKRF_GLOBAL:
+            v = self.settings.value(f"hackrf/{k}", default)
+            if k == "gain":
+                out[k] = v if v in ("auto", "manual") else default
+            else:
+                try:
+                    out[k] = int(v)
+                except (TypeError, ValueError):            # "none" from 0.17: the mode's gain, now automatic
+                    out[k] = default
+        page = self.mode.id if self.mode is not None else ""
+        try:
+            out["filter"] = int(self.settings.value(f"hackrf/filter_{page}", 0))
+        except (TypeError, ValueError):
+            out["filter"] = 0
         return out
 
-    def _show_hackrf_btn(self):
+    def _show_hackrf_bar(self):
+        """The bar on an SDR page while the relay's device is a HackRF, and the bridge given this page's settings."""
         from . import relay
         b = relay.current()
         hackrf = b is not None and b.device.get("type") == "hackrf"
-        self.hackrf_btn.setVisible(hackrf and self._is_radio())
-        if b is not None:
-            b.hackrf_settings = self._hackrf_saved()
-
-    def hackrf_settings(self):
-        """The relay's HackRF: what the app sends it at the start of each session (and now, live)."""
-        from . import relay
-        from PyQt6.QtWidgets import QDialogButtonBox, QFormLayout
-        cur = self._hackrf_saved()
-        dlg = QDialog(self)
-        dlg.setWindowTitle("HackRF")
-        form = QFormLayout(dlg)
-        amp = QCheckBox("RF amp on (+14 dB at the antenna input; off for strong signals)")
-        amp.setChecked(bool(cur["amp"]))
-        ant = QCheckBox("Antenna power on (3.3 V on the antenna port, for an active antenna or LNA)")
-        ant.setChecked(bool(cur["antenna"]))
-        manual = QCheckBox("Set the LNA and VGA gain here (instead of the mode's gain)")
-        manual.setChecked(cur["lna"] is not None and cur["vga"] is not None)
-        lna = QComboBox()
-        for g in range(0, 41, 8):
-            lna.addItem(f"{g} dB", g)
-        lna.setCurrentIndex(max(lna.findData(cur["lna"] if cur["lna"] is not None else 16), 0))
-        vga = QComboBox()
-        for g in range(0, 63, 2):
-            vga.addItem(f"{g} dB", g)
-        vga.setCurrentIndex(max(vga.findData(cur["vga"] if cur["vga"] is not None else 20), 0))
-        filt = QComboBox()
-        filt.addItem("Automatic (about 0.75 x the sample rate)", 0)
-        for bw in (1750000, 2500000, 3500000, 5000000, 5500000, 6000000, 7000000, 8000000, 9000000, 10000000,
-                   12000000, 14000000, 15000000, 20000000, 24000000, 28000000):
-            filt.addItem(f"{bw / 1e6:g} MHz", bw)
-        filt.setCurrentIndex(max(filt.findData(cur["filter"] or 0), 0))
-        for w in (lna, vga):
-            w.setEnabled(manual.isChecked())
-            manual.toggled.connect(w.setEnabled)
-        form.addRow(amp)
-        form.addRow(ant)
-        form.addRow(manual)
-        form.addRow("LNA (RF) gain", lna)
-        form.addRow("VGA (baseband) gain", vga)
-        form.addRow("Baseband filter", filt)
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
-        form.addRow(btns)
-        if not dlg.exec():
+        self.hackrf_bar.setVisible(hackrf and self._is_radio())
+        if b is None:
             return
-        new = {"amp": int(amp.isChecked()), "antenna": int(ant.isChecked()), "filter": int(filt.currentData()),
-               "lna": int(lna.currentData()) if manual.isChecked() else None,
-               "vga": int(vga.currentData()) if manual.isChecked() else None}
-        for k in self.HACKRF_KEYS:
-            self.settings.setValue(f"hackrf/{k}", "none" if new[k] is None else new[k])
+        v = self._hackrf_saved()
+        self.hackrf_bar.set_values(v)
+        self.hackrf_bar.set_rate(int(self.mode.values.get("rate", 0) or 0) if self.mode is not None else 0)
+        self._agc = AGC(v["lna"], v["vga"]) if v["gain"] == "auto" else None
+        b.apply_hackrf({k: v[k] for k in ("lna", "vga", "amp", "antenna", "filter")})
+
+    def _hackrf_changed(self, change: dict):
+        """A change on the HackRF bar: saved, and sent to the HackRF now."""
+        from . import relay
+        key, value = next(iter(change.items()))
+        page = self.mode.id if self.mode is not None else ""
+        self.settings.setValue(f"hackrf/filter_{page}" if key == "filter" else f"hackrf/{key}", value)
         b = relay.current()
-        if b is not None:
-            b.hackrf_settings = new
-        src = getattr(self.mode, "src", None) if self.running else None
-        if src is not None and hasattr(src, "sock"):            # the receiver: now, on its connection
-            for data in (relay.hackrf_commands(new),):
-                try:
-                    src.sock.sendall(data)
-                except OSError:
-                    pass
-            self.status.setText("HackRF settings sent")
-        elif self.running and self._is_radio():
-            self._restart_mode()                                    # the others take them as they start again
-            self.status.setText("HackRF settings: the mode started again with them")
+        v = self.hackrf_bar.values()
+        if key == "gain":
+            self._agc = AGC(v["lna"], v["vga"]) if value == "auto" else None
+            if value == "manual" and b is not None:       # from where the automatic gain had it
+                b.apply_hackrf({"lna": v["lna"], "vga": v["vga"]})
+        elif b is not None:
+            b.apply_hackrf(change)
+
+    def _agc_step(self, level):
+        """Once a second while streaming: the automatic gain from the input level."""
+        from . import relay
+        b = relay.current()
+        if self._agc is None or b is None or not self.running:
+            return
+        new = self._agc.step(level)
+        if new is None:
+            return
+        lna, vga = new
+        b.apply_hackrf({"lna": lna, "vga": vga})
+        self.hackrf_bar.set_values({"lna": lna, "vga": vga})
+        self.settings.setValue("hackrf/lna", lna)
+        self.settings.setValue("hackrf/vga", vga)
 
     def _update_links(self):
         """The link meters, each second: from the relay's stats (its device's USB link and the network), or
@@ -2214,10 +2205,23 @@ class MainWindow(QMainWindow):
                     f"ping {rtt * 1000:.1f} ms" if rtt < 0.01 else f"ping {rtt * 1000:.0f} ms")
             if st:
                 dropped = st.get("dropped", 0)
-                usb.show_link(st.get("device_bps"), st.get("needed_bps"), b.device.get("name", ""))
-                net.show_link(st.get("net_bps"), st.get("needed_bps"),
-                              f"{ping} · {dropped} buffers dropped" if dropped else ping,
-                              state="bad" if dropped else None)
+                last, self._dropped_last = self._dropped_last, dropped
+                losing = last is not None and dropped > last           # dropping now, not some time ago
+                needed = st.get("needed_bps") or 0
+                lost = st.get("usb_lost")
+                usb.show_link(st.get("device_bps"), (st.get("device_rate") or st.get("rate", 0)) * 2 or needed,
+                              b.device.get("name", "") + (f" · {lost} overruns" if lost else ""),
+                              state="bad" if lost and self._usb_lost_last is not None and lost > self._usb_lost_last
+                              else None)
+                self._usb_lost_last = lost
+                note = ping + (f" · {dropped} buffers dropped" if dropped else "")
+                if losing and st.get("net_bps") and st["net_bps"] < 0.95 * needed:
+                    note = (f"losing samples: the network carries about {st['net_bps'] / 1e6:.1f} MB/s "
+                            f"(up to {st['net_bps'] / 2e6 * 0.9:.1f} MS/s) · {ping}")
+                net.show_link(st.get("net_bps"), needed, note, state="bad" if losing else None)
+                level = st.get("level") if "levels" in b.features else b.local_level()
+                self.hackrf_bar.meter.set_level(level)
+                self._agc_step(level)
             else:
                 usb.show_link(None, None, "idle" if rtt is not None else "the relay doesn't report it (update it)")
                 net.show_link(None, None, f"{b.name} · {ping}" if rtt is not None else b.name)
@@ -2229,7 +2233,7 @@ class MainWindow(QMainWindow):
     def _relay_changed(self, message, restart=True):
         from . import relay
         b = relay.current()
-        self._show_hackrf_btn()
+        self._show_hackrf_bar()
         self.relay_btn.setText(f"Relay: {b.name} ▾" if b else "Connect relay…")
         self.relay_btn.setToolTip(f"The relay {b.name} (version {b.relay_version or '?'})" if b else
                                   "Use an RTL-SDR on another PC running SDR Tools Relay")

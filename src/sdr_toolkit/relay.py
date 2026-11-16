@@ -121,24 +121,86 @@ class Decimator:
         return b.tobytes()
 
 
-def hackrf_commands(settings: dict) -> bytes:
+HACKRF_KEYS = (("amp", SET_AMP), ("antenna", SET_ANTENNA_POWER), ("filter", SET_BASEBAND_FILTER),
+               ("lna", SET_LNA_GAIN), ("vga", SET_VGA_GAIN))
+GAIN_COMMANDS = (3, 4, 8, 13)       # rtl_tcp's gain mode, gain, RTL AGC and gain step: a HackRF's gain is the bar's
+
+
+def hackrf_commands(settings: dict, keys=None) -> bytes:
     """The relay commands for a HackRF's settings (those set: RF amp, antenna power, baseband filter, LNA and
-    VGA gain)."""
-    return b"".join(command(c, int(settings[k])) for k, c in (
-        ("amp", SET_AMP), ("antenna", SET_ANTENNA_POWER), ("filter", SET_BASEBAND_FILTER),
-        ("lna", SET_LNA_GAIN), ("vga", SET_VGA_GAIN)) if settings.get(k) is not None)
+    VGA gain), or only *keys* of them."""
+    return b"".join(command(c, int(settings[k])) for k, c in HACKRF_KEYS
+                    if settings.get(k) is not None and (keys is None or k in keys))
+
+
+class DCBlock:
+    """The HackRF's DC spike taken out here, for a relay before 0.3.0 (which sends it as it is): the offset
+    on I and Q is followed slowly (about 0.1 s) and subtracted, as the relay itself does from 0.3.0."""
+
+    def __init__(self, seconds=0.1):
+        self.seconds = seconds
+        self.dc = None
+
+    def __call__(self, data: bytes, rate: int) -> bytes:
+        n = len(data) // 2 * 2
+        if not n:
+            return data
+        u = np.frombuffer(data[:n], np.uint8).astype(np.float32) - 128.0
+        x = u[0::2] + 1j * u[1::2]
+        m = complex(x.mean())
+        a = min(1.0, len(x) / max(rate * self.seconds, 1.0))
+        self.dc = m if self.dc is None else self.dc + a * (m - self.dc)
+        x -= self.dc
+        b = np.empty(n, np.uint8)
+        b[0::2] = np.clip(np.rint(x.real + 128.0), 0, 255)
+        b[1::2] = np.clip(np.rint(x.imag + 128.0), 0, 255)
+        return b.tobytes() + data[n:]
+
+
+class Level:
+    """The input level, measured here for a relay before 0.3.0 (later ones send theirs in the stats):
+    as the relay does it (hackrf_transfer's dB full scale, the peak, the share of samples at the limit)."""
+
+    SAMPLE = 32768
+
+    def __init__(self):
+        self._power, self._n, self._clipped, self._peak = 0.0, 0, 0, 0
+        self.last = None
+
+    def __call__(self, data: bytes):
+        b = np.frombuffer(data[: self.SAMPLE], np.uint8).astype(np.float32) - 128.0
+        if len(b):
+            self._power += float(np.dot(b, b))
+            self._n += len(b)
+            self._clipped += int(np.count_nonzero(np.abs(b) >= 127))
+            self._peak = max(self._peak, int(np.abs(b).max()))
+
+    def take(self):
+        if self._n:
+            ratio = self._power / (self._n * 127 * 127)
+            self.last = {"dbfs": round(10 * np.log10(max(ratio, 1e-12)) + 3.0, 1), "peak": self._peak,
+                         "clipped": round(self._clipped / self._n, 6)}
+            self._power, self._n, self._clipped, self._peak = 0.0, 0, 0, 0
+        return self.last
 
 
 class HackRFLink:
-    """One decoder's session with a relay's HackRF: its commands on the way out (a sample rate it can't
-    have is asked for as a multiple), and the samples on the way back (decimated to the rate it asked for)."""
+    """One decoder's session with a relay's HackRF. On the way out: the decoder's gain commands give way to
+    the HackRF bar's LNA and VGA (read live from the bridge's settings), and a sample rate below 2 MS/s is
+    asked of a relay before 0.3.0 as a whole multiple. On the way back: for such a relay, the DC spike
+    taken out and the samples narrowed to the rate asked for, and the level measured."""
 
-    def __init__(self, settings=None):
-        self.settings = dict(settings or {})       # lna and vga set by hand replace the decoders' own gain
+    def __init__(self, settings=None, features=()):
+        self.settings = settings if settings is not None else {}     # the bridge's: changes reach every session
+        self.relay_dsp = "narrow" in features                         # the relay narrows and takes the spike out
         self.decimate = None
+        self.rate = 2_048_000
+        self.dc = None if self.relay_dsp else DCBlock()
+        self.level = Level() if "levels" not in features else None
         self._cmd = b""
         self._head = b""
         self._lock = threading.Lock()
+        self.send_lock = threading.Lock()       # the session's remote socket: decoder commands and the bar's
 
     def outgoing(self, data: bytes) -> bytes:
         data = self._cmd + data
@@ -147,15 +209,17 @@ class HackRFLink:
         out = b""
         for i in range(0, n, 5):
             cmd, value = struct.unpack(">BI", data[i:i + 5])
-            if cmd == SET_RATE:
+            if cmd == SET_RATE and not self.relay_dsp:
                 rate, k = hackrf_rate(value)
                 with self._lock:
                     self.decimate = Decimator(k) if k > 1 else None
+                    self.rate = rate
                 out += command(SET_RATE, rate)
-            elif cmd in (3, 4, 13) and self.settings.get("lna") is not None and self.settings.get("vga") is not None:
-                # gain mode / gain / gain step: the LNA and VGA set by hand win
-                out += command(SET_LNA_GAIN, self.settings["lna"]) + command(SET_VGA_GAIN, self.settings["vga"])
+            elif cmd in GAIN_COMMANDS:
+                out += hackrf_commands(self.settings, ("lna", "vga"))
             else:
+                if cmd == SET_RATE:
+                    self.rate = value
                 out += data[i:i + 5]
         return out
 
@@ -169,15 +233,20 @@ class HackRFLink:
             head = self._head[:4] + struct.pack(">I", R820T) + self._head[8:12]
             return head + self.incoming(data) if data else head
         with self._lock:
-            d = self.decimate
+            d, rate = self.decimate, self.rate
+        if self.level is not None:
+            self.level(data)
+        if self.dc is not None:
+            data = self.dc(data, rate)
         return d(data) if d is not None else data
 
 
-def open_session(host, port, password="", timeout=8.0, check=False, device=None):
+def open_session(host, port, password="", timeout=8.0, check=False, device=None, extra=None):
     """Connect and log in. Returns (socket, hello, answer, bytes already received after it).
     With *check*, only the password is checked: the relay doesn't open its dongle (relays before
     0.1.2 ignore it and open it). *device* ("hackrf:<serial>", "rtl:1") asks for one of the relay's
-    devices rather than the one set in its window (relays from 0.2.0 on)."""
+    devices rather than the one set in its window (relays from 0.2.0 on); *extra* goes into the reply too
+    (a HackRF sweep's {"stream": "sweep", "ranges": ...})."""
     try:
         sock = socket.create_connection((host, int(port)), timeout=timeout)
     except OSError as e:
@@ -194,6 +263,7 @@ def open_session(host, port, password="", timeout=8.0, check=False, device=None)
                  "auth": auth(password, hello.get("nonce", ""))}
         if device:
             reply["device"] = device
+        reply.update(extra or {})
         sock.sendall(json.dumps(reply).encode() + b"\n")
         if rest:
             raise RelayError("unexpected data from the relay")
@@ -316,6 +386,7 @@ class Bridge:
         self.device_id = ""                  # the one used ("rtl:0", "hackrf:<serial>")
         self.want_device = None              # asked for at each session, when not the relay's own choice
         self.relay_choice = ""               # the device set in the relay's window
+        self._links: list = []                # (HackRFLink, remote socket) of the sessions streaming now
         self.hackrf_settings: dict = {}      # amp, antenna, filter: sent to a HackRF at each session's start
         self._sock = None
         self._halt = threading.Event()
@@ -326,6 +397,28 @@ class Bridge:
         """The relay is on this network (a private LAN address, or this PC), so at your location.
         Tailscale (100.64.0.0/10) and internet addresses could be anywhere."""
         return is_lan(self.host)
+
+    def apply_hackrf(self, changes: dict):
+        """New HackRF settings (from the bar or its automatic gain): kept for the sessions to come and sent
+        now to every one streaming."""
+        self.hackrf_settings.update(changes)
+        data = hackrf_commands(self.hackrf_settings, changes.keys())
+        for link, remote in list(self._links):
+            try:
+                with link.send_lock:
+                    remote.sendall(data)
+            except OSError:
+                self._drop_link(link)
+
+    def _drop_link(self, link):
+        self._links = [(lk, r) for lk, r in self._links if lk is not link]
+
+    def local_level(self):
+        """The level measured here (relays before 0.3.0), from the newest session."""
+        for link, _ in reversed(self._links):
+            if link.level is not None:
+                return link.level.take()
+        return None
 
     def use_device(self, device_id, relay_choice=""):
         """Stream from this device of the relay's; asked for at each session unless it's the one the
@@ -390,9 +483,11 @@ class Bridge:
         self.connected = True
         self._active += [local, remote]
         remote.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        link = HackRFLink(self.hackrf_settings) if self.device.get("type") == "hackrf" else None
+        link = HackRFLink(self.hackrf_settings, self.features) if self.device.get("type") == "hackrf" else None
         if link is not None:
-            remote.sendall(hackrf_commands(self.hackrf_settings))
+            with link.send_lock:
+                remote.sendall(hackrf_commands(self.hackrf_settings))
+            self._links.append((link, remote))
         if rest:
             local.sendall(link.incoming(rest) if link else rest)
 
@@ -407,7 +502,11 @@ class Bridge:
                     if link is not None:
                         data = link.incoming(data) if count else link.outgoing(data)
                     if data:
-                        dst.sendall(data)
+                        if link is not None and not count:
+                            with link.send_lock:
+                                dst.sendall(data)
+                        else:
+                            dst.sendall(data)
             except OSError:
                 pass
             for s in (src, dst):
@@ -420,6 +519,8 @@ class Bridge:
         t.start()
         pump(remote, local, True)
         t.join(2)
+        if link is not None:
+            self._drop_link(link)
         for s in (local, remote):
             s.close()
             if s in self._active:

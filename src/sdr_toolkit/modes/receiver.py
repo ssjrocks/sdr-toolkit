@@ -94,8 +94,9 @@ class ReceiverMode(Mode):
                               for r in dsp.HACKRF_RATES)
                 + tuple((r, f"{r / 1e6:g} MS/s ({r / 1e6 * 0.9:.2f} MHz of spectrum)") for r in dsp.RATES),
                 help="How wide a slice of the band the dongle sends. 2.4 MS/s is the most a cheap dongle "
-                     "does without dropping samples; a HackRF does up to 19.2 here (40 MB/s over a relay: a "
-                     "wired LAN). Through a relay over the internet, lower is gentler."),
+                     "does without dropping samples; a HackRF does up to 19.2 here. Over a relay each MS/s is "
+                     "2 MB/s: 19.2 needs gigabit Ethernet, a 100 Mbit link carries up to about 5.5 (the network "
+                     "meter says when samples are being lost). Through a relay over the internet, lower is gentler."),
         Setting("gain_mode", "Gain", "auto", "choice",
                 choices=(("auto", "Automatic (tuner AGC)"), ("manual", "Manual (below)")),
                 help="Automatic lets the tuner set its own gain; manual uses the gain below."),
@@ -554,21 +555,29 @@ class ReceiverMode(Mode):
         if req is not None:
             what, lo, hi = req
             if what == "start":
-                self.survey = Survey(int(self.values["rate"]), self._tuner(), self._settle(),
-                                     dwell=float(self.values["dwell_ms"]) / 1000)
-                if lo is not None:
-                    self.survey.set_view(lo, hi)
-                self._survey_tune(now)
+                if self.survey is not None:
+                    self._end_survey()
+                bridge = self._sweep_bridge()
+                if bridge is not None:
+                    self.survey = self._hackrf_sweep(bridge, lo, hi)
+                else:
+                    self.survey = Survey(int(self.values["rate"]), self._tuner(), self._settle(),
+                                         dwell=float(self.values["dwell_ms"]) / 1000)
+                    if lo is not None:
+                        self.survey.set_view(lo, hi)
+                    self._survey_tune(now)
             elif what == "view" and self.survey is not None:
                 self.survey.set_view(lo, hi)
-                self._survey_tune(now)
+                if isinstance(self.survey, Survey):
+                    self._survey_tune(now)
             elif what == "stop" and self.survey is not None:
-                self.survey = None
-                self.src.command(SET_FREQ, int(self.center))        # back to where the receiver was
+                self._end_survey()
                 return True
         sv = self.survey
         if sv is None:
             return False
+        if not isinstance(sv, Survey):
+            return True                       # the HackRF sweeps by itself, on its own connection
         if sv.feed(x, now):
             nxt = sv.next_center()
             if nxt != sv.current:
@@ -576,6 +585,31 @@ class ReceiverMode(Mode):
             else:
                 sv.tuned(nxt, now - sv.settle)                         # staying put: no settling needed
         return True
+
+    def _sweep_bridge(self):
+        """The relay, when the survey can be the HackRF's own sweep (relays from 0.2.0)."""
+        from .. import relay
+        b = relay.current() if self.values.get("input") == "rtl" else None
+        return b if b is not None and self._tuner() == 100 and "sweep" in b.features else None
+
+    def _hackrf_sweep(self, bridge, lo, hi):
+        """The relay serves one connection at a time: the receiver's stream closes while the HackRF sweeps."""
+        from ..receiver.hackrf_sweep import HackRFSweep
+        self.src.close()
+        self.src = _Paused(self.src)
+        s = bridge.hackrf_settings
+        gains = {"lna": s.get("lna", 16), "vga": s.get("vga", 20), "amp": s.get("amp"), "antenna": s.get("antenna")}
+        return HackRFSweep(bridge, lo if lo is not None else 1e6, hi if hi is not None else 6000e6, gains)
+
+    def _end_survey(self):
+        sv, self.survey = self.survey, None
+        if isinstance(sv, Survey):
+            self.src.command(SET_FREQ, int(self.center))        # back to where the receiver was
+            return
+        sv.stop()
+        if isinstance(self.src, _Paused):                       # the receiver's own stream again
+            self.src = RtlTcp("127.0.0.1", self.src.bridge_port)
+            self._configure_dongle()
 
     def _settle(self):
         return float(self.values["settle_ms"]) / 1000 + (0.25 if self.via else 0)
@@ -867,6 +901,9 @@ class ReceiverMode(Mode):
                 self._halt.set()
             if getattr(self, "_thread", None) is not None:
                 self._thread.join(5)
+            sv = getattr(self, "survey", None)
+            if sv is not None and not isinstance(sv, Survey):
+                sv.stop()
             if getattr(self, "decoder", None) is not None:
                 self.decoder.stop()
                 self.decoder = None
@@ -888,3 +925,29 @@ class ReceiverMode(Mode):
                         log.exception("closing %s", part)
                     setattr(self, part, None)
         return []
+
+
+class _Paused:
+    """The receiver's source while a relay's HackRF sweeps on its own connection: nothing to send, and a
+    token block now and then so the receiver's loop keeps going."""
+
+    tuner = 100
+
+    def __init__(self, was):
+        from .. import relay
+        b = relay.current()
+        self.bridge_port = b.local_port if b is not None else 0
+        self.received = getattr(was, "received", 0)
+
+    def read(self) -> bytes:
+        time.sleep(0.05)
+        return b"\x80\x80" * 64
+
+    def command(self, cmd, value):
+        pass
+
+    def set_rate(self, rate):
+        pass
+
+    def close(self):
+        pass

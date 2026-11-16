@@ -791,9 +791,30 @@ if relay_src.is_dir():
             break
     results["link_meters"] = (win.links_bar.isVisible() and not win.source_row.isVisible()
                               and bool(win.links_bar.net.value) and bool(win.links_bar.usb.value)
-                              and "ping" in win.links_bar.net.text() and not win.hackrf_btn.isVisible())
+                              and "ping" in win.links_bar.net.text() and not win.hackrf_bar.isVisible())
+    # The HackRF bar, while the relay's device is a HackRF: what's set on it reaches the bridge (every stream)
+    # and is kept, the filter for this page only; the automatic gain turns a quiet input up.
+    _b = _relay_mod.current()
+    _b.device = {"type": "hackrf", "name": "HackRF One"}
+    win._show_hackrf_bar()
+    bar = win.hackrf_bar
+    _shown = bar.isVisible() and bar.gain.currentData() == "auto" and not bar.lna.isEnabled()
+    bar.gain.setCurrentIndex(bar.gain.findData("manual"))
+    bar.lna.setCurrentIndex(bar.lna.findData(32))
+    bar.filter.setCurrentIndex(bar.filter.findData(5000000))
+    _set = (_b.hackrf_settings.get("lna") == 32 and _b.hackrf_settings.get("filter") == 5000000
+            and int(win.settings.value("hackrf/lna")) == 32 and int(win.settings.value("hackrf/filter_adsb")) == 5000000
+            and bar.lna.isEnabled())
+    bar.gain.setCurrentIndex(bar.gain.findData("auto"))
+    _before = _b.hackrf_settings["lna"] + _b.hackrf_settings["vga"]
+    win._agc_step({"dbfs": -40, "peak": 3, "clipped": 0})
+    _agc = _b.hackrf_settings["lna"] + _b.hackrf_settings["vga"] > _before and bar.vga.value() == _b.hackrf_settings["vga"]
+    win.hackrf_bar.meter.set_level({"dbfs": -20, "peak": 40, "clipped": 0})
+    results["hackrf_bar"] = _shown and _set and _agc and "-20 dBFS" in bar.meter.text()
     if shots:
         win.grab().save(str(shots / "links.png"))
+    _b.device = {"type": "rtl"}
+    win._show_hackrf_bar()
     win._stop()
     win.coverage = None
     win.mode.values["input"] = "file"
