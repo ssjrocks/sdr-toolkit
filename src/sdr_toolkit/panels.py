@@ -752,5 +752,7 @@ class RelayDialog(QDialog):
             self.bridge = bridge
             self.accept()
 
-        self.win._run_task(lambda: self.relay.connect(t["host"], t["port"], password, t.get("name", "")), done,
+        device = self.settings.value(self.relay.relay_device_key(t["host"], t["port"])) or None   # picked before
+        self.win._run_task(lambda: self.relay.connect(t["host"], t["port"], password, t.get("name", ""), device),
+                           done,
                            lambda msg: self.note.setText(msg))

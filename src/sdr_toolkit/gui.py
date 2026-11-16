@@ -2238,6 +2238,13 @@ class MainWindow(QMainWindow):
             self._relay_update_action = menu.addAction("Looking for a newer relay version…")
             self._relay_update_action.setEnabled(False)
             self._relay_update_action.triggered.connect(self.update_relay)
+            if len(b.devices) > 1:
+                devices = menu.addMenu("Device")
+                for d in b.devices:
+                    label = d.get("name", d.get("id", "?")) + (f" ({d['serial'][-8:]})" if d.get("serial") else "")
+                    act = devices.addAction(label, lambda d=d: self.use_relay_device(d["id"]))
+                    act.setCheckable(True)
+                    act.setChecked(d.get("id") == b.device_id)
             menu.addAction("Check the relay's dongle…", self.check_relay_dongle)
             menu.addAction("Disconnect", self.disconnect_relay)
             self.relay_btn.setMenu(menu)
@@ -2248,6 +2255,16 @@ class MainWindow(QMainWindow):
         log.info(message)
         if restart and self.running and self._is_radio():
             self._restart_mode()
+
+    def use_relay_device(self, device_id):
+        """Stream from another of the relay's devices (an RTL-SDR or a HackRF), remembered for this relay."""
+        from . import relay
+        b = relay.current()
+        if b is None:
+            return
+        b.use_device(device_id, b.relay_choice)
+        self.settings.setValue(relay.relay_device_key(b.host, b.port), device_id)
+        self._relay_changed(f"The relay {b.name}: using its {b.device.get('name') or device_id}")
 
     def disconnect_relay(self):
         from . import relay

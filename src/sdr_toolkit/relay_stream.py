@@ -67,7 +67,10 @@ def main(argv=None):
         sock.sendall(cmds)
         head = b""
         while len(head) < 12:
-            data = sock.recv(12 - len(head))
+            try:
+                data = sock.recv(12 - len(head))
+            except ConnectionResetError:          # the bridge hung up: the relay refused (it says why)
+                data = b""
             if not data:
                 sys.exit("relay_stream: the relay closed the connection (busy, wrong password or no dongle: "
                          "see the relay's window)")

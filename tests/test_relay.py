@@ -286,6 +286,62 @@ def test_a_relay_whose_dongle_sends_nothing(make_relay, tmp_path):
     assert r.session is None
 
 
+HACKRF = {"index": 0, "id": "hackrf:000000000000000090186", "type": "hackrf", "name": "HackRF One",
+          "serial": "000000000000000090186"}
+
+
+def relay_with_devices(make_relay, tmp_path, devices):
+    """A relay whose window is set to RTL-SDR 0, with these devices plugged in: opening one that
+    isn't fails as the real relay does ("Couldn't open the RTL-SDR (error -1)")."""
+    from sdr_relay.rtlsdr import RtlError
+    rec = tmp_path / "x.cu8"
+    rec.write_bytes(bytes(2400000))
+    r = make_relay(rec)
+    r.config.device = "rtl:0"
+    r.describe_devices = lambda: devices
+    r.opened = []
+
+    def opener(device=None):
+        r.opened.append(device or r.config.device)
+        if (device or r.config.device) not in [d["id"] for d in devices]:
+            raise RtlError("Couldn't open the RTL-SDR (error -1). Close any other program using it.")
+        return FileDongle(rec)
+
+    r.open_dongle = opener
+    return r
+
+
+def test_a_relay_set_to_an_absent_dongle_uses_the_hackrf_it_has(make_relay, tmp_path):
+    # As in the problem report: relay 0.2.0 still set to "RTL-SDR 0", with only a HackRF plugged in.
+    r = relay_with_devices(make_relay, tmp_path, [HACKRF])
+    b = relay.connect("127.0.0.1", r.config.port, "pw")
+    assert b.device_id == HACKRF["id"] and b.want_device == HACKRF["id"] and b.device["type"] == "hackrf"
+    mode, ev = run_live("adsb", lambda ev: r.opened, wait=10)
+    assert r.opened and set(r.opened) == {HACKRF["id"]}
+    assert not [e.text for e in ev if e.kind == "line" and e.style == "warn" and "open" in (e.text or "")]
+
+
+def test_picked_device_and_the_relays_own_choice():
+    rtl = {"id": "rtl:0", "type": "rtl", "name": "RTL-SDR"}
+    assert relay.choose_device([rtl, HACKRF], "rtl:0") == "rtl:0"                 # its own, plugged in
+    assert relay.choose_device([rtl, HACKRF], "rtl:0", HACKRF["id"]) == HACKRF["id"]   # picked here
+    assert relay.choose_device([rtl], "rtl:0", HACKRF["id"]) == "rtl:0"           # picked, but gone
+    assert relay.choose_device([{"index": 0, "name": "old relay"}], "0") == "0"  # relays before 0.2.0
+    b = relay.Bridge("h", 1)
+    b.devices = [rtl, HACKRF]
+    b.use_device("rtl:0", "rtl:0")
+    assert b.want_device is None and b.device["type"] == "rtl"       # nothing to ask for: older relays too
+
+
+def test_a_refused_stream_says_the_relays_reason(make_relay, tmp_path):
+    r = relay_with_devices(make_relay, tmp_path, [])
+    relay.connect("127.0.0.1", r.config.port, "pw")
+    mode, ev = run_live("adsb", lambda ev: any("Couldn't open" in (e.text or "") for e in ev), wait=10)
+    warn = [e.text for e in ev if e.kind == "line" and e.style == "warn"]
+    assert any("Test relay: Couldn't open the RTL-SDR" in t for t in warn), warn
+    assert not any("Errno" in t for t in warn), warn
+
+
 def test_relay_dongle_check(make_relay, tmp_path):
     rec = tmp_path / "x.cu8"
     rec.write_bytes(bytes(256))

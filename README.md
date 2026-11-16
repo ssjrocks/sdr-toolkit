@@ -147,6 +147,8 @@ button's menu says whether the relay is up to date and offers **Update the relay
 newer SDR Tools Relay is out (the relay must have a password, and relays from 0.1.2 on).
 
 **A HackRF on a relay** (SDR Tools Relay 0.2.0 on): every SDR mode uses it as it would a dongle.
+If the device set in the relay's window isn't plugged in, the toolkit uses one the relay has; with
+several, pick one under **Device** in the relay button's menu (remembered for that relay).
 Tuning goes to 6 GHz, Spectrum & receiver offers the HackRF's 4.8-19.2 MS/s, and lower rates are
 narrowed down here from the nearest rate the HackRF takes (2 MS/s and up). **HackRF…** next to
 Start sets the amp, antenna power, manual LNA / VGA gain and baseband filter; a running receiver

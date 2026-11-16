@@ -211,6 +211,9 @@ class RadioMode(ProcessMode):
         return f"Listening on {where} · {self.elapsed()}"
 
     def upstream_error(self, line):
+        b = self.bridge()
+        if b is not None and b.last_error and "relay_stream:" in line:
+            line = f"The relay {b.last_error}"         # its own reason ("…: Couldn't open the RTL-SDR")
         return self.device_problem(line) or super().upstream_error(line)
 
     def gain_db(self) -> str | None:

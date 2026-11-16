@@ -173,10 +173,11 @@ class HackRFLink:
         return d(data) if d is not None else data
 
 
-def open_session(host, port, password="", timeout=8.0, check=False):
+def open_session(host, port, password="", timeout=8.0, check=False, device=None):
     """Connect and log in. Returns (socket, hello, answer, bytes already received after it).
     With *check*, only the password is checked: the relay doesn't open its dongle (relays before
-    0.1.2 ignore it and open it)."""
+    0.1.2 ignore it and open it). *device* ("hackrf:<serial>", "rtl:1") asks for one of the relay's
+    devices rather than the one set in its window (relays from 0.2.0 on)."""
     try:
         sock = socket.create_connection((host, int(port)), timeout=timeout)
     except OSError as e:
@@ -189,8 +190,11 @@ def open_session(host, port, password="", timeout=8.0, check=False):
             raise Busy(f"{hello.get('name', 'The relay')} is in use by someone else")
         if hello.get("password") and not password:
             raise RelayError(f"{hello.get('name', 'The relay')} needs a password")
-        sock.sendall(json.dumps({"client": "SDR Toolkit", "version": __version__, "check": check,
-                                 "auth": auth(password, hello.get("nonce", ""))}).encode() + b"\n")
+        reply = {"client": "SDR Toolkit", "version": __version__, "check": check,
+                 "auth": auth(password, hello.get("nonce", ""))}
+        if device:
+            reply["device"] = device
+        sock.sendall(json.dumps(reply).encode() + b"\n")
         if rest:
             raise RelayError("unexpected data from the relay")
         answer, rest = _read_line(sock)
@@ -308,6 +312,10 @@ class Bridge:
         self.connected = False
         self.bytes = 0
         self.device: dict = {}               # what the relay serves ({"type": "rtl"} or the HackRF's details)
+        self.devices: list[dict] = []        # the relay's devices, from its hello
+        self.device_id = ""                  # the one used ("rtl:0", "hackrf:<serial>")
+        self.want_device = None              # asked for at each session, when not the relay's own choice
+        self.relay_choice = ""               # the device set in the relay's window
         self.hackrf_settings: dict = {}      # amp, antenna, filter: sent to a HackRF at each session's start
         self._sock = None
         self._halt = threading.Event()
@@ -318,6 +326,14 @@ class Bridge:
         """The relay is on this network (a private LAN address, or this PC), so at your location.
         Tailscale (100.64.0.0/10) and internet addresses could be anywhere."""
         return is_lan(self.host)
+
+    def use_device(self, device_id, relay_choice=""):
+        """Stream from this device of the relay's; asked for at each session unless it's the one the
+        relay's window has set (*relay_choice*)."""
+        d = next((d for d in self.devices if d.get("id") == device_id), {})
+        self.device_id = device_id
+        self.want_device = device_id if device_id and device_id != relay_choice else None
+        self.device = {"type": d.get("type", "rtl"), "name": d.get("name", "")}
 
     def start(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -355,7 +371,8 @@ class Bridge:
         end = time.monotonic() + BUSY_RETRY
         while True:
             try:
-                remote, hello, answer, rest = open_session(self.host, self.port, self.password)
+                remote, hello, answer, rest = open_session(self.host, self.port, self.password,
+                                                           device=self.want_device)
                 break
             except Busy as e:
                 if time.monotonic() < end and not self._halt.is_set():
@@ -418,8 +435,10 @@ def current() -> Bridge | None:
     return _bridge
 
 
-def connect(host, port, password="", name="") -> Bridge:
-    """Check the relay answers and the password is right, then start the bridge to it."""
+def connect(host, port, password="", name="", device=None) -> Bridge:
+    """Check the relay answers and the password is right, then start the bridge to it. It streams from
+    *device* if the relay has it, else the device set in the relay's window, or if that isn't plugged
+    in (an RTL-SDR swapped for a HackRF), the first one the relay has."""
     global _bridge
     sock, hello, answer, _ = open_session(host, port, password, check=True)
     sock.close()
@@ -429,12 +448,26 @@ def connect(host, port, password="", name="") -> Bridge:
     b.relay_version = str(hello.get("version", ""))
     b.features = list(hello.get("features") or [])
     b.devices = list(hello.get("devices") or [])
-    b.device_id = str(hello.get("device") or "")
-    chosen = next((d for d in b.devices if d.get("id") == b.device_id), b.devices[0] if b.devices else {})
-    b.device = {"type": chosen.get("type", "rtl"), "name": chosen.get("name", "")}
+    b.relay_choice = str(hello.get("device") or "")
+    b.use_device(choose_device(b.devices, b.relay_choice, device), b.relay_choice)
     b.start()
     _bridge = b
     return b
+
+
+def relay_device_key(host, port) -> str:
+    """Where the device picked on a relay is remembered (QSettings)."""
+    return f"relay_device/{host}_{port}".replace(":", "_")
+
+
+def choose_device(devices, relay_choice, wanted=None) -> str:
+    """Which of a relay's devices to use: *wanted* if it has it, its own choice if that's plugged in,
+    else the first it has."""
+    ids = [d.get("id") for d in devices if d.get("id")]      # relays before 0.2.0 give no ids
+    for d in (wanted, relay_choice):
+        if d and d in ids:
+            return d
+    return ids[0] if ids else relay_choice
 
 
 def disconnect():
