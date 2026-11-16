@@ -27,6 +27,8 @@ logbook takes them off the list; the files stay.
 
 ## Modes (phase 1: speaker audio)
 
+These are under **WebSDR** in the list: they decode what the speakers play (a WebSDR in the browser, a radio's audio). Each page has its own **Listen to** selector for the sound device.
+
 | Mode | Decoder | Adjustable |
 |---|---|---|
 | Morse / CW, MCW | own (from [Morse Decoder](https://github.com/ssjrocks/morse-decoder)) | tone, filter width, speed (auto, Talkpod steps, fixed 5–60 WPM), sensitivity |
@@ -42,10 +44,10 @@ logbook takes them off the list; the files stay.
 
 Pictures go to `~/Pictures/SSTV` and `~/Pictures/WEFAX` (changeable).
 
-## Modes (phase 2: RTL-SDR)
+## Modes (phase 2: SDR)
 
-These need the radio samples themselves, which a WebSDR can't give: the toolkit runs the RTL-SDR
-directly. Each can also read an **IQ recording** instead (unsigned 8-bit, as `rtl_sdr` writes
+These are under **SDR** in the list. They need the radio samples themselves, which a WebSDR can't
+give: the toolkit runs the RTL-SDR directly, or a relay's RTL-SDR or HackRF. Each can also read an **IQ recording** instead (unsigned 8-bit, as `rtl_sdr` writes
 it), set under **Settings → Input**: handy without a dongle, or to decode something again.
 
 | Mode | Decoder | Adjustable |
@@ -143,6 +145,17 @@ reached over the internet or Tailscale, which could be anywhere. A connection ov
 sample rate: about 38 Mbit/s for ADS-B, 4 for AIS and ISM, 16 for LoRa. While connected, the relay
 button's menu says whether the relay is up to date and offers **Update the relay to …** when a
 newer SDR Tools Relay is out (the relay must have a password, and relays from 0.1.2 on).
+
+**A HackRF on a relay** (SDR Tools Relay 0.2.0 on): every SDR mode uses it as it would a dongle.
+Tuning goes to 6 GHz, Spectrum & receiver offers the HackRF's 4.8-19.2 MS/s, and lower rates are
+narrowed down here from the nearest rate the HackRF takes (2 MS/s and up). **HackRF…** next to
+Start sets the amp, antenna power, manual LNA / VGA gain and baseband filter; a running receiver
+takes them at once, other modes start again with them.
+
+**Link meters:** the SDR pages show two bars at the top: the device's **USB link** (this PC's
+dongle, or the relay's device) and the **relay network link**. Each fills against what the sample
+rate needs (green keeping up, orange short, red dropping buffers), with the data rate, and for the
+network the ping and the buffers the relay dropped (relays from 0.2.0 on).
 
 **On Android:** [`android/`](android/README.md) has a phone version of Spectrum & receiver and
 ADS-B, with an RTL-SDR plugged into the phone (through the free Rtl-sdr driver app) or any relay
@@ -364,6 +377,8 @@ can see with your eyes (lit by the Sun against a dark sky), where it is now on t
 ground track and footprint, a sky plot of the pass, and every radio it carries: frequency, mode,
 baud rate, whether it's still heard, and what you can do with it here (listen in NFM or SSB,
 decode APRS, SSTV, Morse or telemetry) or what it needs instead (SatDump for weather pictures).
+Downlinks at every frequency are listed: one beyond an RTL-SDR (above 1.77 GHz or below 24 MHz)
+says what reaches it (a HackRF or other SDR, a dish, above 6 GHz a downconverter).
 **Listen** opens Spectrum & receiver tuned to it and follows its Doppler shift (up to ±3.5 kHz on
 2 m, ±10 kHz on 70 cm) through the pass. Right-click a satellite in the list or in **Coming over**
 for **Listen for its beacon** (a CW beacon, decoded as Morse, or another beacon), **Listen for its
@@ -374,7 +389,7 @@ has none. With none picked, the map shows where every satellite in the list is (
 its ground track 12 hours back (faint) and 12 hours ahead (dashed), with a numbered dot for each hour
 ahead. Click empty map to let it go: the list's satellites come back and the view stays where it is
 (**Fit** sizes it to them again). **Coming over** lists every pass in the next 12 hours. Set your location in Settings
-first; it's shared with the RTL-SDR modes.
+first; it's shared with the SDR modes.
 
 **Satellite telemetry** is decoded by [gr-satellites](https://github.com/daniestevez/gr-satellites)
 (Daniel Estévez), from a 40 kHz IQ channel of the receiver that follows the Doppler shift. It knows
