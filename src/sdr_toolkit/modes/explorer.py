@@ -18,7 +18,7 @@ DEFAULTS = {"freq_mhz": 438.8, "demod": "NFM", "bandwidth": 12500, "mute": True,
 class ExplorerMode(ReceiverMode):
     id = "explorer"
     name = "DMR / P25 / digital voice"
-    group = "RTL-SDR"
+    group = "SDR"
     summary = ("Explore digital voice around you: signals in view are found, tried with DSD-FME and listed as "
                "they appear (voice or control channels, systems, talkgroups, radios), and you can listen to all of "
                "them at once or single out a channel, talkgroup or radio.")

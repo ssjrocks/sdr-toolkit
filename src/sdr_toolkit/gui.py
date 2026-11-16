@@ -47,13 +47,14 @@ from PyQt6.QtWidgets import (
 from . import APP_ID, APP_NAME, __version__, aircraftdb, appreports, coverage, deps, updater
 from .calls_view import CallsPanel
 from .explorer_view import ExplorerPane
+from .links_view import LinksBar
 from .satellites.view import SatellitePanel
 from .widgets import (ORDER, BoxCombo, FitLabel, SortItem, drop_oldest, filling, following, hovered, jump_to,
                       new_columns, remember_columns, reselect, sortable, unsorted, user_columns)
 from .capture import AudioCapture, list_outputs
 from .logbook import Logbook
 from .mapview import MapView
-from .modes import GROUPS, MODES
+from .modes import AUDIO_GROUPS, GROUPS, MODES
 from .modes.base import Event, MissingParts, Mode, Setting
 from .panels import DetailsPanel, LogbookWindow, Photos, RelayDialog
 from .receiver.view import ReceiverPanel
@@ -646,13 +647,25 @@ class MainWindow(QMainWindow):
         self.tree.setHeaderHidden(True)
         self.tree.setMinimumWidth(190)
         self._items = {}
+        web = None
         for group in GROUPS:
             g = QTreeWidgetItem([group])
             g.setFlags(Qt.ItemFlag.ItemIsEnabled)
             f = g.font(0)
             f.setBold(True)
             g.setFont(0, f)
-            self.tree.addTopLevelItem(g)
+            if group in AUDIO_GROUPS:              # the audio decoders (a WebSDR, a radio's speaker): one branch
+                if web is None:
+                    web = QTreeWidgetItem(["WebSDR"])
+                    web.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                    web.setFont(0, f)
+                    web.setToolTip(0, "Decoders for audio: a WebSDR in the browser, a radio's speaker, any "
+                                      "sound this PC plays (choose it in each one's Listen to)")
+                    self.tree.addTopLevelItem(web)
+                    web.setExpanded(True)
+                web.addChild(g)
+            else:
+                self.tree.addTopLevelItem(g)
             for M in MODES:
                 if M.group == group and not getattr(M, "hidden", False):
                     it = QTreeWidgetItem([M.name])
@@ -676,10 +689,26 @@ class MainWindow(QMainWindow):
         self.update_btn = QPushButton()
         self.update_btn.setVisible(False)
         self.update_btn.clicked.connect(self.install_update)
+        # "Listen to" belongs to the audio decoders: a row of their own page (above the waterfall).
+        self.source_row = QWidget()
+        srl = QHBoxLayout(self.source_row)
+        srl.setContentsMargins(0, 0, 0, 0)
+        srl.addWidget(QLabel("Listen to"))
+        srl.addWidget(self.source_combo, 1)
+        srl.addWidget(refresh)
+        # The SDR pages have their links instead: the device's USB link and the relay's network link.
+        self.links_bar = LinksBar()
+        self.links_bar.setVisible(False)
+        self.hackrf_btn = QPushButton("HackRF…")
+        self.hackrf_btn.setToolTip("The relay's HackRF: RF amp, antenna power, LNA and VGA gain, baseband filter")
+        self.hackrf_btn.clicked.connect(self.hackrf_settings)
+        self.hackrf_btn.setVisible(False)
+        self._links_busy = False
+        self._link_last = (0.0, 0)
         top = QHBoxLayout()
-        top.addWidget(QLabel("Listen to"))
-        top.addWidget(self.source_combo, 1)
-        top.addWidget(refresh)
+        top.addWidget(self.links_bar, 1)
+        top.addStretch(0)
+        top.addWidget(self.hackrf_btn)
         top.addWidget(self.start_btn)
         self.relay_btn = QPushButton("Connect relay…")
         self.relay_btn.setToolTip("Use an RTL-SDR on another PC running SDR Tools Relay")
@@ -816,6 +845,7 @@ class MainWindow(QMainWindow):
         middle = QWidget()
         ml = QVBoxLayout(middle)
         ml.setContentsMargins(0, 0, 0, 0)
+        ml.addWidget(self.source_row)
         vsplit = QSplitter(Qt.Orientation.Vertical)
         vsplit.addWidget(self.waterfall)
         out = QWidget()
@@ -869,6 +899,9 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.level_label)
 
         self.report_finished.connect(self._on_report_finished)
+        self.links_timer = QTimer(self)
+        self.links_timer.timeout.connect(self._update_links)
+        self.links_timer.start(1000)
         self.timer = QTimer(self)
         self.timer.setInterval(50)
         self.timer.timeout.connect(self.tick)
@@ -977,10 +1010,13 @@ class MainWindow(QMainWindow):
         # Radio modes read the RTL-SDR or a recording, not the speakers.
         radio = self._is_radio() or getattr(self.mode, "source", "audio") == "none"
         self.level_label.setText("")
-        self.source_combo.setEnabled(not radio)
+        self.source_row.setVisible(not radio)
         self.waterfall.setVisible(not radio)
-        self.source_combo.setToolTip("RTL-SDR modes don't use this: see Settings → Input." if radio else
-                                     "The output to listen to. Default follows your speaker setting.")
+        sdr = self._is_radio()
+        self.links_bar.setVisible(sdr)
+        self._show_hackrf_btn()
+        if sdr:
+            self._update_links()
         self._mode_specific = False
         self.show_general_missing()
         # Listening starts with the mode: pick one and play the signal.
@@ -1031,7 +1067,7 @@ class MainWindow(QMainWindow):
         if self.running and setting.restart:
             self._stop_mode()
             self.mode.values = values
-            self._start_mode()
+            self._restart_mode(stopped=True)
         elif self.running:
             self.mode.apply(values)
         else:
@@ -1614,6 +1650,16 @@ class MainWindow(QMainWindow):
         self.start_btn.setText("Start")
         self.status.setText("Stopped")
 
+    def _restart_mode(self, stopped=False):
+        """Starts the mode again (new settings, a new relay...). If it can't start, the window stops,
+        still showing why, rather than running on with a mode that isn't."""
+        if not stopped:
+            self._stop_mode()
+        if not self._start_mode() and self.running:
+            why = self.status.text()
+            self._stop()
+            self.status.setText(why)
+
     def _start_mode(self) -> bool:
         try:
             missing = deps.missing(self.mode.requires)
@@ -1729,8 +1775,7 @@ class MainWindow(QMainWindow):
         except Exception as e:  # keep listening; send the bug in
             log.exception("%s decoder failed", self.mode.id)
             appreports.report_error(e, f"decoding {self.mode.id}")
-            self._stop_mode()
-            self._start_mode()
+            self._restart_mode()
             return
         self.handle(events)
         if time.time() - self._last_actions >= 1.0:
@@ -2050,9 +2095,141 @@ class MainWindow(QMainWindow):
         if dlg.exec() and dlg.bridge is not None:
             self._relay_changed(f"Connected to the relay {dlg.bridge.name}: the RTL-SDR modes use its dongle")
 
+    # ---- the SDR links and the HackRF ------------------------------------------------------------
+
+    HACKRF_KEYS = ("amp", "antenna", "filter", "lna", "vga")
+
+    def _hackrf_saved(self) -> dict:
+        out = {}
+        for k in self.HACKRF_KEYS:
+            v = self.settings.value(f"hackrf/{k}", None)
+            out[k] = None if v in (None, "", "none") else int(v)
+        return out
+
+    def _show_hackrf_btn(self):
+        from . import relay
+        b = relay.current()
+        hackrf = b is not None and b.device.get("type") == "hackrf"
+        self.hackrf_btn.setVisible(hackrf and self._is_radio())
+        if b is not None:
+            b.hackrf_settings = self._hackrf_saved()
+
+    def hackrf_settings(self):
+        """The relay's HackRF: what the app sends it at the start of each session (and now, live)."""
+        from . import relay
+        from PyQt6.QtWidgets import QDialogButtonBox, QFormLayout
+        cur = self._hackrf_saved()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("HackRF")
+        form = QFormLayout(dlg)
+        amp = QCheckBox("RF amp on (+14 dB at the antenna input; off for strong signals)")
+        amp.setChecked(bool(cur["amp"]))
+        ant = QCheckBox("Antenna power on (3.3 V on the antenna port, for an active antenna or LNA)")
+        ant.setChecked(bool(cur["antenna"]))
+        manual = QCheckBox("Set the LNA and VGA gain here (instead of the mode's gain)")
+        manual.setChecked(cur["lna"] is not None and cur["vga"] is not None)
+        lna = QComboBox()
+        for g in range(0, 41, 8):
+            lna.addItem(f"{g} dB", g)
+        lna.setCurrentIndex(max(lna.findData(cur["lna"] if cur["lna"] is not None else 16), 0))
+        vga = QComboBox()
+        for g in range(0, 63, 2):
+            vga.addItem(f"{g} dB", g)
+        vga.setCurrentIndex(max(vga.findData(cur["vga"] if cur["vga"] is not None else 20), 0))
+        filt = QComboBox()
+        filt.addItem("Automatic (about 0.75 x the sample rate)", 0)
+        for bw in (1750000, 2500000, 3500000, 5000000, 5500000, 6000000, 7000000, 8000000, 9000000, 10000000,
+                   12000000, 14000000, 15000000, 20000000, 24000000, 28000000):
+            filt.addItem(f"{bw / 1e6:g} MHz", bw)
+        filt.setCurrentIndex(max(filt.findData(cur["filter"] or 0), 0))
+        for w in (lna, vga):
+            w.setEnabled(manual.isChecked())
+            manual.toggled.connect(w.setEnabled)
+        form.addRow(amp)
+        form.addRow(ant)
+        form.addRow(manual)
+        form.addRow("LNA (RF) gain", lna)
+        form.addRow("VGA (baseband) gain", vga)
+        form.addRow("Baseband filter", filt)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        form.addRow(btns)
+        if not dlg.exec():
+            return
+        new = {"amp": int(amp.isChecked()), "antenna": int(ant.isChecked()), "filter": int(filt.currentData()),
+               "lna": int(lna.currentData()) if manual.isChecked() else None,
+               "vga": int(vga.currentData()) if manual.isChecked() else None}
+        for k in self.HACKRF_KEYS:
+            self.settings.setValue(f"hackrf/{k}", "none" if new[k] is None else new[k])
+        b = relay.current()
+        if b is not None:
+            b.hackrf_settings = new
+        src = getattr(self.mode, "src", None) if self.running else None
+        if src is not None and hasattr(src, "sock"):            # the receiver: now, on its connection
+            for data in (relay.hackrf_commands(new),):
+                try:
+                    src.sock.sendall(data)
+                except OSError:
+                    pass
+            self.status.setText("HackRF settings sent")
+        elif self.running and self._is_radio():
+            self._restart_mode()                                    # the others take them as they start again
+            self.status.setText("HackRF settings: the mode started again with them")
+
+    def _update_links(self):
+        """The link meters, each second: from the relay's stats (its device's USB link and the network), or
+        for a dongle on this PC from the receiver's stream."""
+        from . import relay
+        if not self.links_bar.isVisible():
+            return
+        usb, net = self.links_bar.usb, self.links_bar.net
+        b = relay.current()
+        if b is None:
+            net.show_link(None, None, "no relay (the dongle is on this PC)")
+            src = getattr(self.mode, "src", None) if self.running else None
+            got = getattr(src, "received", None)
+            now = time.monotonic()
+            if got is None:
+                usb.title = "USB link"
+                usb.show_link(None, None, "on this PC" if self.running else "not in use")
+                return
+            t0, n0 = self._link_last
+            self._link_last = (now, got)
+            rate = int(self.mode.values.get("rate", 0) or 0)
+            if t0 and now > t0:
+                usb.title = "Dongle USB link"
+                usb.show_link((got - n0) / (now - t0), rate * 2, "")
+            return
+        if self._links_busy:
+            return
+        self._links_busy = True
+        kind = "HackRF" if b.device.get("type") == "hackrf" else "Dongle"
+
+        def done(result):
+            self._links_busy = False
+            st, rtt = result
+            usb.title = f"{kind} USB link (at the relay)"
+            ping = ("ping –" if rtt is None else
+                    f"ping {rtt * 1000:.1f} ms" if rtt < 0.01 else f"ping {rtt * 1000:.0f} ms")
+            if st:
+                dropped = st.get("dropped", 0)
+                usb.show_link(st.get("device_bps"), st.get("needed_bps"), b.device.get("name", ""))
+                net.show_link(st.get("net_bps"), st.get("needed_bps"),
+                              f"{ping} · {dropped} buffers dropped" if dropped else ping,
+                              state="bad" if dropped else None)
+            else:
+                usb.show_link(None, None, "idle" if rtt is not None else "the relay doesn't report it (update it)")
+                net.show_link(None, None, f"{b.name} · {ping}" if rtt is not None else b.name)
+
+        def failed(_msg):
+            self._links_busy = False
+        self._run_task(lambda: relay.stats(b.host, b.port, b.password), done, failed)
+
     def _relay_changed(self, message, restart=True):
         from . import relay
         b = relay.current()
+        self._show_hackrf_btn()
         self.relay_btn.setText(f"Relay: {b.name} ▾" if b else "Connect relay…")
         self.relay_btn.setToolTip(f"The relay {b.name} (version {b.relay_version or '?'})" if b else
                                   "Use an RTL-SDR on another PC running SDR Tools Relay")
@@ -2070,8 +2247,7 @@ class MainWindow(QMainWindow):
         self.status.setText(message)
         log.info(message)
         if restart and self.running and self._is_radio():
-            self._stop_mode()
-            self._start_mode()
+            self._restart_mode()
 
     def disconnect_relay(self):
         from . import relay
@@ -2177,8 +2353,7 @@ class MainWindow(QMainWindow):
             self._fetching_db = False
             self.status.setText("Aircraft database ready: registrations, types and operators")
             if self.mode is not None and self.mode.id == "adsb" and self.running:
-                self._stop_mode()
-                self._start_mode()
+                self._restart_mode()
 
         def failed(msg):
             self._fetching_db = False

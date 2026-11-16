@@ -36,7 +36,7 @@ def compass(deg) -> str:
 class SondeMode(RadioMode):
     id = "sondes"
     name = "Radiosondes (weather balloons)"
-    group = "RTL-SDR"
+    group = "SDR"
     summary = ("Weather balloons' radiosondes: position, altitude, climb, temperature, humidity and pressure, "
                "on a map with their tracks and where they'll land. Decoded with rs1729's decoders.")
     output = "table"

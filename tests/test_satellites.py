@@ -91,7 +91,9 @@ def test_catalogue_from_satnogs():
     meteor = cat[57166]
     assert "Weather" in meteor.categories and any(r.kind == "pictures" and "SatDump" in r.how for r in meteor.radios)
     assert iss.radios[0].alive                                   # heard ones first
-    assert all(r.kind == "out" for r in iss.radios if r.downlink > 1.8e9)
+    s_band = [r for r in iss.radios if r.downlink > 1.8e9]          # listed, with what kind of SDR reaches them
+    assert s_band and all(r.kind != "out" and ("needs an SDR that tunes there" in r.how if r.downlink < 6e9
+                                               else "downconverter" in r.how) for r in s_band)
 
 
 def test_downlinks_sorted_into_what_you_can_do():
@@ -101,7 +103,9 @@ def test_downlinks_sorted_into_what_you_can_do():
     assert classify("CW", None, 435.1e6)[4] == "morse"
     assert classify("USB", None, 145.9e6)[2] == "USB"
     assert classify("BPSK", 1200, 437.0e6)[0] == "telemetry"
-    assert classify("FM", None, 2.4e9)[0] == "out" and classify("FM", None, 10e6)[0] == "out"
+    high, low = classify("FM", None, 2.4e9), classify("FM", None, 10e6)
+    assert high[0] == "listen" and "HackRF" in high[1] and "dish" in high[1]
+    assert low[0] == "listen" and "below an RTL-SDR's 24 MHz" in low[1]
     assert classify("LRPT", 72000, 137.9e6)[0] == "pictures"
 
 

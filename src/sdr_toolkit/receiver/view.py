@@ -404,7 +404,7 @@ class ReceiverPanel(QWidget):
         self.view = SpectrumView()
         self.freq = QDoubleSpinBox()
         self.freq.setDecimals(6)
-        self.freq.setRange(0.0, 2200.0)
+        self.freq.setRange(0.0, 6000.0)
         self.freq.setSuffix(" MHz")
         self.freq.setKeyboardTracking(False)
         self.freq.setSingleStep(0.0125)

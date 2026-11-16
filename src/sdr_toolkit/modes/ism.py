@@ -14,7 +14,7 @@ SHOWN = ("time", "model", "id", "channel", "battery_ok", "mic", "mod", "freq", "
 class ISMMode(RadioMode):
     id = "ism"
     name = "ISM sensors (rtl_433)"
-    group = "RTL-SDR"
+    group = "SDR"
     summary = ("Weather stations, thermometers, tyre-pressure sensors, doorbells, remotes and meters on "
                "315/433/868/915 MHz: over 250 device types. Decoded by rtl_433.")
     output = "table"

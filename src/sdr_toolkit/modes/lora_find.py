@@ -18,7 +18,7 @@ QUIET_REPEAT = 60.0             # s: the same non-LoRa signal on the same freque
 class LoRaFinderMode(RadioMode):
     id = "lora_find"
     name = "LoRa finder (find the settings)"
-    group = "RTL-SDR"
+    group = "SDR"
     summary = ("Finds the LoRa bursts in view and works out each one's settings (bandwidth, spreading factor, "
                "sync word) by itself, then decodes it: LoRaWAN headers, Meshtastic and MeshCore. Says when a "
                "burst isn't LoRa at all.")
@@ -27,7 +27,7 @@ class LoRaFinderMode(RadioMode):
     columns = (("time", "Time"), ("freq", "MHz"), ("what", "What"), ("details", "Decoded"),
                ("settings", "Settings found"), ("width", "Width"), ("dur", "Length"), ("snr", "Signal"))
     settings = RADIO_SETTINGS + (
-        Setting("centre_mhz", "Centre frequency", 917.4, "float", 24.0, 1766.0, 0.1, 3, suffix=" MHz", restart=True,
+        Setting("centre_mhz", "Centre frequency", 917.4, "float", 1.0, 6000.0, 0.1, 3, suffix=" MHz", restart=True,
                 help="The dongle watches 2.2 MHz around this. In Australia LoRaWAN uplinks are mostly on "
                      "916.8-918.2 MHz (917.4 covers them), downlinks on 923.3-927.5, Meshtastic's LongFast on "
                      "919.875 and MeshCore on 916.575; in the US, 902-928 MHz; in Europe, 863-870 MHz."),

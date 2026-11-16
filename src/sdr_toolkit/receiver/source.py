@@ -18,9 +18,11 @@ from .. import system
 
 log = logging.getLogger(__name__)
 
+SET_FREQ_HI = 0x40                  # the relay's: the upper 32 bits of the next SET_FREQ
 SET_FREQ, SET_RATE, SET_GAIN_MODE, SET_GAIN, SET_PPM, SET_IF_GAIN, SET_TEST_MODE, SET_AGC, \
     SET_DIRECT_SAMPLING, SET_OFFSET_TUNING, SET_RTL_XTAL, SET_TUNER_XTAL, SET_GAIN_INDEX, SET_BIAS_TEE = range(1, 15)
-TUNER_NAMES = {0: "unknown", 1: "E4000", 2: "FC0012", 3: "FC0013", 4: "FC2580", 5: "R820T", 6: "R828D"}
+TUNER_NAMES = {0: "unknown", 1: "E4000", 2: "FC0012", 3: "FC0013", 4: "FC2580", 5: "R820T", 6: "R828D",
+               100: "HackRF"}
 START_WAIT = 10.0              # s for rtl_tcp to open the dongle and its port
 MAX_BUFFERED = 2.0            # s of samples kept if processing falls behind; older ones are dropped
 
@@ -68,6 +70,8 @@ class RtlTcp:
 
     def command(self, cmd, value):
         try:
+            if cmd == SET_FREQ and int(value) >> 32:     # above 4.29 GHz (a relay's HackRF): the upper bits first
+                self.sock.sendall(struct.pack(">BI", SET_FREQ_HI, int(value) >> 32))
             self.sock.sendall(struct.pack(">BI", cmd, int(value) & 0xFFFFFFFF))
         except OSError as e:
             self.error = f"rtl_tcp: {e}"

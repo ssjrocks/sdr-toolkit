@@ -12,6 +12,7 @@ from scipy.signal import butter, lfilter, sosfilt, sosfilt_zi
 AUDIO_RATE = 48000
 # Sample rates offered: whole multiples of 48 kHz the RTL2832 can deliver.
 RATES = (2880000, 2400000, 1920000, 1440000, 1200000, 960000, 288000, 240000)
+HACKRF_RATES = (19200000, 9600000, 4800000)    # a HackRF's (2-20 MS/s), multiples of 48 kHz for the channels
 
 MODES = {
     # mode: (default bandwidth Hz, min, max, help)

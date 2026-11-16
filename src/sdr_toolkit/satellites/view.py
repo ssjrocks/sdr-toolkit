@@ -32,8 +32,7 @@ TRACK_HOURS = 12                    # the picked satellite's ground track: this 
 TRACK_STEP = 60.0                   # s between a track's points
 TRACK_EVERY = 600.0                 # s before a track is worked out again (around the time then)
 REFRESH = 1.5                       # s between refreshes while the next passes are coming in
-KIND_NAMES = {"listen": "Listen", "decode": "Decode", "pictures": "Pictures", "telemetry": "Telemetry",
-              "out": "Out of range"}
+KIND_NAMES = {"listen": "Listen", "decode": "Decode", "pictures": "Pictures", "telemetry": "Telemetry"}
 
 
 def when(t, now=None) -> str:

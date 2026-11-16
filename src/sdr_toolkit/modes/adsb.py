@@ -22,7 +22,7 @@ SQUITTERS = 6.2
 class ADSBMode(RadioMode):
     id = "adsb"
     name = "ADS-B aircraft (1090 MHz)"
-    group = "RTL-SDR"
+    group = "SDR"
     summary = "Aircraft positions, callsigns, altitude and speed from their 1090 MHz transponders. Decoded by readsb."
     output = "table"
     map = True

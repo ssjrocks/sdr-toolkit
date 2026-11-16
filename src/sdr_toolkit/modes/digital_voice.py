@@ -83,7 +83,7 @@ class DigitalVoiceMode(RadioMode):
     id = "dmr"
     name = "DMR / P25 / digital voice (one frequency)"
     hidden = True                 # in the list as the explorer; this decodes for it and for decode points
-    group = "RTL-SDR"
+    group = "SDR"
     summary = ("Digital voice radio: DMR, P25, NXDN, D-Star, Yaesu Fusion, dPMR, M17. Shows calls (talkgroup, "
                "radio IDs, callsigns) and plays the voice. Decoded by DSD-FME.")
     requires = ("dsd-fme",)

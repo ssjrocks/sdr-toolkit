@@ -62,7 +62,7 @@ def lora_available() -> dict | None:
 class LoRaMode(RadioMode):
     id = "lora"
     name = "LoRa / Meshtastic / MeshCore"
-    group = "RTL-SDR"
+    group = "SDR"
     summary = ("LoRa frames, decoded as Meshtastic (texts, positions, node names on the default channel) "
                "or MeshCore (adverts, Public channel). LoRa demodulation by gr-lora_sdr.")
     requires = ("gr-lora_sdr", "rtl-sdr")

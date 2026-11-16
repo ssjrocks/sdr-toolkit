@@ -25,7 +25,7 @@ def distance_km(a, b) -> float:
 class AISMode(RadioMode):
     id = "ais"
     name = "AIS ships (VHF)"
-    group = "RTL-SDR"
+    group = "SDR"
     summary = "Ship names, positions, speed and course from their AIS transponders, on a map. Received by direwolf."
     output = "table"
     map = True

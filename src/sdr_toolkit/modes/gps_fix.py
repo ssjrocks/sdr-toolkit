@@ -30,7 +30,7 @@ def _moved_m(a, b) -> float:
 class GPSFixMode(RadioMode):
     id = "gps"
     name = "GPS position fix (1575 MHz)"
-    group = "RTL-SDR"
+    group = "SDR"
     summary = ("Works out where you are from the GPS satellites' own signals, and fills in your location "
                "for the other RTL-SDR modes. Solved by GNSS-SDR.")
     output = "table"

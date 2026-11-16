@@ -36,8 +36,8 @@ class SatelliteMode(Mode):
                      "faint, often behind buildings or trees."),
         Setting("days", "Predict passes for", 5, "int", 1, 10, 1, suffix=" days"),
         Setting("only_hear", "Only satellites I can hear", True, "bool",
-                help="Hide satellites with no downlink an RTL-SDR can receive that's still heard (24 MHz "
-                     "to 1.77 GHz, as SatNOGS reports it)."),
+                help="Hide satellites with no downlink that's still heard (as SatNOGS' observers report it), at "
+                     "any frequency: one beyond an RTL-SDR's range says what kind of SDR reaches it."),
     )
     tuning = Tuning(
         sdr_mode="Pick a satellite and a downlink on its Radio tab, then Listen: Spectrum & receiver tunes "
@@ -83,7 +83,7 @@ class SatelliteMode(Mode):
         self.catalogue = cat
         self._events.append(Event("sat_catalogue", data={"catalogue": cat}))
         self._events.append(Event("status", f"{len(cat)} satellites, {sum(s.can_hear for s in cat.values())} "
-                                            "you can hear with an RTL-SDR"))
+                                            "still heard"))
         here = self.home()
         if here is None:
             self._events.append(Event("status", "Set your location (Settings) for passes"))

@@ -31,4 +31,6 @@ MODES = [
     GPSFixMode,
     SatelliteMode, SatTelemetryMode,
 ]
-GROUPS = ["Text", "Digital (weak signal)", "Pictures", "Packet & paging", "Tones", "RTL-SDR", "Satellites"]
+GROUPS = ["Text", "Digital (weak signal)", "Pictures", "Packet & paging", "Tones", "SDR", "Satellites"]
+# The groups that decode audio (from a WebSDR, a radio's speaker...): under one WebSDR branch in the window.
+AUDIO_GROUPS = ("Text", "Digital (weak signal)", "Pictures", "Packet & paging", "Tones")

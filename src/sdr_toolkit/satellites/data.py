@@ -7,8 +7,9 @@ amateur satellites. Everything is cached in ~/.cache/sdr-toolkit/satellites: the
 fetched again after 12 hours, the rest after a week, and the cache is used when offline.
 
 Each downlink is sorted into what you can do with it here: listen to it (FM voice, SSB) or decode
-it in the toolkit (APRS, SSTV, Morse), with how to tune; or what it needs instead (SatDump for
-weather pictures, gr-satellites for telemetry), or that it's outside an RTL-SDR's range.
+it in the toolkit (APRS, SSTV, Morse, telemetry), with how to tune; or what it needs instead (SatDump
+for weather pictures). Every frequency is listed: the toolkit works with any SDR, and a downlink
+beyond an RTL-SDR's range says what kind of SDR reaches it.
 """
 
 import json
@@ -26,9 +27,9 @@ SATNOGS = "https://db.satnogs.org/api/{}/?format=json"
 CELESTRAK = "https://celestrak.org/NORAD/elements/gp.php?GROUP={}&FORMAT=tle"
 GROUPS = {"stations": "Space stations", "weather": "Weather", "noaa": "Weather", "amateur": "Amateur"}
 FRESH = {"tle": 12 * 3600, "satellites": 7 * 86400, "transmitters": 7 * 86400, "group": 7 * 86400}
-RTL_RANGE = (24e6, 1766e6)
+RTL_RANGE = (24e6, 1766e6)            # only for notes on what an RTL-SDR can't reach
 CATEGORIES = ("Space stations", "Weather", "Amateur", "Fun to listen to", "Other")
-KIND_ORDER = {"decode": 0, "listen": 1, "pictures": 2, "telemetry": 3, "out": 4}
+KIND_ORDER = {"decode": 0, "listen": 1, "pictures": 2, "telemetry": 3}
 
 
 def cache_dir() -> Path:
@@ -64,7 +65,7 @@ class Radio:
     mode: str
     baud: float | None
     alive: bool
-    kind: str                       # listen, decode, pictures, telemetry, out (of RTL-SDR range)
+    kind: str                       # listen, decode, pictures, telemetry
     how: str                        # in words
     demod: str = ""                 # Spectrum & receiver settings to hear it
     bandwidth: int = 0
@@ -102,12 +103,13 @@ class Satellite:
 
     @property
     def can_hear(self) -> bool:
-        """A downlink an RTL-SDR can receive that's still heard."""
-        return any(r.alive and r.kind != "out" for r in self.radios)
+        """A downlink that's still heard (SatNOGS' observers report it)."""
+        return any(r.alive for r in self.radios)
 
     @property
     def fun(self) -> bool:
-        return any(r.alive and r.kind in ("listen", "decode") for r in self.radios)
+        """Something to listen to or decode with a simple antenna: below 2 GHz (above it, a dish)."""
+        return any(r.alive and r.kind in ("listen", "decode") and r.downlink < 2e9 for r in self.radios)
 
 
 def _fm_repeater(r):
@@ -120,7 +122,7 @@ def _linear(r):
                                                                       or "transponder" in d)
 
 
-# The list's "what it carries" filters: a satellite has one if a heard downlink (in an RTL-SDR's range) does.
+# The list's "what it carries" filters: a satellite has one if a heard downlink does.
 FEATURES = {
     "FM repeaters (ham)": _fm_repeater,
     "Linear transponders (SSB)": _linear,
@@ -133,15 +135,28 @@ FEATURES = {
 
 
 def features(sat) -> list:
-    return [name for name, has in FEATURES.items() if any(r.alive and r.kind != "out" and has(r) for r in sat.radios)]
+    return [name for name, has in FEATURES.items() if any(r.alive and has(r) for r in sat.radios)]
 
 
 def classify(mode, baud, freq, description="", norad=None) -> tuple:
-    """(kind, how, demod, bandwidth, decoder) for a downlink."""
+    """(kind, how, demod, bandwidth, decoder) for a downlink, at any frequency: the toolkit isn't only
+    for RTL-SDRs. Above 1.77 GHz (an RTL-SDR's top) or below 24 MHz, how says what it takes."""
+    kind, how, demod, bw, decoder = _classify(mode, baud, freq, description, norad)
+    if freq and freq > 6e9:
+        how += (" · above a HackRF's 6 GHz: needs a downconverter or a microwave SDR, and a dish")
+    elif freq and freq > RTL_RANGE[1]:
+        how += (" · above an RTL-SDR's 1.77 GHz: needs an SDR that tunes there (a HackRF, LimeSDR, USRP; SDRplay "
+                "to 2 GHz)" + (" and usually a dish" if freq > 2e9 else ""))
+    elif freq and freq < RTL_RANGE[0]:
+        how += " · below an RTL-SDR's 24 MHz: needs direct sampling (V3/V4 dongles), an HF SDR or a HackRF"
+    return kind, how, demod, bw, decoder
+
+
+def _classify(mode, baud, freq, description="", norad=None) -> tuple:
     m = (mode or "").upper()
     d = (description or "").upper()
-    if not freq or not RTL_RANGE[0] <= freq <= RTL_RANGE[1]:
-        return "out", "outside an RTL-SDR's range (24 MHz to 1.77 GHz)", "", 0, ""
+    if not freq:
+        return "telemetry", "no downlink frequency listed", "", 0, ""
     from ..modes.sat_telemetry import can_decode, known_norads
     if norad in known_norads() and m not in ("FM", "FMN", "AM", "USB", "LSB", "CW", "SSTV", "APT", "LRPT", "HRPT",
                                              "AHRPT", "LORA") and "APRS" not in d:
@@ -250,7 +265,7 @@ def load(offline=False, folder: Path | None = None) -> dict[int, Satellite]:
 
 
 def _usable(r) -> bool:
-    return r.kind != "out" and bool(r.demod)
+    return bool(r.demod)
 
 
 def pick(sat: Satellite, purpose: str):

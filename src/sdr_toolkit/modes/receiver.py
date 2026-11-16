@@ -55,7 +55,7 @@ DECODER_CHOICES = tuple((k, DECODER_NAMES[k]) for k in DECODERS)
 class ReceiverMode(Mode):
     id = "receiver"
     name = "Spectrum & receiver"
-    group = "RTL-SDR"
+    group = "SDR"
     summary = ("A waterfall of the band and a receiver for any signal on it: click to listen in WFM, NFM, AM, "
                "SSB or CW, with every setting of the dongle. Like SDR++ or GQRX.")
     output = "receiver"
@@ -69,7 +69,7 @@ class ReceiverMode(Mode):
         Setting("file_rate", "Recording sample rate", 2400000, "choice", restart=True,
                 choices=tuple((r, f"{r / 1e6:g} MS/s") for r in dsp.RATES),
                 help="The rate the recording was made at."),
-        Setting("freq_mhz", "Frequency", 101.1, "float", 0.0, 2200.0, 0.0125, 6, suffix=" MHz",
+        Setting("freq_mhz", "Frequency", 101.1, "float", 0.0, 6000.0, 0.0125, 6, suffix=" MHz",
                 help="Where you're listening. The dongle is tuned so this sits a quarter of the span off its "
                      "centre, away from its DC spike. Click the waterfall to move within the span."),
         Setting("step", "Tuning step", 100000, "choice",
@@ -90,9 +90,12 @@ class ReceiverMode(Mode):
                 help="The voice a decoder plays (DMR, P25 and the others through DSD-FME), apart from the "
                      "receiver's own audio above."),
         Setting("rate", "Sample rate", 2400000, "choice",
-                choices=tuple((r, f"{r / 1e6:g} MS/s ({r / 1e6 * 0.9:.2f} MHz of spectrum)") for r in dsp.RATES),
+                choices=tuple((r, f"{r / 1e6:g} MS/s ({r / 1e6 * 0.9:.2f} MHz of spectrum, HackRF only)")
+                              for r in dsp.HACKRF_RATES)
+                + tuple((r, f"{r / 1e6:g} MS/s ({r / 1e6 * 0.9:.2f} MHz of spectrum)") for r in dsp.RATES),
                 help="How wide a slice of the band the dongle sends. 2.4 MS/s is the most a cheap dongle "
-                     "does without dropping samples; through a relay over the internet, lower is gentler."),
+                     "does without dropping samples; a HackRF does up to 19.2 here (40 MB/s over a relay: a "
+                     "wired LAN). Through a relay over the internet, lower is gentler."),
         Setting("gain_mode", "Gain", "auto", "choice",
                 choices=(("auto", "Automatic (tuner AGC)"), ("manual", "Manual (below)")),
                 help="Automatic lets the tuner set its own gain; manual uses the gain below."),
@@ -209,6 +212,14 @@ class ReceiverMode(Mode):
         self.audio = AudioOut()
         self._thread = threading.Thread(target=self._run, daemon=True, name="receiver")
         self._thread.start()
+
+    def _tuner(self) -> int:
+        """rtl_tcp's tuner type, or 100 for a relay's HackRF (its bridge shows decoders an R820T)."""
+        from .. import relay
+        b = relay.current()
+        if self.values.get("input") != "file" and b is not None and b.device.get("type") == "hackrf":
+            return 100
+        return self.src.tuner
 
     def _configure_dongle(self):
         v, s = self.values, self.src
@@ -543,7 +554,7 @@ class ReceiverMode(Mode):
         if req is not None:
             what, lo, hi = req
             if what == "start":
-                self.survey = Survey(int(self.values["rate"]), self.src.tuner, self._settle(),
+                self.survey = Survey(int(self.values["rate"]), self._tuner(), self._settle(),
                                      dwell=float(self.values["dwell_ms"]) / 1000)
                 if lo is not None:
                     self.survey.set_view(lo, hi)
@@ -844,7 +855,8 @@ class ReceiverMode(Mode):
         self._warned = ""
         gain = "auto gain" if v["gain_mode"] == "auto" else f"{float(v['gain_db']):.1f} dB"
         where = f"the relay {self.via}" if self.via else ("a recording" if v["input"] == "file" else "this PC's dongle")
-        text = (("" if v["input"] == "file" else f"{s.tuner_name} on ") + f"{where} · centre {self.center / 1e6:.4f} MHz · {int(v['rate']) / 1e6:g} MS/s · "
+        tuner = "HackRF" if self._tuner() == 100 else s.tuner_name
+        text = (("" if v["input"] == "file" else f"{tuner} on ") + f"{where} · centre {self.center / 1e6:.4f} MHz · {int(v['rate']) / 1e6:g} MS/s · "
                 f"{gain}" + (f" · {s.dropped} blocks dropped (too slow)" if s.dropped else "")
                 + (f" · {self._decoder_note}" if self._decoder_note else ""))
         return [Event("activity", text)]

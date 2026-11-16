@@ -21,7 +21,7 @@ import numpy as np
 USABLE = 0.8
 # Tuning range (Hz) per tuner type (librtlsdr's tuner numbers).
 TUNER_RANGE = {1: (52e6, 2200e6), 2: (22e6, 948e6), 3: (22e6, 1100e6), 4: (146e6, 924e6),
-               5: (24e6, 1766e6), 6: (24e6, 1766e6)}
+               5: (24e6, 1766e6), 6: (24e6, 1766e6), 100: (1e6, 6000e6)}       # 100: a relay's HackRF
 
 
 class Survey:

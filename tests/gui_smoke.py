@@ -171,6 +171,14 @@ win.tree.setCurrentItem(win._items["tones"])
 win.tree.setCurrentItem(win._items["morse"])
 pump(80)
 results["morse"] = "CQ TEST" in win.text.toPlainText()
+# The audio decoders are under WebSDR (with Listen to on their page); the radio modes under SDR, with the
+# link meters in the top bar instead.
+_tops = [win.tree.topLevelItem(i).text(0) for i in range(win.tree.topLevelItemCount())]
+_web = win.tree.topLevelItem(_tops.index("WebSDR")) if "WebSDR" in _tops else None
+_webkids = [_web.child(i).text(0) for i in range(_web.childCount())] if _web else []
+results["tree_groups"] = ("SDR" in _tops and "RTL-SDR" not in _tops and _webkids[:2] == ["Text", "Digital (weak signal)"]
+                          and "Tones" in _webkids and win._items["morse"].parent().parent() is _web)
+results["listen_to_in_page"] = win.source_row.isVisible() and not win.links_bar.isVisible()
 # A long message being decoded, a long status: the window keeps its width.
 pump(5)
 width, least = win.width(), win.minimumSizeHint().width()
@@ -773,6 +781,20 @@ if relay_src.is_dir():
     win._setup_coverage()
     results["relay_rings"] = (win.coverage is not None and win._coverage_site.endswith(" relay:Garage relay")
                               and "relay Garage relay" in win._coverage_source)
+    # The link meters on an SDR page: the relay's stats (this relay is 0.2.0) while ADS-B streams from it.
+    win._start()
+    for _ in range(30):
+        pump(1)
+        win._update_links()
+        time.sleep(0.1)
+        if win.links_bar.net.value:
+            break
+    results["link_meters"] = (win.links_bar.isVisible() and not win.source_row.isVisible()
+                              and bool(win.links_bar.net.value) and bool(win.links_bar.usb.value)
+                              and "ping" in win.links_bar.net.text() and not win.hackrf_btn.isVisible())
+    if shots:
+        win.grab().save(str(shots / "links.png"))
+    win._stop()
     win.coverage = None
     win.mode.values["input"] = "file"
     win.disconnect_relay()
