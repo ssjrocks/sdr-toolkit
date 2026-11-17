@@ -150,7 +150,7 @@ def test_an_older_relay_gets_a_multiple_and_its_spike_is_taken_out_here():
         s, _, data = stream_through(b, relay.command(relay.SET_RATE, 250_000), seconds=1.0)
         assert (relay.SET_RATE, 2_000_000) in cmds(bytes(fake.received))
         x = np.frombuffer(data[len(data) // 2 // 2 * 2:], np.uint8).astype(float) - 128
-        assert len(x) and abs(x[0::2].mean()) < 2 and abs(x[1::2].mean()) < 2
+        assert len(x) and abs(x[0::2].mean()) < 0.3 and abs(x[1::2].mean()) < 0.3
         level = b.local_level()
         assert level and level["peak"] >= 40 and -12 < level["dbfs"] < 0
         s.close()

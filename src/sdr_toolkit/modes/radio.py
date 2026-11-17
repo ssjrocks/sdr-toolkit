@@ -207,7 +207,8 @@ class RadioMode(ProcessMode):
         where = self.listening_on() if self.live() else "the recording"
         b = self.bridge()
         if b is not None:
-            where += f" through the relay {b.name}" + (f" ({b.last_error})" if b.last_error else "")
+            where += (" on this PC's HackRF" if getattr(b, "local", False) else f" through the relay {b.name}") + (
+                f" ({b.last_error})" if b.last_error else "")
         return f"Listening on {where} · {self.elapsed()}"
 
     def upstream_error(self, line):

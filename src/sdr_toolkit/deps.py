@@ -6,6 +6,7 @@ password prompt). gr-lora_sdr and DSD-FME are built by setup/build.sh as the use
 
 import logging
 import shutil
+import sys
 import subprocess
 from importlib import resources
 from pathlib import Path
@@ -37,6 +38,11 @@ def _dsd():
     return dsd_fme() is not None
 
 
+def _hackrf_library() -> bool:
+    import ctypes.util
+    return ctypes.util.find_library("hackrf") is not None or sys.platform == "win32"     # bundled on Windows
+
+
 # part: (what it is, installed?, how it's installed: "system", "build" or "mbelib")
 PARTS = {
     "wsjtx": ("WSJT-X's jt9 decoder (FT8, FT4)", lambda: shutil.which("jt9") is not None, "system"),
@@ -46,6 +52,7 @@ PARTS = {
     "readsb": ("readsb (ADS-B)", lambda: shutil.which("readsb") is not None, "system"),
     "gnss-sdr": ("GNSS-SDR (GPS position fix)", lambda: shutil.which("gnss-sdr") is not None, "system"),
     "rtl-sdr": ("the RTL-SDR tools", lambda: shutil.which("rtl_fm") is not None, "system"),
+    "hackrf": ("libhackrf (a HackRF on this PC)", lambda: _hackrf_library(), "system"),
     "gr-lora_sdr": ("gr-lora_sdr (LoRa)", _lora, "build"),
     "dsd-fme": ("DSD-FME and mbelib (DMR, P25)", _dsd, "mbelib"),
     "radiosonde": ("rs1729's radiosonde decoders (RS41, DFM, M10/M20...)", _radiosonde, "build"),
@@ -70,6 +77,7 @@ WINDOWS_HELP = {
     "dsd-fme": ("Get a Windows build of DSD-FME from its <a href='https://github.com/lwvmobile/dsd-fme/releases'>releases</a> "
                 "and put dsd-fme.exe (with the files beside it) in the tools folder. " + MBELIB_NOTICE.split("\n\n")[1]),
     "rtl-sdr": "The RTL-SDR tools come with the app; reinstall it if they're missing.",
+    "hackrf": "libhackrf comes with the app; reinstall it if it's missing.",
     "readsb": "readsb has no Windows version yet: use the Linux version of SDR Toolkit for ADS-B.",
     "gnss-sdr": "GNSS-SDR has no Windows version: use the Linux version of SDR Toolkit for the GPS fix.",
     "gr-lora_sdr": "gr-lora_sdr has no Windows version: use the Linux version of SDR Toolkit for LoRa.",

@@ -907,6 +907,14 @@ class MainWindow(QMainWindow):
         self.links_timer = QTimer(self)
         self.links_timer.timeout.connect(self._update_links)
         self.links_timer.start(1000)
+        # A HackRF plugged into this PC: served by a built-in relay on 127.0.0.1 (local_hackrf.py).
+        self._local_hackrf = None
+        self._local_declined = False             # "use this PC's RTL-SDR instead": until it's replugged
+        self._local_starting = False
+        self.local_timer = QTimer(self)
+        self.local_timer.timeout.connect(self._check_local_hackrf)
+        self.local_timer.start(3000)
+        QTimer.singleShot(0, self._check_local_hackrf)
         self.timer = QTimer(self)
         self.timer.setInterval(50)
         self.timer.timeout.connect(self.tick)
@@ -2176,6 +2184,7 @@ class MainWindow(QMainWindow):
             return
         usb, net = self.links_bar.usb, self.links_bar.net
         b = relay.current()
+        net.title = "Relay network link"
         if b is None:
             net.show_link(None, None, "no relay (the dongle is on this PC)")
             src = getattr(self.mode, "src", None) if self.running else None
@@ -2200,7 +2209,10 @@ class MainWindow(QMainWindow):
         def done(result):
             self._links_busy = False
             st, rtt = result
-            usb.title = f"{kind} USB link (at the relay)"
+            local = getattr(b, "local", False)
+            usb.title = f"{kind} USB link" + ("" if local else " (at the relay)")
+            if local:
+                net.title = "Built-in relay (this PC, no network)"
             ping = ("ping –" if rtt is None else
                     f"ping {rtt * 1000:.1f} ms" if rtt < 0.01 else f"ping {rtt * 1000:.0f} ms")
             if st:
@@ -2230,14 +2242,75 @@ class MainWindow(QMainWindow):
             self._links_busy = False
         self._run_task(lambda: relay.stats(b.host, b.port, b.password), done, failed)
 
+    def _check_local_hackrf(self):
+        """Every few seconds: a HackRF plugged into this PC is used (through the built-in relay) unless a relay
+        is connected or it was set aside; unplugged, the modes go back to this PC's RTL-SDR."""
+        from . import local_hackrf, relay
+        present = local_hackrf.plugged_in()
+        b = relay.current()
+        if not present:
+            self._local_declined = False
+            if self._local_hackrf is not None:
+                if b is not None and getattr(b, "local", False):
+                    relay.disconnect()
+                    self._relay_changed("The HackRF was unplugged: the SDR modes use this PC's RTL-SDR again")
+                self._stop_local_hackrf()
+            return
+        if b is not None or self._local_declined or self._local_starting:
+            return
+        if deps.missing(["hackrf"]):
+            self._local_declined = True                     # offered once; again after a replug
+            self.offer_install(["hackrf"], "A HackRF is plugged in; using it needs libhackrf, which isn't "
+                                           "installed yet.")
+            return
+        self._local_starting = True
+
+        def start():
+            lh = self._local_hackrf or local_hackrf.LocalHackRF().start()
+            try:
+                bridge = relay.connect("127.0.0.1", lh.port, lh.password, local_hackrf.NAME)
+            except relay.RelayError:
+                lh.stop()
+                raise
+            bridge.local = True
+            return lh
+
+        def done(lh):
+            self._local_starting = False
+            if relay.current() is None or not getattr(relay.current(), "local", False):
+                return
+            self._local_hackrf = lh
+            self._relay_changed("Using this PC's HackRF: every SDR mode, with its bar for gain, amp and filter")
+
+        def failed(msg):
+            self._local_starting = False
+            self._local_declined = True                     # said once, not every 3 s; tried again on a replug
+            self.status.setText(msg.splitlines()[-1] if msg else "This PC's HackRF couldn't be used")
+            log.warning("local HackRF: %s", msg)
+        self._run_task(start, done, failed)
+
+    def _stop_local_hackrf(self):
+        lh, self._local_hackrf = self._local_hackrf, None
+        if lh is not None:
+            lh.stop()
+
     def _relay_changed(self, message, restart=True):
         from . import relay
         b = relay.current()
+        local = b is not None and getattr(b, "local", False)
+        if not local and self._local_hackrf is not None:
+            self._stop_local_hackrf()                       # a relay on the network instead
         self._show_hackrf_bar()
-        self.relay_btn.setText(f"Relay: {b.name} ▾" if b else "Connect relay…")
-        self.relay_btn.setToolTip(f"The relay {b.name} (version {b.relay_version or '?'})" if b else
+        self.relay_btn.setText("HackRF on this PC ▾" if local else f"Relay: {b.name} ▾" if b else "Connect relay…")
+        self.relay_btn.setToolTip("This PC's HackRF, through the toolkit's built-in relay" if local else
+                                  f"The relay {b.name} (version {b.relay_version or '?'})" if b else
                                   "Use an RTL-SDR on another PC running SDR Tools Relay")
-        if b:
+        if local:
+            menu = QMenu(self)
+            menu.addAction("Use this PC's RTL-SDR instead (until the HackRF is replugged)", self.disconnect_relay)
+            menu.addAction("Connect to a relay…", self._relay_instead)
+            self.relay_btn.setMenu(menu)
+        elif b:
             menu = QMenu(self)
             self._relay_update_action = menu.addAction("Looking for a newer relay version…")
             self._relay_update_action.setEnabled(False)
@@ -2275,7 +2348,21 @@ class MainWindow(QMainWindow):
         b = relay.current()
         if b is not None:
             relay.disconnect()
+            if getattr(b, "local", False):
+                self._local_declined = True
+                self._stop_local_hackrf()
+                self._relay_changed("This PC's HackRF set aside: the SDR modes use this PC's RTL-SDR")
+                return
             self._relay_changed(f"Disconnected from the relay {b.name}: the RTL-SDR modes use this PC's dongle again")
+
+    def _relay_instead(self):
+        """From this PC's HackRF to a relay on the network (the HackRF is set aside meanwhile)."""
+        from . import relay
+        relay.disconnect()
+        self._local_declined = True
+        self._stop_local_hackrf()
+        self._relay_changed("This PC's HackRF set aside", restart=False)
+        self.relay_clicked()
 
     def check_relay_dongle(self):
         from . import relay
@@ -2465,6 +2552,8 @@ class MainWindow(QMainWindow):
         dlg = InstallDialog(self, parts, accept)
         dlg.exec()
         log.info("install finished; still missing: %s", dlg.still_missing)
+        if "hackrf" in parts and "hackrf" not in dlg.still_missing:
+            self._local_declined = False                  # this PC's HackRF can be used now
         self.install_bar.setVisible(False)
         self._to_install = []
         self.help_label.setText(tuning_html(self.mode))

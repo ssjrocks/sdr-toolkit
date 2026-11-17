@@ -6,7 +6,8 @@
 #   sdr-toolkit-helper.exe   runs the helper modules the radio modes start (relay_stream, the
 #                            satellite worker) with real stdin/stdout; see sdr_toolkit/helper.py
 # build/tools (the RTL-SDR tools, put there by the workflow) is copied to _internal/tools, where
-# sdr_toolkit.system looks for outside programs.
+# sdr_toolkit.system looks for outside programs; build/hackrf-dlls (libhackrf and its libusb and pthreads)
+# to _internal/hackrf, where the built-in relay for a HackRF on this PC loads it (hackrf_local/hackrf.py).
 
 import os
 
@@ -16,14 +17,17 @@ ROOT = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 SRC = os.path.join(ROOT, "src")
 ICON = os.path.join(ROOT, "build", "icon.ico")
 TOOLS = os.path.join(ROOT, "build", "tools")
+HACKRF = os.path.join(ROOT, "build", "hackrf-dlls")
 
 # Every mode and engine (the window imports most of them dynamically); nothing that needs GNU Radio.
 hidden = [m for m in collect_submodules("sdr_toolkit") if "lora_rx" not in m]
 datas = copy_metadata("sdr-toolkit")                       # importlib.metadata.version("sdr-toolkit")
 datas += [(os.path.join(TOOLS, f), "tools") for f in sorted(os.listdir(TOOLS))] if os.path.isdir(TOOLS) else []
+binaries = [(os.path.join(HACKRF, f), "hackrf") for f in sorted(os.listdir(HACKRF))] if os.path.isdir(HACKRF) else []
 excludes = ["gnuradio", "tkinter", "pytest", "IPython", "matplotlib"]
 
-gui = Analysis([os.path.join(SPECPATH, "gui_entry.py")], pathex=[SRC], datas=datas, hiddenimports=hidden,
+gui = Analysis([os.path.join(SPECPATH, "gui_entry.py")], pathex=[SRC], datas=datas, binaries=binaries,
+               hiddenimports=hidden,
                excludes=excludes, noarchive=False)
 helper = Analysis([os.path.join(SPECPATH, "helper_entry.py")], pathex=[SRC], hiddenimports=[
     "sdr_toolkit.relay_stream", "sdr_toolkit.satellites.worker", "sdr_toolkit.modes.radio"],

@@ -195,6 +195,7 @@ class ReceiverMode(Mode):
         from .. import relay
         bridge = relay.current() if v["input"] == "rtl" else None
         self.via = bridge.name if bridge else ""
+        self.via_local = bool(bridge is not None and getattr(bridge, "local", False))
         try:
             if v["input"] == "file":
                 self.src = FileSource(v["file"], int(v["file_rate"]))
@@ -880,7 +881,9 @@ class ReceiverMode(Mode):
         problem = s.error or self.audio.error
         quiet = time.monotonic() - s.last_data
         if not problem and quiet > 5:
-            problem = f"No samples for {quiet:.0f} s" + (f" from the relay {self.via}" if self.via else "")
+            problem = f"No samples for {quiet:.0f} s" + (
+                " from this PC's HackRF" if getattr(self, "via_local", False) else f" from the relay {self.via}" if self.via
+                else "")
         if problem:
             if problem != self._warned:
                 self._warned = problem
@@ -888,7 +891,8 @@ class ReceiverMode(Mode):
             return []
         self._warned = ""
         gain = "auto gain" if v["gain_mode"] == "auto" else f"{float(v['gain_db']):.1f} dB"
-        where = f"the relay {self.via}" if self.via else ("a recording" if v["input"] == "file" else "this PC's dongle")
+        where = ("this PC's HackRF" if getattr(self, "via_local", False) else f"the relay {self.via}" if self.via
+                 else "a recording" if v["input"] == "file" else "this PC's dongle")
         tuner = "HackRF" if self._tuner() == 100 else s.tuner_name
         text = (("" if v["input"] == "file" else f"{tuner} on ") + f"{where} · centre {self.center / 1e6:.4f} MHz · {int(v['rate']) / 1e6:g} MS/s · "
                 f"{gain}" + (f" · {s.dropped} blocks dropped (too slow)" if s.dropped else "")

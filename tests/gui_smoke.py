@@ -32,7 +32,11 @@ from PyQt6.QtCore import QSettings  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 import signals  # noqa: E402
-from sdr_toolkit import aircraftdb, appreports, gui  # noqa: E402
+from sdr_toolkit import aircraftdb, appreports, gui, local_hackrf  # noqa: E402
+
+# Never open a real HackRF (one may be plugged in and in use): none is plugged in, unless a step says so.
+_hackrf_plugged = [False]
+local_hackrf.plugged_in = lambda: _hackrf_plugged[0]
 from sdr_toolkit.modes import digital_voice as _dv, lora as _lora  # noqa: E402
 
 # Parts built for the app (gr-lora_sdr, DSD-FME) are where they really are, not in the test's data folder.
@@ -822,6 +826,42 @@ if relay_src.is_dir():
     results["relay"] = results["relay"] and win.relay_btn.text() == "Connect relay…" and win.relay_btn.menu() is None
     dlg.close()
     _relay.stop()
+
+    # A HackRF plugged into this PC: used through the built-in relay (here one playing a recording, so no
+    # device is opened), set aside on request until it's replugged, and let go when it's unplugged.
+    class _FakeLocal(local_hackrf.LocalHackRF):
+        def start(self):
+            self.relay = _Relay(_RC(name=local_hackrf.NAME, port=0, password=self.password, file=str(_rec),
+                                    host="127.0.0.1"), version="t")
+            self.relay.start()
+            return self
+
+    def _wait_btn(text, secs=8):
+        end = time.time() + secs
+        while time.time() < end and win.relay_btn.text() != text:
+            app.processEvents()
+            time.sleep(0.05)
+        return win.relay_btn.text() == text
+
+    local_hackrf.LocalHackRF = _FakeLocal
+    _hackrf_plugged[0] = True
+    win._check_local_hackrf()
+    _used = _wait_btn("HackRF on this PC ▾") and getattr(_relay_mod.current(), "local", False)
+    _listens = win._local_hackrf is not None and win._local_hackrf.relay._sock.getsockname()[0] == "127.0.0.1"
+    win.disconnect_relay()                                          # "use this PC's RTL-SDR instead"
+    win._check_local_hackrf()
+    _aside = _wait_btn("Connect relay…", 2) and win._local_hackrf is None and _relay_mod.current() is None
+    _hackrf_plugged[0] = False                                      # replugged: used again
+    win._check_local_hackrf()
+    _hackrf_plugged[0] = True
+    win._check_local_hackrf()
+    _again = _wait_btn("HackRF on this PC ▾")
+    _hackrf_plugged[0] = False                                      # unplugged: back to the RTL-SDR
+    win._check_local_hackrf()
+    _gone = _wait_btn("Connect relay…", 2) and _relay_mod.current() is None and win._local_hackrf is None
+    results["local_hackrf"] = _used and _listens and _aside and _again and _gone
+    if not results["local_hackrf"]:
+        print("local_hackrf", _used, _listens, _aside, _again, _gone)
 # Spectrum & receiver on a recording: frames reach the waterfall, clicking tunes, a mode brings its bandwidth.
 import test_receiver as _TR  # noqa: E402
 from sdr_toolkit.modes import receiver as _R  # noqa: E402

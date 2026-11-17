@@ -135,11 +135,14 @@ def hackrf_commands(settings: dict, keys=None) -> bytes:
 
 class DCBlock:
     """The HackRF's DC spike taken out here, for a relay before 0.3.0 (which sends it as it is): the offset
-    on I and Q is followed slowly (about 0.1 s) and subtracted, as the relay itself does from 0.3.0."""
+    on I and Q is followed slowly (about 0.1 s) and subtracted, as the relay itself does from 0.3.0. The
+    rounding back to 8 bits is dithered: the samples are whole numbers, which a fractional shift would
+    otherwise all round the same way, leaving up to half a step of offset."""
 
     def __init__(self, seconds=0.1):
         self.seconds = seconds
         self.dc = None
+        self.rng = np.random.default_rng()
 
     def __call__(self, data: bytes, rate: int) -> bytes:
         n = len(data) // 2 * 2
@@ -151,9 +154,10 @@ class DCBlock:
         a = min(1.0, len(x) / max(rate * self.seconds, 1.0))
         self.dc = m if self.dc is None else self.dc + a * (m - self.dc)
         x -= self.dc
+        d = self.rng.random((2, len(x)), np.float32) - 0.5
         b = np.empty(n, np.uint8)
-        b[0::2] = np.clip(np.rint(x.real + 128.0), 0, 255)
-        b[1::2] = np.clip(np.rint(x.imag + 128.0), 0, 255)
+        b[0::2] = np.clip(np.rint(x.real + 128.0 + d[0]), 0, 255)
+        b[1::2] = np.clip(np.rint(x.imag + 128.0 + d[1]), 0, 255)
         return b.tobytes() + data[n:]
 
 

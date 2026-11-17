@@ -81,6 +81,15 @@ def _rtl_tools():
     return {t: p for t, p in found.items()}
 
 
+def _hackrf_library():
+    """libhackrf loads (bundled on Windows) for a HackRF on this PC, and the relay's sample processing runs."""
+    from .hackrf_local import dsp, hackrf
+    lib = hackrf._load()
+    block = bytes(range(256)) * 512
+    assert dsp.Decimator(8)(dsp.DCBlock()(block, 2_000_000)), "the sample processing gave nothing"
+    return f"libhackrf loaded ({type(lib).__name__}); HackRFs listed: {len(hackrf.devices())}"
+
+
 def _logbook():
     from .logbook import Logbook
     with tempfile.TemporaryDirectory() as d:
@@ -130,7 +139,8 @@ def _sound():
 
 
 CHECKS = [("morse decoder", _morse, True), ("receiver DSP", _receiver_dsp, True), ("helper processes", _helper, True),
-          ("RTL-SDR tools", _rtl_tools, system.WINDOWS), ("logbook", _logbook, True), ("window", _window, True),
+          ("RTL-SDR tools", _rtl_tools, system.WINDOWS), ("HackRF library", _hackrf_library, system.WINDOWS),
+          ("logbook", _logbook, True), ("window", _window, True),
           ("sound outputs", _sound, False)]
 
 
