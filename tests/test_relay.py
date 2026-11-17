@@ -385,3 +385,53 @@ def test_receiver_drives_a_relays_dongle(make_relay, tmp_path, monkeypatch):
         assert ("set_center_freq", int(145e6 - 600000)) in calls
     finally:
         m.stop()
+
+
+def test_dmr_at_19_2_ms_s_from_a_live_stream_keeps_up(make_relay, tmp_path, monkeypatch):
+    """The explorer on a HackRF at 19.2 MS/s, from a stream that doesn't wait (a relay playing in real time):
+    the receiver muted, four DMR points (one on a signal 2.4 MHz off the centre). Nothing may be dropped,
+    before the channels or in them, and the signal decodes. At first the receiver did 1.1 s of work for
+    each second of signal here, fell behind, and dropped blocks: CRC error after CRC error."""
+    import numpy as np
+    import test_receiver as TR
+    from sdr_toolkit.modes.digital_voice import dsd_fme
+    if dsd_fme() is None:
+        pytest.skip("DSD-FME isn't built")
+    import signals
+    rate, offset = 19_200_000, 2_400_000
+    a = signals.dmr_bursts(48000, 6.0).astype(np.float64)
+    rec = tmp_path / "wide.cu8"
+    phase = 0.0
+    rng = np.random.default_rng(1)
+    with open(rec, "wb") as f:
+        for i in range(0, len(a), 12000):
+            dev = np.repeat(a[i:i + 12000], rate // 48000)
+            ph = phase + 2 * np.pi * np.cumsum(offset + 1944 * dev) / rate
+            phase = float(ph[-1])
+            x = 0.4 * np.exp(1j * ph) + 0.01 * (rng.standard_normal(len(dev)) + 1j * rng.standard_normal(len(dev)))
+            iq = np.empty(2 * len(x), np.float32)
+            iq[0::2], iq[1::2] = x.real, x.imag
+            np.clip(np.rint(iq * 127.5 + 127.5), 0, 255).astype(np.uint8).tofile(f)
+    r = make_relay(rec)
+    relay.connect("127.0.0.1", r.config.port, "pw")
+    m = TR.start_receiver(monkeypatch, input="rtl", rate=rate, freq_mhz=101.1, mute=True)
+    try:
+        TR.poll_for(m, 1.0)
+        c = m.center
+        for off in (offset, -1_000_000, 4_000_000, -6_000_000):
+            m.add_point(c + off, "dmr")
+        frames = errors = 0
+        t0 = time.time()
+        while time.time() < t0 + 15:
+            for e in TR.poll_for(m, 0.5):
+                if (e.kind == "point_decoded" and e.data["event"].kind == "dsd"
+                        and round(e.data["freq"] - c) == offset):
+                    if e.data["event"].data.get("error"):
+                        errors += 1
+                    else:
+                        frames += 1
+        lost = getattr(m, "_chz_dropped", 0)
+        assert m.src.dropped == 0 and lost == 0 and frames >= 20 and errors <= frames // 4, (
+            m.src.dropped, lost, frames, errors)
+    finally:
+        m.stop()

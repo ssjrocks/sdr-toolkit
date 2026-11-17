@@ -48,7 +48,7 @@ from . import APP_ID, APP_NAME, __version__, aircraftdb, appreports, coverage, d
 from .calls_view import CallsPanel
 from .explorer_view import ExplorerPane
 from .hackrf_agc import AGC
-from .hackrf_bar import HackRFBar
+from .hackrf_bar import HackRFBar, rate_hz
 from .links_view import LinksBar
 from .satellites.view import SatellitePanel
 from .widgets import (ORDER, BoxCombo, FitLabel, SortItem, drop_oldest, filling, following, hovered, jump_to,
@@ -2145,7 +2145,7 @@ class MainWindow(QMainWindow):
             return
         v = self._hackrf_saved()
         self.hackrf_bar.set_values(v)
-        self.hackrf_bar.set_rate(int(self.mode.values.get("rate", 0) or 0) if self.mode is not None else 0)
+        self.hackrf_bar.set_rate(rate_hz(self.mode.values.get("rate")) if self.mode is not None else 0)
         self._agc = AGC(v["lna"], v["vga"]) if v["gain"] == "auto" else None
         b.apply_hackrf({k: v[k] for k in ("lna", "vga", "amp", "antenna", "filter")})
 

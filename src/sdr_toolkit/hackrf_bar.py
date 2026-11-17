@@ -12,6 +12,16 @@ FILTERS = (1750000, 2500000, 3500000, 5000000, 5500000, 6000000, 7000000, 800000
            12000000, 14000000, 15000000, 20000000, 24000000, 28000000)
 
 
+def rate_hz(value) -> int:
+    """A page's sample rate in Hz, however it holds it: 2400000, "2400000", "1024k", "2.4M" (0 if none)."""
+    text = str(value or "").strip().lower()
+    scale = {"k": 1e3, "m": 1e6}.get(text[-1:], 1)
+    try:
+        return int(float(text.rstrip("km")) * scale)
+    except ValueError:
+        return 0
+
+
 def auto_filter(rate) -> int:
     """libhackrf's automatic filter for a sample rate: the widest no more than 0.75 x the rate."""
     fits = [f for f in FILTERS if f <= 0.75 * rate]

@@ -609,6 +609,49 @@ def test_dmr_points_follow_their_signal(monkeypatch, tmp_path):
         m.stop()
 
 
+def test_dmr_points_keep_up_at_a_hackrfs_19_2_ms_s(monkeypatch, tmp_path):
+    """The explorer's case on a HackRF: 19.2 MS/s, the receiver's own audio muted, DMR decoded through a
+    decode point 3 MHz off the centre. The receiver keeps up (no blocks lost before the channels) and
+    DSD-FME decodes it, rather than a CRC error after another as when the work was all on one core."""
+    from sdr_toolkit.modes.digital_voice import dsd_fme
+    if dsd_fme() is None:
+        pytest.skip("DSD-FME isn't built")
+    import signals
+    rate = int(os.environ.get("DMR_TEST_RATE", 19_200_000))
+    offset, secs = rate // 8, 6.0
+    a = signals.dmr_bursts(48000, secs).astype(np.float64)     # float32 phase sums go wrong over millions of samples
+    rec = tmp_path / "wide.cu8"
+    phase, n0 = 0.0, 0
+    rng = np.random.default_rng(1)
+    with open(rec, "wb") as f:                           # in quarter seconds: 19.2 MS/s is 38 MB a second
+        for i in range(0, len(a), 12000):
+            dev = np.repeat(a[i:i + 12000], rate // 48000)
+            ph = phase + 2 * np.pi * np.cumsum(offset + 1944 * dev) / rate
+            phase, n0 = float(ph[-1]), n0 + len(dev)
+            x = 0.4 * np.exp(1j * ph) + 0.01 * (rng.standard_normal(len(dev)) + 1j * rng.standard_normal(len(dev)))
+            iq = np.empty(2 * len(x), np.float32)
+            iq[0::2], iq[1::2] = x.real, x.imag
+            np.clip(iq * 127.5 + 127.5, 0, 255).astype(np.uint8).tofile(f)
+    m = start_receiver(monkeypatch, input="file", file=str(rec), file_rate=rate, freq_mhz=101.1, mute=True)
+    try:
+        poll_for(m, 0.3)
+        m.add_point(m.center + offset, "dmr")
+        frames = errors = 0
+        t0 = time.time()
+        while time.time() < t0 + 10:
+            for e in poll_for(m, 0.5):
+                if e.kind == "point_decoded" and e.data["event"].kind == "dsd":
+                    if e.data["event"].data.get("error"):
+                        errors += 1
+                    else:
+                        frames += 1
+        lost = getattr(m, "_chz_dropped", 0)
+        assert lost == 0 and m.src.dropped == 0 and frames >= 10 and errors <= frames // 4, (lost, m.src.dropped,
+                                                                                          frames, errors)
+    finally:
+        m.stop()
+
+
 def test_satellite_telemetry_from_the_receivers_iq(monkeypatch, tmp_path):
     """A satellite's 1200 baud AFSK AX.25 telemetry at 300 kHz off the dongle's centre: gr-satellites
     gets the tuned channel's IQ and each packet comes out as one line."""

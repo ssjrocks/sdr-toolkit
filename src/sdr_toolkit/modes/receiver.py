@@ -7,6 +7,7 @@ driven through rtl_tcp (this PC's, or a connected relay's); see receiver/source.
 
 import collections
 import logging
+import queue
 import threading
 import time
 
@@ -170,6 +171,14 @@ class ReceiverMode(Mode):
         self._point_events: collections.deque = collections.deque()   # added to from other threads too
         self._chz = None                # their channelizer
         self._chz_center = None
+        # The channelizer runs on a thread of its own (numpy lets it go alongside the receiver's): at a
+        # HackRF's 19.2 MS/s the two together are more than one core can do.
+        self._chz_lock = threading.Lock()
+        self._chz_queue: queue.Queue = queue.Queue(maxsize=8)
+        self._chz_thread = None
+        self._chz_dropped = 0
+        self._chz_batch: list = []       # samples gathered for the channel thread (50 ms at a time)
+        self._chz_batch_n = 0
         self._discover_at = 0.0
         self._discover_sum = None       # the spectrum lines since the last look, summed (linear power)
         self._discover_n = 0
@@ -339,14 +348,22 @@ class ReceiverMode(Mode):
             with self._lock:
                 demod, spectrum = self.demod, self.spectrum
                 v = self.values
-                try:
-                    audio = demod.process(x)
-                except Exception:  # a bad block must not end the receiver
-                    log.exception("demodulator")
-                    continue
-            if not v["mute"] and v["demod"] != "RAW":
+                # Its audio is heard, decoded or recorded, or nothing needs it: muted with no decoder (the
+                # explorer, whose voice comes from the decode points), it's skipped: at 19.2 MS/s it alone
+                # takes half a core. The signal meter then reads the spectrum instead.
+                demodulating = ((not v["mute"] and v["demod"] != "RAW") or self.decoder is not None
+                                or self._decoder_request is not None or self._listen is not None)
+                audio = None
+                if demodulating:
+                    try:
+                        audio = demod.process(x)
+                    except Exception:  # a bad block must not end the receiver
+                        log.exception("demodulator")
+                        continue
+            if audio is not None and not v["mute"] and v["demod"] != "RAW":
                 self.audio.play(audio, float(v["volume"]) / 100)
-            self._decoder_step(audio, x)
+            if audio is not None:
+                self._decoder_step(audio, x)
             if self.points or self._point_requests:
                 self._points_step(x, time.time())
             if self._listen is not None:
@@ -362,6 +379,9 @@ class ReceiverMode(Mode):
                 last_frame = now
                 db = spectrum.update(tail)
                 if db is not None:
+                    if not demodulating:              # the channel's power from the spectrum
+                        demod.level = self._band_level(db, int(v["rate"]))
+                        demod.open = demod.squelch is None or demod.level >= demod.squelch
                     self._frame = (db.copy(), self.center, int(v["rate"]), demod.level, demod.open)
                     self._afc_spec = (self._frame[0], self.center, int(v["rate"]))
                     if self.discover:            # averaged over DISCOVER_EVERY, so noise peaks even out
@@ -687,33 +707,72 @@ class ReceiverMode(Mode):
                 self._chz_center = None                  # place its channel
             elif what == "remove" and pt is not None:
                 del self.points[freq]
-                if self._chz is not None:
-                    self._chz.remove(freq)
+                with self._chz_lock:
+                    if self._chz is not None:
+                        self._chz.remove(freq)
                 self._stop_point_later(freq, pt)
             elif what == "mute" and pt is not None:
                 pt["muted"] = bool(muted)
                 self._point_volume(pt)
         if not self.points:
-            self._chz = None
+            with self._chz_lock:
+                self._chz = None
             return
-        if self._chz is None or self._chz.rate != rate:
-            self._chz = dsp.Channelizer(rate)
-            self._chz_center = None
-        if self._chz_center != self.center:
-            # Only the points inside the band the dongle sends get a channel (and audio).
-            self._chz_center = self.center
-            for freq, pt in self.points.items():
-                off = freq - self.center
-                if abs(off) + POINT_WIDTH / 2 <= rate / 2:
-                    self._chz.set(freq, off + pt.get("afc", 0.0), POINT_WIDTH)
-                else:
-                    self._chz.remove(freq)
-        for freq, y in self._chz.process(x).items():
-            pt = self.points.get(freq)
-            if pt is not None and len(y):
-                if pt["decoder"] == "dmr":
-                    self._afc(freq, pt, y, now)
-                pt["host"].feed(dsp.fm_discriminator(self._chz.channels[freq], y), now)
+        with self._chz_lock:
+            if self._chz is None or self._chz.rate != rate:
+                self._chz = dsp.Channelizer(rate)
+                self._chz_center = None
+            if self._chz_center != self.center:
+                # Only the points inside the band the dongle sends get a channel (and audio).
+                self._chz_center = self.center
+                for freq, pt in list(self.points.items()):
+                    off = freq - self.center
+                    if abs(off) + POINT_WIDTH / 2 <= rate / 2:
+                        self._chz.set(freq, off + pt.get("afc", 0.0), POINT_WIDTH)
+                    else:
+                        self._chz.remove(freq)
+        if self._chz_thread is None or not self._chz_thread.is_alive():
+            self._chz_thread = threading.Thread(target=self._chz_run, daemon=True, name="receiver-channels")
+            self._chz_thread.start()
+        # In blocks of at least 50 ms: the source may hand over slivers, and each call has its overhead.
+        self._chz_batch.append(x)
+        self._chz_batch_n += len(x)
+        if self._chz_batch_n < rate // 20:
+            return
+        block = np.concatenate(self._chz_batch) if len(self._chz_batch) > 1 else self._chz_batch[0]
+        self._chz_batch, self._chz_batch_n = [], 0
+        try:
+            self._chz_queue.put_nowait((block, now))
+        except queue.Full:
+            self._chz_dropped += 1                         # said in the status: the channels have gaps
+
+    def _chz_run(self):
+        """The decode points' channels, on their own thread: the channelizer, AFC and each point's decoder fed."""
+        while not self._halt.is_set():
+            try:
+                x, now = self._chz_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            with self._chz_lock:
+                chz = self._chz
+                if chz is None:
+                    continue
+                for freq, y in chz.process(x).items():
+                    pt = self.points.get(freq)
+                    if pt is not None and len(y):
+                        if pt["decoder"] == "dmr":
+                            self._afc(freq, pt, y, now)
+                        pt["host"].feed(dsp.fm_discriminator(chz.channels[freq], y), now)
+
+    def _band_level(self, db, rate) -> float:
+        """The tuned channel's power (dBFS) from a spectrum line, for the signal meter when the demodulator
+        isn't running: the power of the bins across its bandwidth."""
+        n = len(db)
+        off = self._offset()
+        half = float(self.values["bandwidth"]) / 2
+        i0 = int(np.clip(round((off - half) * n / rate + n / 2), 0, n - 1))
+        i1 = int(np.clip(round((off + half) * n / rate + n / 2), i0 + 1, n))
+        return float(10 * np.log10(np.sum(10 ** (db[i0:i1] / 10)) + 1e-20))
 
     def _signal_at(self, f):
         """Whether the spectrum shows a signal within half a channel of f, AFC_SNR over the noise."""
@@ -897,6 +956,7 @@ class ReceiverMode(Mode):
         on = "" if v["input"] == "file" or getattr(self, "via_local", False) else f"{tuner} on "
         text = ((on[:1].upper() + on[1:]) + (where if on else where[:1].upper() + where[1:]) + f" · centre {self.center / 1e6:.4f} MHz · {int(v['rate']) / 1e6:g} MS/s · "
                 f"{gain}" + (f" · {s.dropped} blocks dropped (too slow)" if s.dropped else "")
+                + (f" · decode channels behind: {self._chz_dropped} blocks lost" if self._chz_dropped else "")
                 + (f" · {self._decoder_note}" if self._decoder_note else ""))
         return [Event("activity", text)]
 
@@ -906,6 +966,8 @@ class ReceiverMode(Mode):
                 self._halt.set()
             if getattr(self, "_thread", None) is not None:
                 self._thread.join(5)
+            if getattr(self, "_chz_thread", None) is not None:
+                self._chz_thread.join(2)                         # no more feeding the points about to stop
             sv = getattr(self, "survey", None)
             if sv is not None and not isinstance(sv, Survey):
                 sv.stop()
