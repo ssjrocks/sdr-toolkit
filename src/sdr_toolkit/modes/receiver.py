@@ -894,7 +894,8 @@ class ReceiverMode(Mode):
         where = ("this PC's HackRF" if getattr(self, "via_local", False) else f"the relay {self.via}" if self.via
                  else "a recording" if v["input"] == "file" else "this PC's dongle")
         tuner = "HackRF" if self._tuner() == 100 else s.tuner_name
-        text = (("" if v["input"] == "file" else f"{tuner} on ") + f"{where} · centre {self.center / 1e6:.4f} MHz · {int(v['rate']) / 1e6:g} MS/s · "
+        on = "" if v["input"] == "file" or getattr(self, "via_local", False) else f"{tuner} on "
+        text = ((on[:1].upper() + on[1:]) + (where if on else where[:1].upper() + where[1:]) + f" · centre {self.center / 1e6:.4f} MHz · {int(v['rate']) / 1e6:g} MS/s · "
                 f"{gain}" + (f" · {s.dropped} blocks dropped (too slow)" if s.dropped else "")
                 + (f" · {self._decoder_note}" if self._decoder_note else ""))
         return [Event("activity", text)]
@@ -935,16 +936,19 @@ class _Paused:
     """The receiver's source while a relay's HackRF sweeps on its own connection: nothing to send, and a
     token block now and then so the receiver's loop keeps going."""
 
-    tuner = 100
+    tuner, tuner_name = 100, "HackRF"
 
     def __init__(self, was):
         from .. import relay
         b = relay.current()
         self.bridge_port = b.local_port if b is not None else 0
         self.received = getattr(was, "received", 0)
+        self.error, self.dropped = "", 0                  # what the receiver's status reads from a source
+        self.last_data = time.monotonic()
 
     def read(self) -> bytes:
         time.sleep(0.05)
+        self.last_data = time.monotonic()
         return b"\x80\x80" * 64
 
     def command(self, cmd, value):

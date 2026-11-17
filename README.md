@@ -146,6 +146,13 @@ sample rate: about 38 Mbit/s for ADS-B, 4 for AIS and ISM, 16 for LoRa. While co
 button's menu says whether the relay is up to date and offers **Update the relay to …** when a
 newer SDR Tools Relay is out (the relay must have a password, and relays from 0.1.2 on).
 
+**A HackRF on this PC:** plug it in and the SDR modes use it (the relay button says **HackRF on this
+PC**). The toolkit's own tools only drive an RTL-SDR, so a HackRF is served by a built-in copy of SDR
+Tools Relay's server, listening on this PC only (127.0.0.1); everything below works the same, without
+the network. The button's menu sets it aside for this PC's RTL-SDR until it's replugged; unplugged,
+the modes go back to the RTL-SDR by themselves. It needs libhackrf: bundled on Windows, offered for
+install on Linux. The copy is kept in step with the relay by `scripts/sync-relay.sh`.
+
 **A HackRF on a relay** (SDR Tools Relay 0.2.0 on, 0.3.0 for everything below): every SDR mode uses
 it as it would a dongle. If the device set in the relay's window isn't plugged in, the toolkit uses
 one the relay has; with several, pick one under **Device** in the relay button's menu (remembered

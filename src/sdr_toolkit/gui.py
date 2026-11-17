@@ -1638,7 +1638,10 @@ class MainWindow(QMainWindow):
             self.start_btn.blockSignals(False)
             return
         if self._is_radio():
-            src = "the RTL-SDR" if self.mode.values.get("input") == "rtl" else "the recording"
+            from . import relay
+            b = relay.current() if self.mode.values.get("input") == "rtl" else None
+            src = ("the recording" if self.mode.values.get("input") != "rtl" else "the RTL-SDR" if b is None
+                   else "this PC's HackRF" if getattr(b, "local", False) else f"the relay {b.name}")
             self.status.setText(f"{self.mode.name}: reading {src}")
         elif getattr(self.mode, "source", "audio") == "none":
             pass                                     # no audio and no dongle (the satellite tracker)
@@ -1902,7 +1905,7 @@ class MainWindow(QMainWindow):
                                                   ("" if d["open"] else " · squelched"))
             elif e.kind == "activity":
                 if not self._warned:
-                    self.title.setText(html.escape(e.text))
+                    self.title.setText(html.escape(e.text, quote=False))      # an apostrophe as itself
             elif e.kind == "setting":
                 for key, value in e.data.items():
                     self.form.set_value(key, value)
@@ -2220,14 +2223,17 @@ class MainWindow(QMainWindow):
                 last, self._dropped_last = self._dropped_last, dropped
                 losing = last is not None and dropped > last           # dropping now, not some time ago
                 needed = st.get("needed_bps") or 0
+                if st.get("gain") == "sweep":
+                    needed = None                     # a sweep hops and pauses: no steady rate to compare with
                 lost = st.get("usb_lost")
-                usb.show_link(st.get("device_bps"), (st.get("device_rate") or st.get("rate", 0)) * 2 or needed,
+                usb.show_link(st.get("device_bps"), None if needed is None else
+                              (st.get("device_rate") or st.get("rate", 0)) * 2 or needed,
                               b.device.get("name", "") + (f" · {lost} overruns" if lost else ""),
                               state="bad" if lost and self._usb_lost_last is not None and lost > self._usb_lost_last
                               else None)
                 self._usb_lost_last = lost
                 note = ping + (f" · {dropped} buffers dropped" if dropped else "")
-                if losing and st.get("net_bps") and st["net_bps"] < 0.95 * needed:
+                if losing and needed and st.get("net_bps") and st["net_bps"] < 0.95 * needed:
                     note = (f"losing samples: the network carries about {st['net_bps'] / 1e6:.1f} MB/s "
                             f"(up to {st['net_bps'] / 2e6 * 0.9:.1f} MS/s) · {ping}")
                 net.show_link(st.get("net_bps"), needed, note, state="bad" if losing else None)

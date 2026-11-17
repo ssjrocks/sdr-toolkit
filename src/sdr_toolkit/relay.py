@@ -137,7 +137,8 @@ class DCBlock:
     """The HackRF's DC spike taken out here, for a relay before 0.3.0 (which sends it as it is): the offset
     on I and Q is followed slowly (about 0.1 s) and subtracted, as the relay itself does from 0.3.0. The
     rounding back to 8 bits is dithered: the samples are whole numbers, which a fractional shift would
-    otherwise all round the same way, leaving up to half a step of offset."""
+    otherwise all round the same way, leaving up to half a step of offset. They come out centred on 127.5,
+    where the decoders take zero to be (the HackRF's own zero is 128: half a step off, a spike of its own)."""
 
     def __init__(self, seconds=0.1):
         self.seconds = seconds
@@ -148,7 +149,7 @@ class DCBlock:
         n = len(data) // 2 * 2
         if not n:
             return data
-        u = np.frombuffer(data[:n], np.uint8).astype(np.float32) - 128.0
+        u = np.frombuffer(data[:n], np.uint8).astype(np.float32) - 127.5
         x = u[0::2] + 1j * u[1::2]
         m = complex(x.mean())
         a = min(1.0, len(x) / max(rate * self.seconds, 1.0))
@@ -156,8 +157,8 @@ class DCBlock:
         x -= self.dc
         d = self.rng.random((2, len(x)), np.float32) - 0.5
         b = np.empty(n, np.uint8)
-        b[0::2] = np.clip(np.rint(x.real + 128.0 + d[0]), 0, 255)
-        b[1::2] = np.clip(np.rint(x.imag + 128.0 + d[1]), 0, 255)
+        b[0::2] = np.clip(np.rint(x.real + 127.5 + d[0]), 0, 255)
+        b[1::2] = np.clip(np.rint(x.imag + 127.5 + d[1]), 0, 255)
         return b.tobytes() + data[n:]
 
 
