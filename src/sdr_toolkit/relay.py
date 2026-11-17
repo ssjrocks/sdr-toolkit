@@ -147,11 +147,14 @@ class DCBlock:
         self.seconds = seconds
         self.dc = None
         self.rng = np.random.default_rng()
+        self.odd = b""                     # a byte left over: the stream comes in chunks of any length
 
     def __call__(self, data: bytes, rate: int) -> bytes:
+        data = self.odd + data
         n = len(data) // 2 * 2
+        self.odd = data[n:]
         if not n:
-            return data
+            return b""
         u = np.frombuffer(data[:n], np.uint8).astype(np.float32) - 127.5
         x = u[0::2] + 1j * u[1::2]
         m = complex(x.mean())
@@ -162,7 +165,7 @@ class DCBlock:
         b = np.empty(n, np.uint8)
         b[0::2] = np.clip(np.rint(x.real + 127.5 + d[0]), 0, 255)
         b[1::2] = np.clip(np.rint(x.imag + 127.5 + d[1]), 0, 255)
-        return b.tobytes() + data[n:]
+        return b.tobytes()
 
 
 class Level:

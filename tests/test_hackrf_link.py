@@ -214,3 +214,16 @@ def test_survey_on_the_hackrfs_sweep():
     finally:
         relay.disconnect()
         fake.close()
+
+
+def test_spike_removal_keeps_i_and_q_apart_in_odd_sized_chunks():
+    # The stream arrives in TCP chunks of any length (odd ones on Windows): a byte left over must start
+    # the next chunk as the Q it is, not be taken for an I.
+    dc = relay.DCBlock()
+    data = bytes([168, 108]) * 50000                             # I +40.5, Q -19.5 from 127.5
+    out, i = b"", 0
+    for size in [4097, 3, 8191, 1, 65535, 2] * 20:
+        out += dc(data[i:i + size], 2_000_000)
+        i += size
+    x = np.frombuffer(out[: len(out) // 2 * 2], np.uint8).astype(float) - 127.5
+    assert abs(x[0::2].mean()) < 0.05 and abs(x[1::2].mean()) < 0.05
