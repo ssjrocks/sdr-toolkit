@@ -93,11 +93,13 @@ def hackrf_rate(wanted: int) -> tuple[int, int]:
 
 class Decimator:
     """cu8 IQ in, cu8 IQ at 1/k the rate out: a low-pass FIR (to 0.8 of the new Nyquist) and every k-th
-    sample, keeping its state from one block to the next."""
+    sample, keeping its state from one block to the next. The rounding back to 8 bits is dithered: the
+    filter smooths quiet input to values near x.5, which rounding to even would all push the same way."""
 
     def __init__(self, k: int):
         from scipy.signal import firwin
         self.k = k
+        self.rng = np.random.default_rng()
         self.taps = firwin(16 * k + 1, 0.8 / k).astype(np.float32)
         self.zi = np.zeros(len(self.taps) - 1, np.complex64)
         self.phase = 0
@@ -115,9 +117,10 @@ class Decimator:
         y, self.zi = lfilter(self.taps, 1.0, x, zi=self.zi)
         out = y[self.phase::self.k]
         self.phase = (self.phase - len(x)) % self.k
+        d = self.rng.random((2, len(out)), np.float32) - 0.5
         b = np.empty(2 * len(out), np.uint8)
-        b[0::2] = np.clip(np.round(out.real + 127.5), 0, 255)
-        b[1::2] = np.clip(np.round(out.imag + 127.5), 0, 255)
+        b[0::2] = np.clip(np.rint(out.real + 127.5 + d[0]), 0, 255)
+        b[1::2] = np.clip(np.rint(out.imag + 127.5 + d[1]), 0, 255)
         return b.tobytes()
 
 
