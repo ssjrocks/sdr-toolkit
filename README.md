@@ -1,9 +1,22 @@
 # SDR Toolkit
 
-Decoders for amateur and utility radio data modes in one window, fed by whatever is playing on this
-computer: a WebSDR in the browser, an SDR program, a radio on line-in. Nothing has to be routed: it
-records the output device's monitor through PipeWire (on Windows, WASAPI loopback), so you still
-hear the audio. It runs on Ubuntu and on Windows 10 and 11 (see [Windows](#windows)).
+Decoders for amateur and utility radio in one window, from two kinds of source:
+
+- **WebSDR:** whatever is playing on this computer (a WebSDR in the browser, an SDR program, a radio
+  on line-in). Nothing has to be routed: it records the output device's monitor through PipeWire (on
+  Windows, WASAPI loopback), so you still hear the audio.
+- **SDR:** an RTL-SDR or a HackRF, plugged into this PC or into another one running
+  [SDR Tools Relay](https://github.com/ssjrocks/sdr-tools-relay): a spectrum and receiver up to 19.2 MHz
+  wide, ADS-B, AIS, ISM sensors, LoRa, DMR / P25, radiosondes, GPS, and a satellite tracker.
+
+It runs on Ubuntu and on Windows 10 and 11 (see [Windows](#windows)).
+
+![Spectrum & receiver on a HackRF at 19.2 MS/s across the FM broadcast band, with the HackRF bar (auto gain, level) and the link meters](docs/screenshots/receiver.webp)
+
+| | |
+|---|---|
+| ![Survey: the HackRF's own sweep, 1 MHz to 6 GHz in 0.7 s a pass](docs/screenshots/survey.webp) | ![SSTV decoding a Robot 36 test transmission played in as audio](docs/screenshots/sstv.webp) |
+| **Survey** on a HackRF: 1 MHz to 6 GHz in 0.7 s a pass | **SSTV** from speaker audio (a Robot 36 test transmission) |
 
 Pick a mode on the left. **How to tune** says what to select on the SDR (USB, LSB, FM, CW), the
 filter width and where to listen; **Settings** has every parameter that differs between stations

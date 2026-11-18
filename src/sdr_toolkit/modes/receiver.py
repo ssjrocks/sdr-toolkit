@@ -141,8 +141,8 @@ class ReceiverMode(Mode):
         Setting("peak_hold", "Peak hold", True, "bool"),
     )
     tuning = Tuning(
-        sdr_mode="This is the SDR: the RTL-SDR on this PC, or a relay's (Connect relay…)",
-        bandwidth="0.24 to 2.88 MHz of spectrum (Sample rate)",
+        sdr_mode="This is the SDR: the RTL-SDR or HackRF on this PC, or a relay's (Connect relay…)",
+        bandwidth="0.24 to 2.88 MHz of spectrum with an RTL-SDR, up to 19.2 MHz with a HackRF (Sample rate)",
         frequencies=(("88-108 MHz", "FM broadcast (WFM)"), ("118-137 MHz", "airband (AM)"),
                      ("144-148 MHz", "2 m amateur (NFM; SSB around 144.1-144.3)"),
                      ("156-162 MHz", "marine VHF (NFM)"), ("430-450 MHz", "70 cm amateur (NFM)"),

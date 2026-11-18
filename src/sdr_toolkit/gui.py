@@ -990,6 +990,10 @@ class MainWindow(QMainWindow):
     def select_mode(self, mode_id):
         if self.running:
             self._stop()
+        # The last guess was for the last page's signal (the receiver and the explorer share the panel).
+        self._guesses = []
+        self.receiver_panel.looks.setText("Looks like: …")
+        self.receiver_panel.looks.setToolTip("The best guess for the tuned signal. Click for all guesses and what to do.")
         M = next(M for M in MODES if M.id == mode_id)
         self.mode = M()
         self.mode.values = self._values(M)
@@ -2228,7 +2232,7 @@ class MainWindow(QMainWindow):
                 lost = st.get("usb_lost")
                 usb.show_link(st.get("device_bps"), None if needed is None else
                               (st.get("device_rate") or st.get("rate", 0)) * 2 or needed,
-                              b.device.get("name", "") + (f" · {lost} overruns" if lost else ""),
+                              " · ".join(t for t in (b.device.get("name", ""), f"{lost} overruns" if lost else "") if t),
                               state="bad" if lost and self._usb_lost_last is not None and lost > self._usb_lost_last
                               else None)
                 self._usb_lost_last = lost
