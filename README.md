@@ -77,7 +77,8 @@ width, length and signal. LoRaWAN shows what's readable without the network's ke
 message, device address (The Things Network's recognised), frame counter, port and payload size,
 and a join request's device and join EUIs.
 
-Device, gain, frequency correction (ppm) and your location are set once for all RTL-SDR modes.
+Device, gain, frequency correction (ppm) and your location are set once for all SDR modes (a HackRF's
+gain is on its own bar instead).
 Above the output, each mode shows what it's doing: the frequency, how long it's listened, the noise
 or signal level and what it has seen (for ISM, every transmission rtl_433 notices, decoded or not),
 so a quiet band looks quiet rather than broken. With no dongle plugged in it says so instead of
