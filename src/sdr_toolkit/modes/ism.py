@@ -34,7 +34,7 @@ class ISMMode(RadioMode):
                 help="With several frequencies: how long to stay on each."),
         Setting("rate", "Sample rate", "250k", "choice", restart=True,
                 choices=(("250k", "250 kHz (most devices)"), ("1024k", "1.024 MHz (wide FSK devices)")),
-                help="Also the rate a recording must have been made at."),
+                help="Also the rate a recording must have been made at.", per_sdr=True),
         Setting("protocols", "Only protocols", "", "text", restart=True,
                 help="rtl_433 protocol numbers, space-separated (e.g. '19 73'); empty decodes all "
                      "default ones. 'rtl_433 -R help' lists them."),

@@ -58,6 +58,7 @@ from .logbook import Logbook
 from .mapview import MapView
 from .modes import AUDIO_GROUPS, GROUPS, MODES
 from .modes.base import Event, MissingParts, Mode, Setting
+from .modes.radio import RTL_MAX_RATE
 from .panels import DetailsPanel, LogbookWindow, Photos, RelayDialog
 from .receiver.view import ReceiverPanel
 
@@ -203,11 +204,20 @@ class SettingsForm(QWidget):
 
     changed = pyqtSignal(str, object)
 
-    def __init__(self, settings: tuple[Setting, ...], values: dict):
+    def __init__(self, settings: tuple[Setting, ...], values: dict, heading="", note=""):
         super().__init__()
         self.widgets = {}
         form = QFormLayout(self)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        if heading:                                   # whose settings these are (an RTL-SDR's, a HackRF's)
+            title = QLabel(f"<b>{html.escape(heading)}</b>")
+            title.setWordWrap(True)
+            form.addRow(title)
+        if note:
+            n = QLabel(note)
+            n.setWordWrap(True)
+            n.setStyleSheet("color: palette(placeholder-text); font-size: small")
+            form.addRow(n)
         for s in settings:
             w = self._make(s, values[s.key])
             if s.help:
@@ -261,6 +271,8 @@ class SettingsForm(QWidget):
         return w
 
     def set_value(self, key, value):
+        if key not in self.widgets:
+            return                               # not shown for this SDR (an RTL-SDR's own, on a HackRF)
         s, w = self.widgets[key]
         w.blockSignals(True)
         if s.kind == "bool":
@@ -961,18 +973,67 @@ class MainWindow(QMainWindow):
             return
         self.select_mode(mode_id)
 
-    @staticmethod
-    def _key(M, key) -> str:
-        """Where a setting is stored: shared ones once for every mode, the rest per mode."""
+    def _sdr_kind(self) -> str:
+        """The kind of SDR the SDR modes use now: "hackrf" (this PC's or a relay's), else "rtl"."""
+        from . import relay
+        b = relay.current()
+        return "hackrf" if b is not None and b.device.get("type") == "hackrf" else "rtl"
+
+    def _key(self, M, key) -> str:
+        """Where a setting is stored: shared ones once for every mode, the rest per mode; those that differ
+        between kinds of SDR (the sample rate, the ppm, an RTL-SDR's own) apart for a HackRF. An RTL-SDR's
+        keep the keys they always had."""
         s = next((s for s in M.settings if s.key == key), None)
-        return f"radio/{key}" if s is not None and s.shared else f"{M.id}/{key}"
+        base = f"radio/{key}" if s is not None and s.shared else f"{M.id}/{key}"
+        if s is not None and (s.per_sdr or s.sdr) and self._sdr_kind() == "hackrf":
+            return f"sdr_hackrf/{base}"
+        return base
+
+    def _settings_for_sdr(self, M) -> tuple:
+        """M's settings as they apply to the SDR in use: an RTL-SDR's own left out for a HackRF (its bar
+        has those), and an RTL-SDR offered only the sample rates it can deliver."""
+        import dataclasses
+        kind = self._sdr_kind()
+        out = []
+        for s in M.settings:
+            if s.sdr and s.sdr != kind:
+                continue
+            if kind == "rtl" and s.key == "rate" and s.kind == "choice":
+                s = dataclasses.replace(s, choices=tuple(c for c in s.choices
+                                                         if not isinstance(c[0], int) or c[0] <= RTL_MAX_RATE))
+            out.append(s)
+        return tuple(out)
 
     def _values(self, M) -> dict:
         values = {}
+        shown = {s.key: s for s in self._settings_for_sdr(M)}
         for s in M.settings:
+            if s.key not in shown:
+                values[s.key] = s.default               # not this SDR's (an RTL-SDR's own, on a HackRF)
+                continue
             raw = self.settings.value(self._key(M, s.key), None)
-            values[s.key] = s.default if raw is None else self._convert(s, raw)
+            v = s.default if raw is None else self._convert(s, raw)
+            choices = shown[s.key].choices
+            if s.kind == "choice" and choices and v not in [c[0] for c in choices]:
+                v = s.default if s.default in [c[0] for c in choices] else choices[0][0]
+            values[s.key] = v
         return values
+
+    def _settings_heading(self, M) -> tuple[str, str]:
+        """(heading, note) above an SDR mode's settings: whose they are."""
+        from . import relay
+        if getattr(M, "source", "audio") != "radio":
+            return "", ""
+        b = relay.current()
+        if b is None:
+            return "Settings for this PC's RTL-SDR", ""
+        hackrf = self._sdr_kind() == "hackrf"
+        where = "this PC's HackRF" if getattr(b, "local", False) else (
+            f"the relay {b.name}'s " + ("HackRF" if hackrf else "RTL-SDR"))
+        note = ("The HackRF's gain, amp, antenna power and filter are on its bar above. Settings that differ "
+                "between kinds of SDR (sample rate, frequency correction) are kept apart for the RTL-SDR and "
+                "the HackRF.") if hackrf else ""
+        return f"Settings for {where}", note
 
     @staticmethod
     def _convert(s: Setting, raw):
@@ -997,9 +1058,11 @@ class MainWindow(QMainWindow):
         M = next(M for M in MODES if M.id == mode_id)
         self.mode = M()
         self.mode.values = self._values(M)
+        self._form_kind = self._sdr_kind()
         self.settings.setValue("mode", mode_id)
         self.help_label.setText(tuning_html(self.mode))
-        form = SettingsForm(M.settings, self.mode.values)
+        heading, note = self._settings_heading(M)
+        form = SettingsForm(self._settings_for_sdr(M), self.mode.values, heading, note)
         form.changed.connect(self.on_setting)
         self.form = form
         self.settings_area.setWidget(form)
@@ -2310,6 +2373,11 @@ class MainWindow(QMainWindow):
         local = b is not None and getattr(b, "local", False)
         if not local and self._local_hackrf is not None:
             self._stop_local_hackrf()                       # a relay on the network instead
+        if (self.mode is not None and getattr(self.mode, "source", "audio") == "radio"
+                and getattr(self, "_form_kind", None) not in (None, self._sdr_kind())):
+            # Another kind of SDR: the page again with its settings (an RTL-SDR's and a HackRF's are apart).
+            restart = False
+            self.select_mode(self.mode.id)
         self._show_hackrf_bar()
         self.relay_btn.setText("HackRF on this PC ▾" if local else f"Relay: {b.name} ▾" if b else "Connect relay…")
         self.relay_btn.setToolTip("This PC's HackRF, through the toolkit's built-in relay" if local else

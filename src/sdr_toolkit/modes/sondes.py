@@ -56,7 +56,7 @@ class SondeMode(RadioMode):
                      "Or MHz to decode, separated by commas, e.g. 401.5, 402.0."),
         Setting("rate", "Sample rate", 2400000, "choice", restart=True,
                 choices=((2400000, "2.4 MS/s (2.2 MHz of band)"), (1920000, "1.92 MS/s"), (1440000, "1.44 MS/s"),
-                         (960000, "0.96 MS/s"))),
+                         (960000, "0.96 MS/s")), per_sdr=True),
         Setting("ground_m", "Ground height", 0, "int", -100, 5000, 10, suffix=" m",
                 help="For the landing estimate: about the height of the land where it's coming down."),
         Setting("ttl", "Drop sondes after", 30, "int", 1, 240, 1, suffix=" min",

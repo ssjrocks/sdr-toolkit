@@ -18,26 +18,30 @@ from .. import system
 
 RADIO_SETTINGS = (
     Setting("input", "Input", "rtl", "choice", restart=True,
-            choices=(("rtl", "RTL-SDR"), ("file", "IQ recording (.cu8)")),
+            choices=(("rtl", "The SDR (RTL-SDR or HackRF)"), ("file", "IQ recording (.cu8)")),
             help="A recording is unsigned 8-bit IQ, as rtl_sdr writes it, at the sample rate below."),
     Setting("file", "Recording", "", "text", restart=True, help="Path of the .cu8 recording."),
-    Setting("device", "Device", "0", "text", restart=True, shared=True,
-            help="RTL-SDR index (0 is the first) or :serial (e.g. :00000001). Shared by all RTL-SDR modes."),
-    Setting("gain", "Gain", "auto", "text", restart=True, shared=True,
+    Setting("device", "Device", "0", "text", restart=True, shared=True, sdr="rtl",
+            help="RTL-SDR index (0 is the first) or :serial (e.g. :00000001). Shared by all SDR modes."),
+    Setting("gain", "Gain", "auto", "text", restart=True, shared=True, sdr="rtl",
             help="'auto', or dB (e.g. 40.2). Lower it if strong local signals overload the dongle. "
-                 "Shared by all RTL-SDR modes."),
+                 "Shared by all SDR modes."),
     Setting("ppm", "Frequency correction", 0, "int", -200, 200, restart=True, suffix=" ppm", shared=True,
-            help="The dongle's crystal error, shared by all RTL-SDR modes. Cheap dongles are often "
-                 "30-80 ppm off, TCXO ones about 1; ADS-B shows readsb's estimate. Narrow modes (AIS, "
-                 "DMR, LoRa) need it."),
+            per_sdr=True,
+            help="The radio's crystal error, shared by all SDR modes (an RTL-SDR and a HackRF each have "
+                 "their own). Cheap dongles are often 30-80 ppm off, TCXO ones about 1; ADS-B shows "
+                 "readsb's estimate. Narrow modes (AIS, DMR, LoRa) need it."),
 )
 # Where you are: distances, and the map's home marker.
 LOCATION_SETTINGS = (
     Setting("lat", "Your latitude", "", "text", restart=True, shared=True,
             help="Optional, decimal degrees (e.g. -33.87). Gives distances, the map's home marker, and "
-                 "aircraft positions from single messages. Shared by all RTL-SDR modes."),
+                 "aircraft positions from single messages. Shared by all SDR modes."),
     Setting("lon", "Your longitude", "", "text", restart=True, shared=True),
 )
+
+
+RTL_MAX_RATE = 3_200_000              # the most an RTL2832U delivers
 
 
 def rtl_rate_ok(rate) -> bool:

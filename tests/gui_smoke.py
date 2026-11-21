@@ -817,6 +817,41 @@ if relay_src.is_dir():
     results["hackrf_bar"] = _shown and _set and _agc and "-20 dBFS" in bar.meter.text()
     if shots:
         win.grab().save(str(shots / "links.png"))
+    # Each kind of SDR its own settings: on a HackRF no RTL-SDR ones (direct sampling, its gain) and a sample
+    # rate and ppm of its own; back on the RTL-SDR, its own again (no 19.2 MS/s to pick). On a recording here,
+    # so no stream starts (one would report the relay's real device).
+    _was_input = win.settings.value("receiver/input")
+    _page = win.mode.id
+    win.settings.setValue("receiver/input", "file")
+    win.tree.setCurrentItem(win._items["receiver"])
+    app.processEvents()
+    _f = win.form.widgets
+    _on_hackrf = ("direct" not in _f and "gain_mode" not in _f and "rtl_agc" not in _f and "bias_tee" not in _f
+                  and any(v == 19200000 for v, _ in _f["rate"][0].choices)
+                  and "HackRF" in win.form.findChild(QLabel).text())
+    win.on_setting("rate", 19200000)
+    win.on_setting("ppm", 3)
+    win.on_setting("input", "file")
+    _b.device = {"type": "rtl"}
+    win._relay_changed("back to the RTL-SDR", restart=False)
+    app.processEvents()
+    _f = win.form.widgets
+    _on_rtl = ("direct" in _f and "gain_mode" in _f and int(win.mode.values["rate"]) <= 3200000
+               and win.mode.values["ppm"] != 3 and not any(v == 19200000 for v, _ in _f["rate"][0].choices)
+               and "RTL-SDR" in win.form.findChild(QLabel).text())
+    _b.device = {"type": "hackrf"}
+    win._relay_changed("the HackRF again", restart=False)
+    app.processEvents()
+    _back = int(win.mode.values["rate"]) == 19200000 and win.mode.values["ppm"] == 3
+    results["settings_per_sdr"] = _on_hackrf and _on_rtl and _back
+    if not results["settings_per_sdr"]:
+        print("settings_per_sdr", _on_hackrf, _on_rtl, _back)
+    win.settings.setValue("receiver/input", _was_input if _was_input is not None else "rtl")
+    win.settings.setValue("sdr_hackrf/radio/ppm", 0)
+    _b.device = {"type": "rtl"}                     # as it was: the relay's RTL-SDR, on the page before
+    win._relay_changed("back to the RTL-SDR", restart=False)
+    win.tree.setCurrentItem(win._items[_page])
+    app.processEvents()
     _b.device = {"type": "rtl"}
     win._show_hackrf_bar()
     win._stop()

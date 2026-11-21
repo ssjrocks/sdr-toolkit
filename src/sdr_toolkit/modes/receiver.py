@@ -97,28 +97,30 @@ class ReceiverMode(Mode):
                 help="How wide a slice of the band the dongle sends. 2.4 MS/s is the most a cheap dongle "
                      "does without dropping samples; a HackRF does up to 19.2 here. Over a relay each MS/s is "
                      "2 MB/s: 19.2 needs gigabit Ethernet, a 100 Mbit link carries up to about 5.5 (the network "
-                     "meter says when samples are being lost). Through a relay over the internet, lower is gentler."),
+                     "meter says when samples are being lost). Through a relay over the internet, lower is gentler.",
+                     per_sdr=True),
         Setting("gain_mode", "Gain", "auto", "choice",
                 choices=(("auto", "Automatic (tuner AGC)"), ("manual", "Manual (below)")),
-                help="Automatic lets the tuner set its own gain; manual uses the gain below."),
+                help="Automatic lets the tuner set its own gain; manual uses the gain below.", sdr="rtl"),
         Setting("gain_db", "Manual gain", 29.7, "choice",
                 choices=tuple((g / 10, f"{g / 10:.1f} dB") for g in dsp.R820T_GAINS),
                 help="The R820T's gain steps (other tuners use the nearest). Lower it if strong stations "
-                     "make ghost signals; raise it for weak ones."),
+                     "make ghost signals; raise it for weak ones.", sdr="rtl"),
         Setting("rtl_agc", "RTL AGC", False, "bool",
-                help="The RTL2832's own digital gain control. Usually off; can help with very weak signals."),
+                help="The RTL2832's own digital gain control. Usually off; can help with very weak signals.",
+                sdr="rtl"),
         Setting("ppm", "Frequency correction", 0, "int", -200, 200, suffix=" ppm", shared=True,
                 help="The dongle's crystal error, shared by all RTL-SDR modes (ADS-B can measure it). "
-                     "A relay applies its own correction instead."),
+                     "A relay applies its own correction instead.", per_sdr=True),
         Setting("direct", "Direct sampling (HF)", 0, "choice",
                 choices=((0, "Off"), (1, "I branch"), (2, "Q branch (RTL-SDR Blog V3)")),
                 help="Below 24 MHz: bypasses the tuner and samples the antenna input directly (Q branch on a "
-                     "Blog V3; the V4 has an upconverter instead and doesn't need it)."),
+                     "Blog V3; the V4 has an upconverter instead and doesn't need it).", sdr="rtl"),
         Setting("offset_tuning", "Offset tuning (E4000)", False, "bool",
-                help="Only for E4000 tuners: moves the DC spike out of the way."),
+                help="Only for E4000 tuners: moves the DC spike out of the way.", sdr="rtl"),
         Setting("bias_tee", "Bias tee (antenna power)", False, "bool",
                 help="Puts 4.5 V on the antenna socket for an active antenna or LNA. Only on dongles that "
-                     "have one (RTL-SDR Blog V3/V4); never with a DC-shorted antenna."),
+                     "have one (RTL-SDR Blog V3/V4); never with a DC-shorted antenna.", sdr="rtl"),
         Setting("decoder", "Decode with", "", "choice", choices=(("", "Nothing (just listen)"),) + DECODER_CHOICES,
                 help="Run one of the audio decoders on what you're hearing; choosing one also sets the mode and "
                      "bandwidth it wants. Its settings: Decoder settings… above the decoded output."),

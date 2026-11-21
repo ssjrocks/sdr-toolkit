@@ -32,7 +32,8 @@ class LoRaFinderMode(RadioMode):
                      "916.8-918.2 MHz (917.4 covers them), downlinks on 923.3-927.5, Meshtastic's LongFast on "
                      "919.875 and MeshCore on 916.575; in the US, 902-928 MHz; in Europe, 863-870 MHz."),
         Setting("rate", "Sample rate", 2400000, "choice", restart=True,
-                choices=((2400000, "2.4 MS/s (2.2 MHz of band)"), (2048000, "2.048 MS/s"), (1024000, "1.024 MS/s"))),
+                choices=((2400000, "2.4 MS/s (2.2 MHz of band)"), (2048000, "2.048 MS/s"), (1024000, "1.024 MS/s")),
+                per_sdr=True),
         Setting("snr", "Find bursts stronger than", 10, "int", 4, 30, 1, suffix=" dB over the noise", restart=True,
                 help="Lower finds weaker bursts, and more noise to try."),
         Setting("show_other", "List signals that aren't LoRa", True, "bool",

@@ -26,6 +26,9 @@ class Setting:
     help: str = ""
     restart: bool = False          # the decoder must restart to apply it
     shared: bool = False           # one value for every mode that has it (the RTL-SDR's ppm...)
+    # Which SDR it's for: "" any; "rtl" an RTL-SDR only (hidden for a HackRF, whose bar has its own gain).
+    sdr: str = ""
+    per_sdr: bool = False          # a value of its own for each kind of SDR (the sample rate, the ppm)
 
 
 @dataclass(frozen=True)
