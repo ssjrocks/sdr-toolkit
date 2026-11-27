@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import json
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -1398,3 +1399,253 @@ def test_meters_commands(tmp_path, monkeypatch):
     rec.write_bytes(b"")
     m.values = dict(m.values, input="file", file=str(rec))
     assert m.upstream() is None and f"rtl_wmbus < '{rec}'" in m.command()[2]
+
+
+# ---- Aircraft messages (ACARS, VDL2, HFDL)
+
+from sdr_toolkit.modes import aero as aero_mode  # noqa: E402
+
+
+@pytest.mark.skipif(aero_mode.tool("acarsdec") is None, reason="acarsdec isn't built (setup/build.sh)")
+def test_aero_acars_from_a_recording(tmp_path):
+    # Two aircraft on 131.550 MHz, 625 kHz off the recording's centre; one sends twice.
+    frames = [radio_signals.acars_frame(reg=".VH-OQA", text="M01AQF0001HELLO FROM THE TEST"),
+              radio_signals.acars_frame(reg=".VH-VXA", label="5Z", text="M02AQF0420/B6 SYD"),
+              radio_signals.acars_frame(reg=".VH-OQA", label="H1", block_id="2", text="M03AQF0001SECOND")]
+    iq = radio_signals.acars_iq(offset_hz=131.550e6 - 130.925e6, frames=frames)
+    path = radio_signals.save(tmp_path / "acars.cu8", iq)
+    mode, ev = run_radio("aero", path, system="acars", file_rate=2_400_000, file_centre_mhz=130.925)
+    rows = ism_rows(ev)
+    assert {r["key"] for r in rows} == {"VH-OQA", "VH-VXA"}, rows
+    oqa = next(r for r in rows if r["key"] == "VH-OQA")
+    assert oqa["count"] == 2 and oqa["flight"] == "QF0001" and oqa["system"] == "ACARS"
+    assert "SECOND" in oqa["last_msg"] and oqa["last_msg"].startswith("[H1]")
+    d = mode.details("VH-OQA")
+    assert d["title"] == "QF0001" and any("HELLO FROM THE TEST" in v for _, v in d["fields"])
+    assert any(e.kind == "log" and e.text.startswith("ACARS Reg VH-VXA Flight QF0420") for e in ev)
+
+
+def test_aero_vdl2_and_hfdl_messages():
+    m = aero_mode.AeroMode()
+    m.values = dict(m.values)
+    # dumpvdl2's JSON: an aircraft's AVLC frame carrying ACARS, with an ADS-C position libacars decoded.
+    vdl2 = {"vdl2": {"app": {"name": "dumpvdl2"}, "freq": 136975000, "avlc": {
+        "src": {"addr": "7c6b2d", "type": "Aircraft", "status": "Airborne"},
+        "dst": {"addr": "10916D", "type": "Ground station"},
+        "acars": {"reg": ".VH-EBA", "flight": "QF0011", "label": "H1", "msg_text": "",
+                  "arinc622": {"adsc": {"tags": [{"basic_report": {"lat": -33.9, "lon": 151.2, "alt": 35000}}]}}}}}}
+    ev = m.parse(json.dumps(vdl2))
+    assert [e.text for e in ev if e.kind == "log"][0].startswith("VDL2 ICAO 7C6B2D Reg VH-EBA Flight QF0011")
+    assert any("position -33.9000, 151.2000" in e.text for e in ev)
+    # dumphfdl's JSON: a position report from an aircraft whose ICAO address the decoder knows.
+    hfdl = {"hfdl": {"app": {"name": "dumphfdl"}, "freq": 8927000, "lpdu": {
+        "src": {"type": "Aircraft", "id": 12, "ac_info": {"icao": "7C1234"}},
+        "dst": {"type": "Ground station", "id": 3},
+        "hfnpdu": {"flight_id": "QFA7", "pos": {"lat": -20.5, "lon": 160.25}}}}}
+    m.parse(json.dumps(hfdl))
+    # A ground station's squitter (its own position, no aircraft): not listed.
+    squitter = {"hfdl": {"spdu": {"src": {"type": "Ground station", "id": 3},
+                                  "gs_status": [{"location": {"lat": 37.4, "lon": -122.1}}]}}}
+    assert m.parse(json.dumps(squitter)) == []
+    views = m._views()
+    rows = views[0].data["rows"]
+    assert [r["key"] for r in rows] == ["7C1234", "7C6B2D"]
+    assert rows[0]["flight"] == "QFA7" and rows[0]["system"] == "HFDL"
+    pts = {p["id"]: (p["lat"], p["lon"]) for p in views[1].data["points"]}
+    assert pts == {"7C1234": (-20.5, 160.25), "7C6B2D": (-33.9, 151.2)}
+
+
+def test_aero_commands(tmp_path):
+    m = aero_mode.AeroMode()
+    if aero_mode.tool("acarsdec") is None:
+        pytest.skip("the aero decoders aren't built")
+    v = dict(m.values, input="rtl")
+    m.values = v
+    assert m.plan()[1] == 2_400_000 and abs(m.plan()[0] - 130.925e6) < 1
+    m.values = dict(v, system="vdl2")
+    centre, rate, chans = m.plan()
+    assert rate % 105000 == 0 and len(chans) == 10
+    cmd = m.command()
+    assert cmd[cmd.index("--oversample") + 1] == str(rate // 105000) and "--iq-file" in cmd
+    m.values = dict(v, system="hfdl", hfdl_band="8")
+    assert m.plan()[1] == aero_mode.HFDL_RATE
+    cmd = m.command()
+    assert "--sample-format" in cmd and cmd[cmd.index("--sample-format") + 1] == "CU8"
+    lo, hi = min(m.plan()[2]), max(m.plan()[2])
+    assert hi - lo < aero_mode.HFDL_RATE * 0.8
+
+
+def test_aero_messages_show_in_adsb_details(tmp_path):
+    from sdr_toolkit.logbook import Logbook
+    book = Logbook(tmp_path / "log.db")
+    book.add("aero", "VDL2 ICAO 7C6B2D Reg VH-EBA Flight QF0011: [H1] #M1BPOS", t=1000)
+    book.add("aero", "ACARS Reg VH-EBA Flight QF0011: [5Z] /B6 SYD", t=1010)
+    book.add("aero", "ACARS Reg VH-EBAX: [H1] another aircraft", t=1020)
+    book.add("aero", "HFDL ICAO 7C1234: (no text)", t=1030)
+    book.flush()
+    rows = aero_mode.logged_messages(book, "7c6b2d", "VH-EBA")
+    assert [r[1] for r in rows] == ["[5Z] /B6 SYD", "[H1] #M1BPOS"]
+    assert rows[0][0].endswith("ACARS") and rows[1][0].endswith("VDL2")
+    assert aero_mode.logged_messages(book, "ABCDEF", "") == []
+
+
+# ---- VOR and ILS
+
+
+def test_navaids_vor_and_localizer(tmp_path):
+    # A VOR on 110.20 seen from radial 123 and a localizer on 110.30 with 90 Hz 5% stronger (left of course),
+    # around 110.25 MHz.
+    x = radio_signals.vor_iq(123.0, "SY", offset_hz=-50000) + radio_signals.ils_iq(0.05, ident="ISY",
+                                                                                   offset_hz=50000)
+    path = radio_signals.save(tmp_path / "nav.cu8", x)
+    mode, ev = run_radio("navaids", path, file_rate=480000, centre_mhz=110.25)
+    rows = {r["freq"]: r for r in ism_rows(ev)}
+    assert set(rows) == {"110.20", "110.30"}, rows                  # not 110.25 between them
+    assert rows["110.20"]["kind"] == "VOR" and rows["110.20"]["ident"] == "SY"
+    assert rows["110.20"]["reading"] == "Radial 123° · to the station 303°"
+    assert rows["110.30"]["kind"] == "ILS localizer" and rows["110.30"]["ident"] == "ISY"
+    assert rows["110.30"]["reading"].startswith("DDM +0.050: left of course, fly right (32%")
+    d = mode.details("110.30")
+    assert ("Its glide slope", "335.00 MHz") in d["fields"] and d["title"] == "ISY ILS"
+    assert any(e.kind == "line" and e.text == "New beacon: VOR on 110.20 MHz" for e in ev)
+
+
+@pytest.mark.parametrize("radial", [0.0, 45.0, 181.5, 359.0])
+def test_navaid_radials(radial):
+    from sdr_toolkit.engines import navaid
+    x = radio_signals.vor_iq(radial, "", seconds=4.5, rate=48000)
+    r = navaid.analyse(x, 113.0)
+    assert r["kind"] == "VOR" and abs((r["radial"] - radial + 180) % 360 - 180) < 0.5, r
+    gs = navaid.analyse(radio_signals.ils_iq(-0.08, sdm=0.8, ident="", seconds=4.5, rate=48000), 332.0)
+    assert gs["kind"] == "GS" and abs(gs["ddm"] + 0.08) < 0.002
+
+
+# ---- Marine DSC
+
+
+def test_dsc_calls_from_a_recording(tmp_path):
+    import numpy as np
+    # A distress alert: 503123450, flooding, 33°51'S 151°12'E at 04:12 UTC, telephony.
+    distress = radio_signals.dsc_symbols(112, [50, 31, 23, 45, 0, 101, 23, 35, 11, 51, 12, 4, 12, 100])
+    # A routine individual call from coast station 005030001 to 503123450: talk on channel 72 (simplex).
+    routine = radio_signals.dsc_symbols(120, [50, 31, 23, 45, 0, 100, 0, 50, 30, 0, 10, 100, 126,
+                                              72, 0, 90, 126, 126, 126], eos=117)
+    # A coast station's acknowledgement of the distress alert, to all ships.
+    ack = radio_signals.dsc_symbols(116, [112, 0, 50, 30, 0, 10, 110, 50, 31, 23, 45, 0, 101, 23, 35, 11, 51,
+                                          12, 4, 12, 100])
+    audio = np.concatenate([radio_signals.dsc_audio(s) for s in (distress, routine, ack)])
+    path = radio_signals.save(tmp_path / "ch70.cu8", radio_signals.fm_iq(audio * 0.9))
+    mode, ev = run_radio("dsc", path, file_rate=240000)
+    rows = {r["mmsi"]: r for r in ism_rows(ev)}
+    assert set(rows) == {"503123450", "005030001"}, rows
+    ship, coast = rows["503123450"], rows["005030001"]
+    assert ship["category"] == "Distress" and ship["kind"] == "ship"
+    assert "Flooding" in ship["last_call"] and "-33.8500, 151.2000" in ship["last_call"]
+    assert coast["kind"] == "coast station" and coast["count"] == 2
+    logs = [e.text for e in ev if e.kind == "log"]
+    assert any("Routine · from 005030001 · to 503123450 · F3E/G3E all modes telephony · VHF channel 72" in t
+               for t in logs), logs
+    assert any("Distress acknowledgement" in t and "Flooding" in t for t in logs), logs
+    assert not any("error check failed" in t for t in logs)
+    warns = [e.text for e in ev if e.kind == "line" and e.style == "warn"]
+    assert len(warns) == 2 and warns[0].startswith("DISTRESS · from 503123450")
+    pts = [e for e in ev if e.kind == "points"][-1].data["points"]
+    assert {p["id"] for p in pts} == {"503123450", "005030001"}       # the acknowledgement repeats the position
+    d = mode.details("005030001")
+    assert ("Station in distress", "503123450") in d["fields"]
+
+
+def test_dsc_characters_and_fields():
+    from sdr_toolkit.engines import dsc
+    import numpy as np
+    for s in (0, 1, 50, 104, 125, 127):
+        bits = np.array(dsc.encode(s))
+        assert dsc.symbols_at(bits)[0] == s
+        bad = bits.copy()
+        bad[3] ^= 1
+        assert dsc.symbols_at(bad)[0] == -1                # one bit wrong: the check bits catch it
+    assert dsc.position([99] * 5) is None                            # "no position": ten 9s
+    assert dsc.position([12, 3, 0, 3, 45]) == (20.5, -3.75)          # NW (1): 20°30'N 003°45'W
+    assert dsc.frequency([72, 0, 90]) == "VHF channel 72"
+    assert dsc.frequency([16, 10, 90]) == "VHF channel 16 (ship frequency simplex)"
+    assert dsc.frequency([20, 18, 2]) == "2182.0 kHz"           # 021820 x 100 Hz, units first
+    assert dsc.station_kind("005030001") == "coast station" and dsc.station_kind("970123456") == "AIS-SART"
+
+
+# ---- 406 MHz beacons
+
+
+def _beacon_frame(country=503, mmsi_last6=123456, lat=-33.8, lon=151.2, test=False):
+    """A standard location EPIRB (MMSI) frame with a position, BCH filled in."""
+    from sdr_toolkit.engines import beacon406 as b
+
+    def bits(v, n):
+        return format(v, f"0{n}b")
+    f = "1" * 15 + (b.SYNC_TEST if test else b.SYNC_NORMAL) + "1" + "0" + bits(country, 10) + bits(2, 4)
+    f += bits(mmsi_last6, 20) + bits(0, 4)
+    alat, alon = abs(lat), abs(lon)
+    qlat, qlon = int(alat * 4), int(alon * 4)
+    f += ("1" if lat < 0 else "0") + bits(qlat, 9) + ("1" if lon < 0 else "0") + bits(qlon, 10)
+    f += "0" * 21                                                    # BCH-1, filled in below
+    dlat, dlon = alat - qlat / 4, alon - qlon / 4
+    def off(d):
+        m = int(d * 60)
+        return bits(m, 5) + bits(int(round((d * 60 - m) * 60 / 4)), 4)
+    # The offsets add to the coarse position (sign 1 = plus) away from the equator / meridian for S / W.
+    f += "1101" + "1" + "0" + ("1" if lat >= 0 else "0") + off(dlat) + ("1" if lon >= 0 else "0") + off(dlon)
+    f += "0" * 12
+    return b.with_bch(f)
+
+
+def test_beacon406_frame_fields():
+    from sdr_toolkit.engines import beacon406 as b
+    f = _beacon_frame()
+    assert len(f) == 144 and b.bch1_ok(f) and b.bch2_ok(f)
+    d = b.decode_frame(f)
+    assert d["country"] == "Australia" and d["protocol"] == "Standard location: EPIRB (MMSI)"
+    assert d["id"] == "MMSI ...123456, beacon 0" and d["bch_ok"] and not d["self_test"]
+    # dec406's published example frames (README, main_audio.c): an ELT and an ELT(DT) self-test near Toulouse.
+    f1 = "1" * 15 + b.SYNC_NORMAL + bin(int("8E3301E2402B002BBA863609670908", 16))[2:].zfill(120)
+    d1 = b.decode_frame(f1)
+    assert d1["bch_ok"] and d1["country"] == "France" and d1["icao"] == "01E240"
+    assert abs(d1["lat"] - 42.96111) < 1e-4 and abs(d1["lon"] - 1.36667) < 1e-4
+    f2 = bin(int("FFFED08E39048D158AC01E3AA482856824CE", 16))[2:].zfill(144)
+    d2 = b.decode_frame(f2)
+    assert d2["bch_ok"] and d2["self_test"] and d2["protocol"] == "ELT(DT) location"
+    bad = f1[:50] + ("1" if f1[50] == "0" else "0") + f1[51:]
+    assert not b.decode_frame(bad)["bch_ok"]
+
+
+def test_beacon406_from_a_recording(tmp_path):
+    import numpy as np
+    from sdr_toolkit.modes.beacons406 import CENTRE
+    real = _beacon_frame()
+    test = _beacon_frame(country=227, mmsi_last6=654321, lat=43.5, lon=1.25, test=True)
+    x = np.concatenate([radio_signals.beacon406_iq(real, carrier_hz=-12000),
+                        radio_signals.beacon406_iq(real, carrier_hz=-12000, seed=7),
+                        radio_signals.beacon406_iq(test, carrier_hz=25000, seed=8)])
+    path = radio_signals.save(tmp_path / "406.cu8", x)
+    mode, ev = run_radio("beacons406", path, file_rate=960000, file_centre_mhz=CENTRE / 1e6)
+    rows = {r["ident"]: r for r in ism_rows(ev)}
+    assert set(rows) == {"MMSI ...123456, beacon 0", "MMSI ...654321, beacon 0"}, rows
+    r = rows["MMSI ...123456, beacon 0"]
+    assert r["count"] == 2 and r["country"] == "Australia" and r["test"] == "" and r["pos"] == "-33.8000, 151.2000"
+    assert rows["MMSI ...654321, beacon 0"]["test"] == "yes"
+    warns = [e.text for e in ev if e.kind == "line" and e.style == "warn"]
+    assert len(warns) == 1 and warns[0].startswith("BEACON ") and "406.0380 MHz" in warns[0]
+    d = mode.details(r["hex_id"])
+    assert ("Message", "distress (or an accidental activation)") in d["fields"]
+
+
+def test_every_helper_module_runs_on_windows():
+    """The Windows build runs app modules through sdr-toolkit-helper.exe, which only takes the ones it lists:
+    every module the app starts with python_command must be among them (0.19.0's whole-band ISM wasn't)."""
+    import re
+    from sdr_toolkit import helper
+    src = Path(__file__).resolve().parents[1] / "src" / "sdr_toolkit"
+    used = set()
+    for f in src.rglob("*.py"):
+        used |= set(re.findall(r'python_command\(\s*"(sdr_toolkit\.[a-z0-9_.]+)"', f.read_text()))
+    assert used and used <= helper.ALLOWED, used - helper.ALLOWED
+    spec = (src.parents[1] / "packaging" / "windows" / "sdr-toolkit.spec").read_text()
+    assert all(f'"{m}"' in spec for m in used), [m for m in used if f'"{m}"' not in spec]

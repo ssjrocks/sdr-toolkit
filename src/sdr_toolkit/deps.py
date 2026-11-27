@@ -60,6 +60,9 @@ PARTS = {
                       "system"),
     "rtlamr": ("rtlamr (ERT utility meters)", lambda: (system.data_dir() / "rtlamr" / "bin" / "rtlamr").is_file(),
                "build"),
+    "aero": ("acarsdec, dumpvdl2 and dumphfdl (aircraft messages)",
+             lambda: all((system.data_dir() / "aero" / "bin" / b).is_file() for b in ("acarsdec", "dumpvdl2", "dumphfdl")),
+             "build"),
     "wmbusmeters": ("rtl_wmbus and wmbusmeters (Wireless M-Bus meters)",
                     lambda: shutil.which("wmbusmeters") is not None and shutil.which("rtl_wmbus") is not None,
                     "system"),
@@ -87,6 +90,7 @@ WINDOWS_HELP = {
     "gnss-sdr": "GNSS-SDR has no Windows version: use the Linux version of SDR Toolkit for the GPS fix.",
     "gr-lora_sdr": "gr-lora_sdr has no Windows version: use the Linux version of SDR Toolkit for LoRa.",
     "rtlamr": ("ERT meters aren't decoded on Windows yet: use the Linux version of SDR Toolkit."),
+    "aero": ("Aircraft messages (ACARS, VDL2, HFDL) aren't decoded on Windows yet: use the Linux version."),
     "wmbusmeters": ("Wireless M-Bus meters aren't decoded on Windows yet: use the Linux version of SDR Toolkit."),
     "gr-satellites": ("gr-satellites has no Windows package (it runs on GNU Radio, e.g. through radioconda): use "
                       "the Linux version of SDR Toolkit for satellite telemetry."),

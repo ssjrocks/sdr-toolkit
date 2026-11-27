@@ -2104,7 +2104,22 @@ class MainWindow(QMainWindow):
         self._last_details = time.time()
         details = self.mode.details(self._selected)
         logged = self.logbook.craft_info(self.mode.id, self._selected)
+        if self.mode.id == "adsb" and details is not None:
+            details = self._with_aero_messages(details)
         self.details.show_details(self._selected, details, logged, heard=details is not None)
+
+    def _with_aero_messages(self, details):
+        """An ADS-B aircraft's Details plus the ACARS / VDL2 / HFDL messages the aircraft-messages page logged
+        from it (matched by ICAO address or registration)."""
+        from .modes.aero import logged_messages
+        f = dict(details.get("fields", []))
+        try:
+            msgs = logged_messages(self.logbook, f.get("ICAO address", ""), f.get("Registration", ""))
+        except Exception:                                  # the logbook busy or old: Details without them
+            return details
+        if not msgs:
+            return details
+        return dict(details, fields=list(details.get("fields", [])) + [("Its messages", "")] + msgs)
 
     def _log_points(self, points, heard=None):
         now = time.time()

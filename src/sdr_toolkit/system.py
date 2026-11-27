@@ -13,6 +13,11 @@ import sys
 from pathlib import Path
 
 WINDOWS = sys.platform == "win32"
+
+
+def silent() -> bool:
+    """SDR_TOOLKIT_SILENT=1: no sound out of the speakers (tests and scripted runs)."""
+    return os.environ.get("SDR_TOOLKIT_SILENT") == "1"
 FROZEN = bool(getattr(sys, "frozen", False))
 HELPER = "sdr-toolkit-helper.exe" if WINDOWS else "sdr-toolkit-helper"
 

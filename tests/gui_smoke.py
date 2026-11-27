@@ -12,6 +12,7 @@ import traceback
 from pathlib import Path
 
 REAL_DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "sdr-toolkit"
+os.environ["SDR_TOOLKIT_SILENT"] = "1"               # no sound through the speakers
 os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp()      # its own logbook and aircraft database
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -47,6 +48,10 @@ from sdr_toolkit.modes import meters as _meters  # noqa: E402
 _meters.rtlamr = lambda: (str(REAL_DATA / "rtlamr" / "bin" / "rtlamr")
                           if (REAL_DATA / "rtlamr" / "bin" / "rtlamr").is_file() else None)
 _deps.PARTS["rtlamr"] = (_deps.PARTS["rtlamr"][0], lambda: _meters.rtlamr() is not None, "build")
+from sdr_toolkit.modes import aero as _aero  # noqa: E402
+_aero.tool = lambda name: (str(REAL_DATA / "aero" / "bin" / name)
+                           if (REAL_DATA / "aero" / "bin" / name).is_file() else None)
+_deps.PARTS["aero"] = (_deps.PARTS["aero"][0], lambda: _aero.tool("acarsdec") is not None, _deps.PARTS["aero"][2])
 # The radiosonde decoders: the app's install or this checkout's build (found on PATH).
 for _d in (REAL_DATA / "radiosonde" / "bin", Path(__file__).resolve().parents[1] / "build/ext/RS/demod/mod",
            Path(__file__).resolve().parents[1] / "build/ext/RS/scan"):
@@ -264,6 +269,8 @@ app.processEvents()
 # After installing it starts again: here on an absent recording, so it asks for one.
 results["install"] = (installed == [(["readsb"], False)] and not win.install_bar.isVisible()
                       and "recording" in win.title.text())
+if not results["install"]:
+    print("install:", installed, win.install_bar.isVisible(), repr(win.title.text()))
 # Updates: a newer release shows the button; clicking it installs and restarts.
 from sdr_toolkit import updater  # noqa: E402
 
@@ -320,6 +327,21 @@ results["ppm"] = ("+57 ppm" in label and int(win.settings.value("radio/ppm")) ==
                   and win.form.widgets["ppm"][1].value() == 57 and win.mode.values["ppm"] == 57)
 win.settings.setValue("radio/ppm", 0)
 results["aircraft_db"] = len(db_downloads) >= 1        # ADS-B fetched the database by itself
+# ADS-B's Details lists what the aircraft-messages page logged from the same aircraft (ICAO or registration).
+win.tree.setCurrentItem(win._items["adsb"])
+app.processEvents()
+win.logbook.add("aero", "ACARS Reg VH-EBA Flight QF0011: [H1] TEST MESSAGE FROM ACARS")
+win.logbook.add("aero", "VDL2 ICAO 7C6B2D Reg VH-EBA: [5Z] /B6 SYD")
+win.logbook.add("aero", "ACARS Reg VH-XYZ: [H1] SOMEONE ELSE")
+win.logbook.flush()
+win.mode._known = {"7c6b2d": (time.time(), {"flight": "QFA11", "r": "VH-EBA", "lat": -33.9, "lon": 151.2})}
+win._selected = "7c6b2d"
+win.refresh_details()
+app.processEvents()
+_txt = win.details.fields.text()
+results["adsb_aero_messages"] = ("Its messages" in _txt and "TEST MESSAGE FROM ACARS" in _txt and "/B6 SYD" in _txt
+                                 and "SOMEONE ELSE" not in _txt)
+win._selected = None
 # Details: picking a ship in the table shows it; the logbook has it and its positions.
 win.tree.setCurrentItem(win._items["ais"])
 app.processEvents()

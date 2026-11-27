@@ -18,6 +18,8 @@ packages=(
   libncurses-dev libcodec2-dev
   # to build rtlamr (meters)
   golang-go
+  # to build libacars, dumpvdl2, dumphfdl and acarsdec (aircraft messages)
+  libliquid-dev libconfig++-dev libcjson-dev libxml2-dev libjansson-dev zlib1g-dev libglib2.0-dev
 )
 missing=()
 for p in "${packages[@]}"; do

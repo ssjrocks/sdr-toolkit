@@ -23,12 +23,13 @@ could pick up.
 - [ ] Z-Wave (waving-z): its build failed and couldn't be looked into yet
 
 ## 2. Aviation, marine, emergency
-- [ ] ACARS and VDL Mode 2 messages, joined to the ADS-B aircraft — RTL
-- [ ] FLARM / OGN: gliders, light aircraft and drones on the aircraft map — RTL/HF
-- [ ] VOR bearings, ILS and ATIS — RTL
-- [ ] Marine DSC (VHF channel 70) next to AIS — RTL
-- [ ] 406 MHz EPIRB / PLB beacons — RTL
-- [ ] HFDL — HF reception (+hw for good results)
+- [x] ACARS and VDL Mode 2 messages, joined to the ADS-B aircraft — RTL (VDL2 not yet decoded from a signal)
+- [ ] FLARM / OGN: gliders, light aircraft and drones on the aircraft map — RTL/HF (open decoders are EU 868 MHz
+      only; Australia's 917-927 MHz hopping band and the newer FLARM protocol need more work)
+- [x] VOR bearings, ILS and ATIS — RTL (ATIS: AM in the receiver)
+- [x] Marine DSC (VHF channel 70) next to AIS — RTL
+- [x] 406 MHz EPIRB / PLB beacons — RTL (first generation; second generation needs dec406)
+- [x] HFDL — HF reception (+hw for good results) (not yet decoded from a signal)
 
 ## 3. Broadcast
 - [ ] FM RDS: station name, radiotext, traffic — RTL/HF

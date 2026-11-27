@@ -185,7 +185,7 @@ class DigitalVoiceMode(RadioMode):
                 src = f"rtl:{dev}:{freq}M:{gain}:{v['ppm']}:{v['bw']}:{v['squelch']}:2"
         else:
             src = self._wav_from_recording()
-        cmd = [exe, v["protocol"], "-i", src, "-o", "pulse" if v["voice"] else "null", "-J", str(self._events)]
+        cmd = [exe, v["protocol"], "-i", src, "-o", "pulse" if v["voice"] and not system.silent() else "null", "-J", str(self._events)]
         if v.get("trunk") and v["input"] != RECEIVER_AUDIO:   # DSD-FME tunes the SDR: from the receiver it can't
             cmd.append("-T")
             if str(v.get("chan_map", "")).strip():

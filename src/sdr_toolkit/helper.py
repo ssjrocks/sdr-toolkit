@@ -5,7 +5,9 @@ helper modules (relay_stream, the satellite worker) as its own process, with rea
 import runpy
 import sys
 
-ALLOWED = {"sdr_toolkit.relay_stream", "sdr_toolkit.satellites.worker", "sdr_toolkit.engines.lora_rx"}
+ALLOWED = {"sdr_toolkit.relay_stream", "sdr_toolkit.satellites.worker", "sdr_toolkit.engines.lora_rx",
+           "sdr_toolkit.engines.ism_wide", "sdr_toolkit.engines.sonde_rx", "sdr_toolkit.engines.navaid",
+           "sdr_toolkit.engines.dsc", "sdr_toolkit.engines.beacon406", "sdr_toolkit.engines.lora_find"}
 
 
 def main():

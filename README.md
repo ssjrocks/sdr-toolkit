@@ -7,7 +7,8 @@ Decoders for amateur and utility radio in one window, from two kinds of source:
   Windows, WASAPI loopback), so you still hear the audio.
 - **SDR:** an RTL-SDR or a HackRF, plugged into this PC or into another one running
   [SDR Tools Relay](https://github.com/ssjrocks/sdr-tools-relay): a spectrum and receiver up to 19.2 MHz
-  wide, ADS-B, AIS, ISM sensors, LoRa, DMR / P25, radiosondes, GPS, and a satellite tracker.
+  wide, ADS-B, aircraft messages (ACARS, VDL2, HFDL), VOR / ILS beacons, AIS, marine DSC, 406 MHz distress
+  beacons, ISM sensors, utility meters, LoRa, DMR / P25, radiosondes, GPS, and a satellite tracker.
 
 It runs on Ubuntu and on Windows 10 and 11 (see [Windows](#windows)).
 
@@ -68,7 +69,11 @@ it), set under **Settings → Input**: handy without a dongle, or to decode some
 | ISM sensors (315/345/433/868/902-928 MHz) | rtl_433, one row per device; on a HackRF one per channel of a whole band at once | every band or a region's (hopping), one frequency, whole bands on a HackRF, sample rate, the analyser for signals nothing decodes, your own decoders, protocol filter |
 | Utility meters | rtlamr (ERT: SCM, SCM+, IDM, NetIDM, R900), rtl_wmbus and wmbusmeters (Wireless M-Bus T1/C1/S1) | which meters, ERT message types and centre frequency |
 | ADS-B aircraft (1090 MHz) | readsb | units, how long aircraft stay listed |
+| Aircraft messages (ACARS 129-132 MHz, VDL Mode 2 136 MHz, HFDL 2-22 MHz) | acarsdec, dumpvdl2, dumphfdl (with libacars), built by the installer | which system, its channels, the HFDL band, HF on an RTL-SDR (tuner or direct sampling) |
+| VOR and ILS beacons (108-118 MHz, 329-335 MHz) | the toolkit's own: a VOR's radial, a localizer's or glide slope's deviation, the Morse ident | centre frequency, the channels (all in view, or a list), sample rate (up to 8 MHz on a HackRF) |
 | AIS ships (161.975 / 162.025 MHz) | rtl_fm + direwolf, sentences decoded by the toolkit | channel, how long ships stay listed |
+| Marine DSC (VHF channel 70, 156.525 MHz) | the toolkit's own (ITU-R M.493), from rtl_fm's audio | frequency |
+| 406 MHz distress beacons (EPIRB, PLB, ELT) | the toolkit's own (first generation, C/S T.001; frame decoding after dec406) | |
 | Radiosondes (weather balloons, 400–406 MHz) | rs1729's decoders (RS41, DFM, M10/M20, RS92, iMet-54, Meisei...) and dft_detect | centre frequency, frequencies or found by themselves, ground height for the landing estimate, how long sondes stay listed |
 | LoRa / Meshtastic / MeshCore | gr-lora_sdr (built separately, see below) | network preset, region, frequency, SF/BW/CR/sync word, channel keys |
 | LoRa finder | the toolkit's own (finding and measuring bursts) and gr-lora_sdr | centre frequency, sample rate, how strong a burst must be, Meshtastic and MeshCore keys |
@@ -348,6 +353,30 @@ timings and the rtl_433 decoder spec that would read it; **Add as a decoder** ma
 Wireless M-Bus meters and sensors through rtl_wmbus and wmbusmeters, which picks the driver for each
 meter by itself. Encrypted M-Bus meters show by ID and maker without readings.
 
+**Aircraft messages** lists one row per aircraft (by ICAO address, or registration or flight when that's all
+a message gives) with its latest message: ACARS through acarsdec, VDL Mode 2 through dumpvdl2 and HFDL through
+dumphfdl, all several channels at once from the SDR's raw samples, with libacars decoding what's inside (ADS-C
+positions, CPDLC, flight plans). Positions go on the map. A message heard on the neighbouring channels too (a
+strong aircraft nearby) counts once. ADS-B's Details tab lists the messages the same aircraft sent, matched by
+ICAO address or registration.
+
+**VOR and ILS** measures every beacon in view at once. A VOR gives the radial you're on (its 30 Hz AM
+variable signal against the 30 Hz FM reference on its 9960 Hz subcarrier) and the bearing to the station; an
+ILS localizer how far left or right of the runway's centre line (the difference between its 90 Hz and
+150 Hz tones, as a fraction of full scale) and a glide slope how far above or below the path. Each beacon's
+Morse ident is decoded, and Details gives a localizer's paired glide slope frequency. ATIS (an airport's
+recorded weather) is voice on 118-136 MHz: listen on AM in Spectrum & receiver.
+
+**Marine DSC** decodes digital selective calls on channel 70: distress alerts (the ship's MMSI, what's wrong,
+its position and the time), their acknowledgements and relays, urgency and safety calls, and routine calls
+(who calls whom, and on which channel to talk). One row per station; distress positions go on the map.
+
+**406 MHz distress beacons** watches the 406.0-406.1 MHz band for COSPAS-SARSAT bursts and decodes
+first-generation beacons (nearly all in use): the country, the protocol (EPIRB, PLB or ELT; MMSI, aircraft
+address or serial number), the 15-hex ID and the GPS position of location protocols, checked by both BCH
+codes. A self-test (one burst when the owner presses the test button) is marked; any other burst may be a real
+distress or an accidental activation. Second-generation (spread-spectrum) beacons aren't decoded yet.
+
 **Not done yet:** UAT 978 MHz (US only; dump978 isn't packaged), Z-Wave, and Mobitex (no open decoder
 known). The full list of what's coming is in [docs/roadmap.md](docs/roadmap.md).
 
@@ -503,6 +532,10 @@ What the tests check, and against what:
 | ISM | a Nexus-TH sensor synthesized from rtl_433's protocol description, decoded by rtl_433 |
 | ADS-B | DF17 squitters (CRC-24, identification, CPR positions) encoded from the standard, decoded by readsb |
 | GPS | [gps-sdr-sim](https://github.com/osqzss/gps-sdr-sim) signals for a position in Sydney from a real broadcast ephemeris (1 Jan 2022), made to look like a dongle 54 ppm fast (sample clock and tuning) with noise above the satellites; the fix comes out within 20 m (3 m in practice). The test runs when gps-sdr-sim is built in `build/gps-sdr-sim` |
+| ACARS | blocks built to ARINC 618 (odd parity, CRC-16), MSK-modulated as acarsdec's demodulator expects, on AM, decoded by acarsdec through the page; VDL2 and HFDL parsing on JSON shaped as dumpvdl2's and dumphfdl's sources write it |
+| VOR, ILS | a VOR on four radials (0, 45, 181.5, 359°) and a localizer and glide slope with known DDM, synthesized to ICAO Annex 10, with Morse idents; radials within 0.5°, DDM within 0.002 |
+| Marine DSC | distress, routine and distress-acknowledgement calls built to ITU-R M.493 (10-unit code, DX/RX time diversity, ECC), FM-modulated with noise; decodes down to about 7 dB signal-to-noise |
+| 406 MHz | dec406's published example frames (BCH-1 and BCH-2 pass, fields decode), and bursts synthesized to C/S T.001 (160 ms carrier, biphase-L ±1.1 rad), a self-test among them |
 | AIS | type 1 and 5 reports (HDLC, CRC-16, NRZI, GMSK) encoded from the standard, decoded by direwolf; the sentence decoder also against the AIVDM documentation's example (MMSI 366053209 in San Francisco Bay) |
 | Meshtastic, MeshCore | packets built to the published formats (Meshtastic firmware and protobufs, MeshCore docs), sent as real LoRa IQ by gr-lora_sdr's transmitter (`tests/lora_tx.py`) with a 5 ppm crystal error and noise, and decoded through the mode; the LongFast channel hash (8), MeshCore Public hash (0x11) and Meshtastic's documented default frequencies come out right. MeshCore's sync word (0x12, RadioLib's default) is assumed on both sides, so that value isn't checked |
 

@@ -6,7 +6,10 @@ multiples of 48 kHz, so every rate change on the way to 48 kHz audio is a whole-
 decimation: a filter at the higher rate, then every n-th sample.
 """
 
+import os
+
 import numpy as np
+import scipy.fft
 from scipy.signal import butter, lfilter, sosfilt, sosfilt_zi
 
 AUDIO_RATE = 48000
@@ -242,6 +245,9 @@ class Demodulator:
         return x * (0.5 / max(self._peak, 0.5 / AGC_MAX_GAIN))
 
 
+FFT_WORKERS = max(1, min(4, (os.cpu_count() or 2) // 2))
+
+
 class Channelizer:
     """Several narrow channels out of the dongle's samples at once, from one FFT per block
     (overlap-save, half a block of overlap): each channel takes the m bins around its frequency,
@@ -263,6 +269,7 @@ class Channelizer:
         self._blocks = 0
         self._filters: dict[float, np.ndarray] = {}
         self.channels: dict = {}                        # key -> {"offset", "k0", "H", "mixer", "last"}
+        self._stacked = None                            # every channel's bins and filter, as arrays
 
     def _filter(self, width):
         """The low-pass for a channel `width` Hz wide, as the m bins around 0 Hz of its spectrum."""
@@ -286,9 +293,22 @@ class Channelizer:
               "mixer": Mixer(self.out_rate, offset - k0 * self.rate / self.n),
               "last": old["last"] if old else 1 + 0j}
         self.channels[key] = ch
+        self._stacked = None
 
     def remove(self, key):
         self.channels.pop(key, None)
+        self._stacked = None
+
+    def _stack(self):
+        """(keys, bin indices, filters, odd k0) for all channels: one batched inverse FFT per block."""
+        if self._stacked is None:
+            keys = list(self.channels)
+            span = (np.arange(self.m) - self.m // 2)
+            K = np.array([(self.channels[k]["k0"] + span) % self.n for k in keys]).reshape(len(keys), self.m)
+            H = np.array([self.channels[k]["H"] for k in keys], np.complex64).reshape(len(keys), self.m)
+            odd = np.array([self.channels[k]["k0"] % 2 == 1 for k in keys], bool)
+            self._stacked = (keys, K, H, odd)
+        return self._stacked
 
     def process(self, x) -> dict:
         """Samples since the last call -> {key: complex baseband at 48 kHz} for each channel."""
@@ -301,23 +321,27 @@ class Channelizer:
         data = np.concatenate(self._new)
         used = (len(data) // half) * half
         rest = data[used:]
+        keys, K, H, odd = self._stack()
+        blocks = []
         for i in range(0, used, half):
             block = np.concatenate([self._buf, data[i:i + half]])
             self._buf = data[i:i + half]
-            X = np.fft.fft(block)
-            sign = -1 if self._blocks % 2 else 1
-            for key, ch in self.channels.items():
-                k = (ch["k0"] + np.arange(self.m) - self.m // 2) % self.n
-                y = np.fft.ifft(np.fft.ifftshift(X[k] * ch["H"]))[self.m // 2:]
-                if ch["k0"] % 2 and sign < 0:
-                    y = -y                               # the bin shift's phase from one block to the next
-                out[key].append(y.astype(np.complex64))
+            if not keys:
+                self._blocks += 1
+                continue
+            X = scipy.fft.fft(block, workers=FFT_WORKERS)
+            Y = scipy.fft.ifft(scipy.fft.ifftshift(X[K] * H, axes=1), axis=1)[:, self.m // 2:]
+            if self._blocks % 2:
+                Y[odd] *= -1                             # the bin shift's phase from one block to the next
+            blocks.append(Y)
             self._blocks += 1
         self._new = [rest] if len(rest) else []
         self._new_n = len(rest)
+        if not blocks:
+            return {k: np.zeros(0, np.complex64) for k in out}
+        Y = np.concatenate(blocks, axis=1).astype(np.complex64)
         # The mixer takes the last few Hz the bin shift couldn't (a fraction of a bin).
-        return {k: self.channels[k]["mixer"](np.concatenate(v)) if v else np.zeros(0, np.complex64)
-                for k, v in out.items()}
+        return {k: self.channels[k]["mixer"](Y[j]) for j, k in enumerate(keys)}
 
 
 def fm_discriminator(ch, y, deviation=5000.0):

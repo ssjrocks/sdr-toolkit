@@ -138,4 +138,20 @@ class WasapiOut:
         self._thread.join(timeout=2)
 
 
-AudioOut = WasapiOut if system.WINDOWS else PipeWireOut
+class SilentOut:
+    """No sound (SDR_TOOLKIT_SILENT=1: tests and scripted runs, so they don't play through the desktop)."""
+
+    error = ""
+    proc = None
+
+    def play(self, audio, volume=1.0):
+        pass
+
+    def close(self):
+        pass
+
+
+def AudioOut(*args, **kwargs):
+    if system.silent():
+        return SilentOut()
+    return (WasapiOut if system.WINDOWS else PipeWireOut)(*args, **kwargs)

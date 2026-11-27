@@ -4,6 +4,7 @@
 #   mbelib (AMBE/IMBE voice codecs, github.com/lwvmobile/mbelib) and DSD-FME (github.com/lwvmobile/dsd-fme)
 #   rs1729's radiosonde decoders and dft_detect (github.com/rs1729/RS)
 #   rtlamr, utility meters' ERT / SCM / IDM / R900 messages (github.com/bemasher/rtlamr)
+#   libacars, dumpvdl2 and dumphfdl (github.com/szpajder), acarsdec (github.com/f00b4r0/acarsdec): aircraft messages
 # Parts already built are skipped; --rebuild builds them again.
 #
 # mbelib carries a patent notice: "Executable objects compiled or derived from this package may be
@@ -84,5 +85,31 @@ if (( rebuild )) || [[ ! -x "$amr/bin/rtlamr" ]]; then
   echo "STEP rtlamr installed"
 else
   echo "STEP rtlamr already built"
+fi
+aero="$root/aero"
+if (( rebuild )) || [[ ! -x "$aero/bin/dumpvdl2" || ! -x "$aero/bin/dumphfdl" || ! -x "$aero/bin/acarsdec" ]]; then
+  echo "STEP Building the aircraft message decoders (ACARS, VDL Mode 2, HFDL), a few minutes"
+  # Installed under $aero, finding libacars there by their built-in library path (no system folders).
+  aero_cmake=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$aero" -DCMAKE_PREFIX_PATH="$aero"
+              -DCMAKE_INSTALL_RPATH="$aero/lib" -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON)
+  export PKG_CONFIG_PATH="$aero/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+  fetch libacars https://github.com/szpajder/libacars.git
+  cmake -S "$src/libacars" -B "$src/libacars/build" "${aero_cmake[@]}" >/dev/null
+  build "$src/libacars/build" >/dev/null
+  fetch dumpvdl2 https://github.com/szpajder/dumpvdl2.git
+  cmake -S "$src/dumpvdl2" -B "$src/dumpvdl2/build" "${aero_cmake[@]}" -DRTLSDR=FALSE -DMIRISDR=FALSE \
+        -DSDRPLAY=FALSE -DSDRPLAY3=FALSE -DSOAPYSDR=FALSE -DZMQ=FALSE -DPROTOBUF=FALSE >/dev/null
+  build "$src/dumpvdl2/build" >/dev/null
+  fetch dumphfdl https://github.com/szpajder/dumphfdl.git
+  cmake -S "$src/dumphfdl" -B "$src/dumphfdl/build" "${aero_cmake[@]}" -DSOAPYSDR=FALSE -DZMQ=FALSE \
+        -DRDKAFKA=FALSE >/dev/null
+  build "$src/dumphfdl/build" >/dev/null
+  fetch acarsdec https://github.com/f00b4r0/acarsdec.git
+  cmake -S "$src/acarsdec" -B "$src/acarsdec/build" "${aero_cmake[@]}" -DMQTT=OFF -DALSA=OFF -DRTLSDR=OFF \
+        -DAIRSPY=OFF -DSDRPLAY=OFF -DSOAPYSDR=OFF >/dev/null
+  build "$src/acarsdec/build" >/dev/null
+  echo "STEP Aircraft message decoders installed"
+else
+  echo "STEP Aircraft message decoders already built"
 fi
 echo "STEP Builds done"

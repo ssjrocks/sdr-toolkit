@@ -15,6 +15,10 @@ from pathlib import Path
 
 import pytest
 
+# Nothing the tests decode (receiver audio, DSD-FME's voice) plays through the speakers; inherited by every
+# program they start.
+os.environ["SDR_TOOLKIT_SILENT"] = "1"
+
 # From a source checkout (CI installs the package; here the tests run from src/).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 

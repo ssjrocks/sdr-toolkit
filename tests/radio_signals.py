@@ -207,3 +207,171 @@ def ais_static_payload(mmsi=503123456, callsign="VJN1234", name="SPIRIT OF TEST"
             + _text6(destination, 20) + [0] + [0])
     assert len(bits) == 424, len(bits)
     return bits
+
+
+# ---- ACARS: 2400 bit/s MSK (1200 / 2400 Hz audio tones) on AM, ARINC 618 framing
+
+
+def _odd_parity(c: int) -> int:
+    return c | (0x80 if bin(c).count("1") % 2 == 0 else 0)
+
+
+def _crc16_kermit(data: bytes) -> int:
+    c = 0
+    for b in data:
+        c ^= b
+        for _ in range(8):
+            c = (c >> 1) ^ 0x8408 if c & 1 else c >> 1
+    return c
+
+
+def acars_frame(mode="2", reg=".VH-OQA", label="H1", block_id="1", text="M01AQF0001HELLO FROM THE TEST",
+                ack="\x15") -> bytes:
+    """One ACARS block as sent: pre-key, '+', '*', SYN SYN SOH, the block (odd parity), ETX, CRC, DEL. A
+    downlink's text starts with the message number (4) and flight (6)."""
+    body = bytes(_odd_parity(ord(c)) for c in mode + reg + ack + label + block_id) + bytes([_odd_parity(2)]) \
+        + bytes(_odd_parity(ord(c)) for c in text) + bytes([0x83])
+    c = _crc16_kermit(body)
+    return bytes([0xFF] * 16 + [0xAB, 0x2A, 0x16, 0x16, 0x01]) + body + bytes([c & 0xFF, c >> 8, 0x7F])
+
+
+def acars_audio(frame: bytes, rate: float) -> np.ndarray:
+    """The MSK audio: LSB first; a bit equal to the one before is sent as 2400 Hz, a change as 1200 Hz
+    (continuous phase), as acarsdec's demodulator (msk.c) expects."""
+    bits = [(b >> i) & 1 for b in frame for i in range(8)]
+    spb = rate / 2400
+    out, ph, prev = [], 0.0, 1
+    for n, b in enumerate(bits):
+        tone = 2400 if b == prev else 1200
+        prev = b
+        m = int(round((n + 1) * spb)) - int(round(n * spb))
+        out.append(np.sin(ph + 2 * np.pi * tone * np.arange(m) / rate))
+        ph = (ph + 2 * np.pi * tone * m / rate) % (2 * np.pi)
+    return np.concatenate(out)
+
+
+def acars_iq(rate=2_400_000, offset_hz=0.0, frames=None, gap_s=0.3, seed=1):
+    """AM-modulated ACARS blocks at *offset_hz* from the recording's centre, with a little noise."""
+    frames = frames or [acars_frame()]
+    pad = np.zeros(int(gap_s * rate))
+    parts = [pad]
+    for f in frames:
+        parts += [acars_audio(f, rate), pad]
+    a = np.concatenate(parts)
+    x = 0.3 * (1 + 0.6 * a) * np.exp(2j * np.pi * offset_hz * np.arange(len(a)) / rate)
+    return (x + _noise(len(x), 0.01, seed)).astype(np.complex64)
+
+
+# ---- VOR and ILS (ICAO Annex 10): AM tones on a carrier, with a 1020 Hz Morse ident
+
+
+def _ident_keying(ident, rate, n, wpm=7, start_s=1.0):
+    """A 0/1 envelope n samples long: *ident* in Morse, repeated every 8 s from start_s."""
+    from sdr_toolkit.engines.morse.synth import keying
+    k = np.zeros(n)
+    i = int(start_s * rate)
+    while i < n:
+        j = i
+        for tone, ms in keying(ident, wpm):
+            m = int(ms * rate / 1000)
+            if tone:
+                k[j:j + m] = 1.0
+            j += m
+        i += int(8 * rate)
+    return k
+
+
+def _am_carrier(audio, rate, offset_hz, seed, level=0.3):
+    x = level * (1 + audio) * np.exp(2j * np.pi * offset_hz * np.arange(len(audio)) / rate)
+    return (x + _noise(len(x), 0.003, seed)).astype(np.complex64)
+
+
+def vor_iq(radial=123.0, ident="SY", seconds=10.0, rate=480000, offset_hz=0.0, seed=2):
+    """A conventional VOR seen from *radial* (degrees from the station): 30 Hz AM 30% (the variable, lagging
+    the reference by the radial), a 9960 Hz subcarrier 30% FM +-480 Hz by the 30 Hz reference, ident 10%."""
+    n = int(seconds * rate)
+    t = np.arange(n) / rate
+    w = 2 * np.pi * 30.0
+    audio = 0.3 * np.cos(w * t - np.radians(radial))
+    audio += 0.3 * np.cos(2 * np.pi * 9960.0 * t + (480.0 / 30.0) * np.sin(w * t))
+    audio += 0.1 * _ident_keying(ident, rate, n) * np.sin(2 * np.pi * 1020.0 * t)
+    return _am_carrier(audio, rate, offset_hz, seed)
+
+
+def ils_iq(ddm=0.05, sdm=0.4, ident="ISY", seconds=10.0, rate=480000, offset_hz=0.0, seed=3):
+    """An ILS localizer (sdm 0.4) or glide slope (sdm 0.8): 90 Hz and 150 Hz AM whose depths differ by *ddm*
+    (90 minus 150)."""
+    n = int(seconds * rate)
+    t = np.arange(n) / rate
+    audio = (sdm + ddm) / 2 * np.sin(2 * np.pi * 90.0 * t) + (sdm - ddm) / 2 * np.sin(2 * np.pi * 150.0 * t)
+    if ident:
+        audio += 0.1 * _ident_keying(ident, rate, n) * np.sin(2 * np.pi * 1020.0 * t)
+    return _am_carrier(audio, rate, offset_hz, seed)
+
+
+# ---- Marine DSC (ITU-R M.493): 1200 baud FSK, 2100 Hz = B (0), 1300 Hz = Y (1), on FM
+
+
+def dsc_symbols(fmt, body, eos=127):
+    """The characters of a call as sent: phasing, then each character in a DX position and again 4 characters
+    later in an RX position, then EOS (3 more times in DX) and the error-check character."""
+    from sdr_toolkit.engines.dsc import PHASING_DX, PHASING_RX
+    info = [fmt, fmt] + list(body) + [eos]
+    ecc = 0
+    for c in [fmt] + list(body) + [eos]:
+        ecc ^= c
+    msg = info + [ecc]
+    # Stream positions: DX k at 2k, RX k at 2k+1; DX has 6 phasing then msg; RX has 8 phasing then msg.
+    dx = [PHASING_DX] * 6 + msg + [eos, eos]
+    rx = list(PHASING_RX) + msg
+    out = []
+    for k in range(max(len(dx), len(rx))):
+        out.append(dx[k] if k < len(dx) else eos)
+        if k < len(rx):
+            out.append(rx[k])
+    return out
+
+
+def dsc_audio(symbols, rate=48000, dots=20, lead_s=0.3):
+    from sdr_toolkit.engines.dsc import encode
+    bits = [i % 2 for i in range(dots)] + [b for s in symbols for b in encode(s)]
+    spb = rate / 1200
+    out, ph = [np.zeros(int(lead_s * rate))], 0.0
+    for n, b in enumerate(bits):
+        f = 1300.0 if b else 2100.0
+        m = int(round((n + 1) * spb)) - int(round(n * spb))
+        out.append(np.sin(ph + 2 * np.pi * f * np.arange(m) / rate))
+        ph = (ph + 2 * np.pi * f * m / rate) % (2 * np.pi)
+    out.append(np.zeros(int(lead_s * rate)))
+    return np.concatenate(out)
+
+
+def fm_iq(audio, audio_rate=48000, rate=240000, deviation=3000.0, seed=4, noise=0.02):
+    """Audio FM-modulated onto a carrier at the centre of an IQ recording."""
+    from scipy.signal import resample_poly
+    up = resample_poly(audio, rate // audio_rate, 1)
+    ph = 2 * np.pi * deviation * np.cumsum(up) / rate
+    x = 0.5 * np.exp(1j * ph)
+    return (x + _noise(len(x), noise, seed)).astype(np.complex64)
+
+
+# ---- 406 MHz distress beacons (C/S T.001, first generation): 160 ms carrier, then biphase-L +-1.1 rad at 400 bps
+
+
+def beacon406_iq(frame_bits, rate=960000, offset_hz=200000.0, carrier_hz=2000.0, level=0.3, seed=5, lead_s=0.4,
+                 noise=0.01):
+    """One burst: *frame_bits* (from the bit sync, 112 or 144) after 160 ms of plain carrier, *carrier_hz* above
+    the 406.05 MHz band centre, which sits *offset_hz* from the recording's centre."""
+    spb = rate / 400
+    ph = []
+    for b in frame_bits:
+        h = int(spb / 2)
+        first = 1.1 if b == "1" else -1.1
+        ph += [first] * h + [-first] * (int(spb) - h)
+    phase = np.concatenate([np.zeros(int(0.16 * rate)), np.array(ph)])
+    n_lead = int(lead_s * rate)
+    env = np.concatenate([np.zeros(n_lead), np.ones(len(phase)), np.zeros(n_lead)])
+    phase = np.concatenate([np.zeros(n_lead), phase, np.zeros(n_lead)])
+    t = np.arange(len(env)) / rate
+    x = level * env * np.exp(1j * (phase + 2 * np.pi * (offset_hz + carrier_hz) * t + 0.7))
+    return (x + _noise(len(x), noise, seed)).astype(np.complex64)
