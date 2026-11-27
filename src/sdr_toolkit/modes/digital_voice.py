@@ -42,7 +42,14 @@ PROTOCOLS = (
     ("-fz", "M17"),
     ("-fp", "ProVoice"),
     ("-fh", "EDACS"),
+    ("-fe", "EDACS EA (extended addressing)"),
+    ("-fx", "X2-TDMA"),
+    ("-ft", "Trunked P25 phase 1 / 2 and DMR (control and voice)"),
 )
+# The explorer's "every protocol in turn": automatic first (P25 phase 1, DMR, D-Star, YSF, X2-TDMA), then the
+# ones automatic doesn't look for.
+PROBE_ORDER = ("-fa", "-fi", "-fn", "-fm", "-fz", "-f2", "-fh", "-fp")
+PROTOCOL_NAMES = {flag: name for flag, name in PROTOCOLS}
 BORING = ("█", "╗", "╝", "═", "Build Version", "MBElib Version", "CODEC2", "Writing + Appending",
           "Audio In Device", "Audio Out Device", "Setting RTL", "Dev 0 Freq")
 
@@ -104,6 +111,17 @@ class DigitalVoiceMode(RadioMode):
                 help="On your speakers (PulseAudio). Encrypted calls are muted."),
         Setting("voice_volume", "Voice volume", 100, "int", 0, 150, 5, suffix=" %",
                 help="The decoded voice's loudness (its own stream in the sound settings, \"DSD-FME\")."),
+        Setting("trunk", "Follow trunked calls", False, "bool", restart=True,
+                help="Set Frequency to a trunked system's control channel: DSD-FME follows each call onto its voice "
+                     "channel and back, tuning the SDR itself (P25, DMR Tier III / Capacity+ / Connect+, NXDN, "
+                     "EDACS). P25 announces its channels; the others need a channel map below."),
+        Setting("chan_map", "Channel map (CSV)", "", "text", restart=True,
+                help="For DMR Tier III, Capacity+, Connect+ and EDACS: a CSV of channel number, frequency in Hz "
+                     "(one per line), from the system's licence or a database such as RadioReference."),
+        Setting("tg_hold", "Only talkgroup", "", "text", restart=True,
+                help="While following a trunked system: only this talkgroup's calls (empty: every call)."),
+        Setting("private_calls", "Follow private calls", True, "bool", restart=True,
+                help="Off: radio-to-radio calls aren't followed, only talkgroup calls."),
         Setting("save_calls", "Save each call as a WAV", False, "bool", restart=True),
         Setting("folder", "Save calls to", str(Path.home() / "Music" / "SDR Toolkit calls"), "text", restart=True),
         Setting("details", "Show decoder details", False, "bool",
@@ -168,6 +186,14 @@ class DigitalVoiceMode(RadioMode):
         else:
             src = self._wav_from_recording()
         cmd = [exe, v["protocol"], "-i", src, "-o", "pulse" if v["voice"] else "null", "-J", str(self._events)]
+        if v.get("trunk") and v["input"] != RECEIVER_AUDIO:   # DSD-FME tunes the SDR: from the receiver it can't
+            cmd.append("-T")
+            if str(v.get("chan_map", "")).strip():
+                cmd += ["-C", str(Path(v["chan_map"]).expanduser())]
+            if str(v.get("tg_hold", "")).strip():
+                cmd += ["-I", str(v["tg_hold"]).strip()]
+            if not v.get("private_calls", True):
+                cmd.append("-p")
         if v["save_calls"]:
             folder = Path(v["folder"]).expanduser()
             folder.mkdir(parents=True, exist_ok=True)

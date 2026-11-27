@@ -185,6 +185,7 @@ class ReceiverMode(Mode):
         self._discover_sum = None       # the spectrum lines since the last look, summed (linear power)
         self._discover_n = 0
         self._probing: dict[float, float] = {}     # freq -> when its decode point was added to try it
+        self._probe_step: dict[float, int] = {}    # freq -> which protocol of the explorer's order it is on
         self._ignored: dict[float, float] = {}     # freq -> until when it's left alone
         self._afc_spec = None           # the latest spectrum line, for AFC to see whether a signal is there
         self._known: set = set()                   # frequencies the explorer has put decode points on
@@ -433,8 +434,10 @@ class ReceiverMode(Mode):
             if len(busy) >= MAX_POINTS:
                 break
             self._known.add(f)
-            self.add_point(f, "dmr")
+            order = self._probe_order()
+            self.add_point(f, "dmr", {"protocol": order[0]})
             self._probing[f] = now
+            self._probe_step[f] = 0
             self._auto.add(f)
             busy.add(f)
             self._point_events.append((f, "dmr", Event("explorer", data={"freq": f, "state": "probing"})))
@@ -460,14 +463,31 @@ class ReceiverMode(Mode):
         pt["held"] = (pt.get("held", []) + [e for e in evs if e.kind == "dsd"])[-200:]
         return [e for e in evs if e.kind != "dsd"]
 
+    def _probe_order(self) -> tuple:
+        """The protocols a found signal is tried with, in turn (the explorer's "Try signals as")."""
+        from .digital_voice import PROBE_ORDER
+        p = self.values.get("dsd_protocols", "all")
+        return PROBE_ORDER if p == "all" else (p,)
+
     def _check_found(self, now):
-        """The explorer's decode points: keep the ones with digital voice, let the others go."""
+        """The explorer's decode points: keep the ones with digital voice, try the others with the next protocol,
+        and let them go once every one has had its turn."""
+        from .digital_voice import PROTOCOL_NAMES
         for f, t0 in list(self._probing.items()):
             pt = self.points.get(f)
             if pt is not None and pt.get("digital"):
                 del self._probing[f]
+            elif now - t0 > PROBE_FOR and self._probe_step.get(f, 0) + 1 < len(self._probe_order()):
+                step = self._probe_step[f] = self._probe_step.get(f, 0) + 1
+                flag = self._probe_order()[step]
+                self.remove_point(f)                     # the same signal, with the next protocol
+                self.add_point(f, "dmr", {"protocol": flag})
+                self._probing[f] = now
+                self._point_events.append((f, "dmr", Event("explorer", data={
+                    "freq": f, "state": f"trying {PROTOCOL_NAMES.get(flag, flag)}"})))
             elif now - t0 > PROBE_FOR:
                 del self._probing[f]
+                self._probe_step.pop(f, None)
                 self._ignored[f] = now + IGNORE_FOR
                 self.remove_point(f)
                 self._auto.discard(f)

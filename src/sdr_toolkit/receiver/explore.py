@@ -74,11 +74,13 @@ class Explorer:
     def found(self, freq, state, now=None):
         """The receiver found a signal, or gave up on one (not digital voice), or let one go idle."""
         now = time.time() if now is None else now
-        if self.states.get(freq) == "digital" and state == "probing":
+        if self.states.get(freq) == "digital" and (state == "probing" or state.startswith("trying ")):
             return
         self.states[freq] = state
         if state == "not digital":
             self.log = (self.log + [(now, freq, "Not digital voice (DSD-FME found nothing it knows)")])[-2000:]
+        elif state.startswith("trying "):                # the explorer's next protocol for it
+            self.log = (self.log + [(now, freq, f"Trying it as {state[7:]}")])[-2000:]
         elif state == "probing" and freq not in self.channels:
             self.log = (self.log + [(now, freq, "New signal: listening for digital voice")])[-2000:]
 

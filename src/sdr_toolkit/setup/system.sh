@@ -10,12 +10,14 @@ packages=(
   # the app
   pipewire-bin python3-venv python3-numpy python3-scipy python3-pyqt6 python3-pil python3-cryptography
   # outside decoders
-  wsjtx direwolf multimon-ng rtl-433 readsb rtl-sdr gnuradio gnss-sdr gr-satellites libhackrf0
+  wsjtx direwolf multimon-ng rtl-433 readsb rtl-sdr gnuradio gnss-sdr gr-satellites libhackrf0 wmbusmeters rtl-wmbus
   # to build gr-lora_sdr
   git cmake build-essential pkg-config gnuradio-dev libvolk-dev pybind11-dev libspdlog-dev libgmp-dev
   # to build DSD-FME and mbelib
   libpulse-dev libsndfile1-dev libfftw3-dev liblapack-dev libusb-1.0-0-dev librtlsdr-dev
   libncurses-dev libcodec2-dev
+  # to build rtlamr (meters)
+  golang-go
 )
 missing=()
 for p in "${packages[@]}"; do
@@ -32,5 +34,9 @@ fi
 if systemctl is-enabled readsb >/dev/null 2>&1 || systemctl is-active readsb >/dev/null 2>&1; then
   echo "STEP Turning off the readsb service (the toolkit starts readsb itself)"
   systemctl disable --now readsb
+fi
+if systemctl is-enabled wmbusmeters >/dev/null 2>&1 || systemctl is-active wmbusmeters >/dev/null 2>&1; then
+  echo "STEP Turning off the wmbusmeters service (the toolkit starts wmbusmeters itself)"
+  systemctl disable --now wmbusmeters
 fi
 echo "STEP System setup done"

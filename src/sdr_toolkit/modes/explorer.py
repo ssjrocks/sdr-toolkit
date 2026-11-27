@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .base import Setting, Tuning
+from .digital_voice import PROTOCOLS
 from .receiver import ReceiverMode
 
 DEFAULTS = {"freq_mhz": 438.8, "demod": "NFM", "bandwidth": 12500, "mute": True, "auto_id": False, "decoder": ""}
@@ -29,6 +30,12 @@ class ExplorerMode(ReceiverMode):
         Setting("discover_snr", "Find signals stronger than", 12, "int", 6, 40, 1, suffix=" dB over the noise",
                 help="Signals this far above the band's noise get a decoder to try them. Lower finds weaker ones "
                      "but tries more noise."),
+        Setting("dsd_protocols", "Try signals as", "all", "choice",
+                choices=(("all", "Every protocol in turn (automatic, then NXDN, dPMR, M17, P25 phase 2, EDACS, "
+                                 "ProVoice)"),) + tuple((f, n) for f, n in PROTOCOLS if f != "-ft"),
+                help="How a signal that's found is tried. Every protocol: DSD-FME's automatic detection (P25 "
+                     "phase 1, DMR, D-Star, YSF, X2-TDMA) first, then each protocol it doesn't detect, 20 s "
+                     "each, before the signal is let go."),
         Setting("record_calls", "Save each call", True, "bool", restart=True,
                 help="Every call DSD-FME decodes is saved as its own WAV (in a folder per frequency) and listed "
                      "in the Calls tab, to play again. Encrypted calls' audio can't be decoded."),

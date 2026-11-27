@@ -30,7 +30,8 @@ gui = Analysis([os.path.join(SPECPATH, "gui_entry.py")], pathex=[SRC], datas=dat
                hiddenimports=hidden,
                excludes=excludes, noarchive=False)
 helper = Analysis([os.path.join(SPECPATH, "helper_entry.py")], pathex=[SRC], hiddenimports=[
-    "sdr_toolkit.relay_stream", "sdr_toolkit.satellites.worker", "sdr_toolkit.modes.radio"],
+    "sdr_toolkit.relay_stream", "sdr_toolkit.satellites.worker", "sdr_toolkit.modes.radio",
+    "sdr_toolkit.engines.ism_wide"],
     excludes=excludes + ["PyQt6"], noarchive=False)
 
 gui_exe = EXE(PYZ(gui.pure), gui.scripts, [], exclude_binaries=True, name="SDR Toolkit", icon=ICON,

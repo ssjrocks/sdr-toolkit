@@ -58,6 +58,11 @@ PARTS = {
     "radiosonde": ("rs1729's radiosonde decoders (RS41, DFM, M10/M20...)", _radiosonde, "build"),
     "gr-satellites": ("gr-satellites (satellite telemetry)", lambda: shutil.which("gr_satellites") is not None,
                       "system"),
+    "rtlamr": ("rtlamr (ERT utility meters)", lambda: (system.data_dir() / "rtlamr" / "bin" / "rtlamr").is_file(),
+               "build"),
+    "wmbusmeters": ("rtl_wmbus and wmbusmeters (Wireless M-Bus meters)",
+                    lambda: shutil.which("wmbusmeters") is not None and shutil.which("rtl_wmbus") is not None,
+                    "system"),
 }
 
 
@@ -81,6 +86,8 @@ WINDOWS_HELP = {
     "readsb": "readsb has no Windows version yet: use the Linux version of SDR Toolkit for ADS-B.",
     "gnss-sdr": "GNSS-SDR has no Windows version: use the Linux version of SDR Toolkit for the GPS fix.",
     "gr-lora_sdr": "gr-lora_sdr has no Windows version: use the Linux version of SDR Toolkit for LoRa.",
+    "rtlamr": ("ERT meters aren't decoded on Windows yet: use the Linux version of SDR Toolkit."),
+    "wmbusmeters": ("Wireless M-Bus meters aren't decoded on Windows yet: use the Linux version of SDR Toolkit."),
     "gr-satellites": ("gr-satellites has no Windows package (it runs on GNU Radio, e.g. through radioconda): use "
                       "the Linux version of SDR Toolkit for satellite telemetry."),
     "radiosonde": ("rs1729's decoders (<a href='https://github.com/rs1729/RS'>github.com/rs1729/RS</a>) have no "

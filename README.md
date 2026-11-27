@@ -65,13 +65,15 @@ it), set under **Settings → Input**: handy without a dongle, or to decode some
 
 | Mode | Decoder | Adjustable |
 |---|---|---|
-| ISM sensors (433/868/915/315 MHz) | rtl_433 | frequency or several to hop between, sample rate, protocol filter |
+| ISM sensors (315/345/433/868/902-928 MHz) | rtl_433, one row per device; on a HackRF one per channel of a whole band at once | every band or a region's (hopping), one frequency, whole bands on a HackRF, sample rate, the analyser for signals nothing decodes, your own decoders, protocol filter |
+| Utility meters | rtlamr (ERT: SCM, SCM+, IDM, NetIDM, R900), rtl_wmbus and wmbusmeters (Wireless M-Bus T1/C1/S1) | which meters, ERT message types and centre frequency |
 | ADS-B aircraft (1090 MHz) | readsb | units, how long aircraft stay listed |
 | AIS ships (161.975 / 162.025 MHz) | rtl_fm + direwolf, sentences decoded by the toolkit | channel, how long ships stay listed |
 | Radiosondes (weather balloons, 400–406 MHz) | rs1729's decoders (RS41, DFM, M10/M20, RS92, iMet-54, Meisei...) and dft_detect | centre frequency, frequencies or found by themselves, ground height for the landing estimate, how long sondes stay listed |
 | LoRa / Meshtastic / MeshCore | gr-lora_sdr (built separately, see below) | network preset, region, frequency, SF/BW/CR/sync word, channel keys |
 | LoRa finder | the toolkit's own (finding and measuring bursts) and gr-lora_sdr | centre frequency, sample rate, how strong a burst must be, Meshtastic and MeshCore keys |
-| DMR / P25 / digital voice (the explorer) | DSD-FME with mbelib (built separately, see below), on every signal found | everything Spectrum & receiver has, how strong a signal must be to be tried, listen to everything or one channel, talkgroup or radio |
+| DMR / P25 / digital voice (the explorer) | DSD-FME with mbelib (built separately, see below), on every signal found | everything Spectrum & receiver has, how strong a signal must be to be tried, which protocols to try (all in turn, or one), listen to everything or one channel, talkgroup or radio |
+| DMR / P25 / digital voice (one frequency) | DSD-FME | protocol (P25 1/2, DMR, NXDN48/96, D-Star, YSF, dPMR, M17, ProVoice, EDACS, X2-TDMA, trunked), trunk following with a channel map, talkgroup to hold, private calls |
 | Spectrum & receiver | the toolkit's own (rtl_tcp to the dongle) | frequency and step, mode (WFM, NFM, AM, USB, LSB, CW), bandwidth, de-emphasis, squelch, volume, sample rate, gain mode and gain steps, RTL AGC, ppm, direct sampling (HF), offset tuning, bias tee, FFT size, averaging, peak hold |
 | GPS position fix (1575.42 MHz) | GNSS-SDR | search range, satellites tracked at once, fill in my location |
 
@@ -249,9 +251,10 @@ signal there); **Lock** on the toolbar turns that off and puts each back on its 
 
 **DMR / P25 / digital voice** is the receiver with an explorer on top, for mapping the digital
 voice around you. Slide the spectrum to a busy part of the band (430-520 MHz, say) and leave it:
-every narrow signal that appears gets a decode point running DSD-FME for about 20 s. One that
-turns out to be DMR, P25, NXDN, D-Star, YSF, dPMR or M17 stays, and is listed; anything else is let
-go and left alone for 10 minutes, and a channel silent for 10 minutes has its decoder stopped until
+every narrow signal that appears gets a decode point running DSD-FME. It's tried with DSD-FME's
+automatic detection (P25 phase 1, DMR, D-Star, YSF, X2-TDMA) for about 20 s, then as NXDN48, NXDN96,
+dPMR, M17, P25 phase 2, EDACS and ProVoice in turn ("Try signals as" picks one instead). One that
+turns out to be digital voice stays, and is listed; anything else is let go and left alone for 10 minutes, and a channel silent for 10 minutes has its decoder stopped until
 it's back. A much weaker signal right beside a strong one is taken for its side band, not tried.
 The lists under the spectrum fill as things are heard:
 
@@ -330,8 +333,23 @@ DSD-FME and the mbelib voice codecs aren't packaged for Ubuntu either:
 mbelib's README: "Executable objects compiled or derived from this package may be covered by one or
 more patents." It's provided for educational purposes; check what applies where you are.
 
-**Not done yet:** UAT 978 MHz (US only; dump978 isn't packaged), trunk tracking through SDRTrunk, and
-Mobitex (no open decoder known).
+**Trunked systems:** on the one-frequency DMR / P25 page, set Frequency to a control channel and turn
+on **Follow trunked calls**: DSD-FME follows each call onto its voice channel and back, tuning the SDR
+itself (P25 announces its channels; DMR Tier III / Capacity+ / Connect+ and EDACS need a channel map).
+
+**ISM sensors** lists one row per device, with its latest readings, how often it sends and how
+strongly, and a note when a new one appears; Details has every field and the range each reading has
+covered. "Every band" hops an RTL-SDR between 315, 345, 433.92, 868 and 915 MHz; a HackRF takes each
+band whole (902-928 MHz in two parts), with an rtl_433 on every 1 MHz channel at once. With the
+analyser on, a signal nothing decodes is listed as Unknown (once heard twice) with its modulation,
+timings and the rtl_433 decoder spec that would read it; **Add as a decoder** makes it one of yours.
+
+**Utility meters**: ERT meters (gas, water, electricity: SCM, IDM, R900...) through rtlamr, and
+Wireless M-Bus meters and sensors through rtl_wmbus and wmbusmeters, which picks the driver for each
+meter by itself. Encrypted M-Bus meters show by ID and maker without readings.
+
+**Not done yet:** UAT 978 MHz (US only; dump978 isn't packaged), Z-Wave, and Mobitex (no open decoder
+known). The full list of what's coming is in [docs/roadmap.md](docs/roadmap.md).
 
 ## Install
 

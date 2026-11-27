@@ -126,10 +126,11 @@ def test_ism_through_relay(make_relay, tmp_path):
     rec = radio_signals.save(tmp_path / "ism.cu8", radio_signals.nexus_iq(rate=250000))
     r = make_relay(rec)
     relay.connect("127.0.0.1", r.config.port, "pw")
-    _, ev = run_live("ism", lambda ev: any(e.kind == "row" for e in ev), freqs="433.92M", rate="250k")
-    rows = [e.data for e in ev if e.kind == "row"]
-    assert rows, [e.text for e in ev if e.kind in ("line", "raw")][-10:]
-    assert "Nexus" in json.dumps(rows[0]) and ("set_center_freq", 433920000) in r.dongles[-1].calls
+    _, ev = run_live("ism", lambda ev: any(e.kind == "table" and e.data["rows"] for e in ev), freq="433.92M",
+                     rate="250k")
+    tables = [e.data["rows"] for e in ev if e.kind == "table" and e.data["rows"]]
+    assert tables, [e.text for e in ev if e.kind in ("line", "raw")][-10:]
+    assert "Nexus" in json.dumps(tables[-1][0]) and ("set_center_freq", 433920000) in r.dongles[-1].calls
 
 
 def test_adsb_through_relay(make_relay, tmp_path):

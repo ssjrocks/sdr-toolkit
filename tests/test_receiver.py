@@ -808,7 +808,7 @@ def test_explorer_finds_signals_and_lets_go_of_non_digital(monkeypatch, tmp_path
     monkeypatch.setattr(R, "AudioOut", FakeAudio)
     from sdr_toolkit.modes.explorer import ExplorerMode
     m = ExplorerMode()
-    m.start(dict(m.values, input="file", file=str(rec), file_rate=RATE, freq_mhz=101.1,
+    m.start(dict(m.values, input="file", file=str(rec), file_rate=RATE, freq_mhz=101.1, dsd_protocols="-fa",
                  calls_folder=str(tmp_path / "calls")))
     try:
         centre = None
@@ -952,6 +952,39 @@ def test_identify(kind, noise_level):
     names, demod, decoder = EXPECT[kind]
     names = (names,) if isinstance(names, str) else names
     assert any(n in top.name for n in names) and top.demod == demod and (not decoder or top.decoder == decoder), (top, m)
+
+
+def test_explorer_tries_every_protocol_before_letting_a_signal_go(monkeypatch, tmp_path):
+    """"Every protocol in turn": a signal DSD-FME's automatic detection doesn't know is tried as NXDN, dPMR, M17,
+    P25 phase 2, EDACS and ProVoice, each in turn, before it's let go."""
+    from sdr_toolkit.modes import receiver as R
+    from sdr_toolkit.modes.digital_voice import PROBE_ORDER, PROTOCOL_NAMES, dsd_fme
+    if dsd_fme() is None:
+        pytest.skip("DSD-FME isn't built")
+    monkeypatch.setattr(R, "PROBE_FOR", 1.5)
+    tt = np.arange(RATE * 2) / RATE
+    x = (0.2 * np.exp(2j * np.pi * -400000 * tt)).astype(np.complex64)          # a plain carrier
+    rec = save_iq(tmp_path / "band.cu8", x)
+    monkeypatch.setattr(R, "AudioOut", FakeAudio)
+    from sdr_toolkit.modes.explorer import ExplorerMode
+    m = ExplorerMode()
+    m.start(dict(m.values, input="file", file=str(rec), file_rate=RATE, freq_mhz=101.1,
+                 calls_folder=str(tmp_path / "calls")))
+    try:
+        by_freq = {}
+        end = time.time() + 40
+        while time.time() < end and not any("not digital" in v for v in by_freq.values()):
+            time.sleep(0.1)
+            for e in m.poll():
+                if e.kind == "point_decoded" and e.data["event"].kind == "explorer":
+                    by_freq.setdefault(e.data["freq"], []).append(e.data["event"].data["state"])
+        centre = m.center
+    finally:
+        m.stop()
+    tried = [f"trying {PROTOCOL_NAMES[f]}" for f in PROBE_ORDER[1:]]
+    cw = next((f for f in by_freq if abs(f - (centre - 400000)) < 1500), None)
+    states = by_freq.get(cw, [])
+    assert states == ["probing"] + tried + ["not digital"], by_freq
 
 
 def test_band_plan_points_to_the_dedicated_modes():

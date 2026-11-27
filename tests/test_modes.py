@@ -277,18 +277,68 @@ def run_radio(mode_id, path, wait=30.0, **values):
     return mode, events
 
 
+def ism_rows(ev):
+    tables = [e.data["rows"] for e in ev if e.kind == "table"]
+    return tables[-1] if tables else []
+
+
 def test_ism_nexus_sensor(tmp_path):
     path = radio_signals.save(tmp_path / "nexus.cu8", radio_signals.nexus_iq(0xA5, 2, 21.7, 58))
-    _, ev = run_radio("ism", path)
-    rows = [e.data for e in ev if e.kind == "row"]
-    assert rows and rows[0]["model"] == "Nexus-TH" and rows[0]["id"] == 165 and rows[0]["channel"] == 2
-    assert "temperature_C=21.7" in rows[0]["data"] and "humidity=58" in rows[0]["data"]
+    mode, ev = run_radio("ism", path)
+    rows = ism_rows(ev)
+    # One row for the device, however many times it sent (12 repeats here), and nothing listed as unknown.
+    assert [r["key"] for r in rows] == ["Nexus-TH #165 ch2"], rows
+    assert "temperature_C=21.7" in rows[0]["readings"] and "humidity=58" in rows[0]["readings"]
+    assert int(rows[0]["count"]) >= 1
+    d = mode.details("Nexus-TH #165 ch2")
+    assert d["subtitle"].startswith("Nexus-TH") and ("temperature_C", "21.7") in d["fields"]
+    assert any(e.kind == "log" and "Nexus-TH #165 ch2: " in e.text for e in ev)
+    assert any(e.kind == "line" and e.text.startswith("New device: Nexus-TH #165") for e in ev)
 
 
 def test_ism_protocol_filter(tmp_path):
     path = radio_signals.save(tmp_path / "nexus.cu8", radio_signals.nexus_iq())
-    _, ev = run_radio("ism", path, protocols="73")          # LaCrosse only: the Nexus is ignored
-    assert not [e for e in ev if e.kind == "row"]
+    _, ev = run_radio("ism", path, protocols="73", analyse=False)    # LaCrosse only: the Nexus is ignored
+    assert not ism_rows(ev)
+
+
+def odd_remote_iq(rate=250000):
+    """An OOK remote no rtl_433 decoder knows: 24 bits of pulse-width code (380 / 1140 us), 8 times a press,
+    pressed twice."""
+    import numpy as np
+    us = lambda s: int(round(s * rate))  # noqa: E731
+    bits = [1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0]
+    env = [np.zeros(us(0.05))]
+    for _ in range(2):
+        for _ in range(8):
+            for b in bits:
+                on = 1140e-6 if b else 380e-6
+                env += [np.ones(us(on)), np.zeros(us(1520e-6 - on))]
+            env.append(np.zeros(us(9000e-6)))
+        env.append(np.zeros(us(0.4)))
+    e = np.concatenate(env)
+    n = np.arange(len(e))
+    return 0.6 * e * np.exp(2j * np.pi * 30e3 * n / rate) + radio_signals._noise(len(e), 0.02, 0)
+
+
+def test_ism_lists_a_signal_nothing_decodes_and_adds_it_as_a_decoder(tmp_path):
+    path = radio_signals.save(tmp_path / "odd.cu8", odd_remote_iq())
+    mode, ev = run_radio("ism", path)
+    rows = ism_rows(ev)
+    unknown = [r for r in rows if r["key"].startswith("Unknown OOK_PWM")]
+    assert unknown and not [r for r in rows if not r["key"].startswith("Unknown")], rows
+    d = mode.details(unknown[0]["key"])
+    spec = dict(d["fields"])["Decoder spec"]
+    assert "m=OOK_PWM" in spec, d
+    # Added as a decoder of your own: next time it's decoded, by that name, with its bits.
+    acts = mode.actions()
+    assert acts and acts[0][0] == "flex" and acts[0][2]
+    change = mode.run_action("flex")
+    assert "n=signal_1" in change["flex"] and "m=OOK_PWM" in change["flex"]
+    mode2, ev2 = run_radio("ism", path, flex=change["flex"])
+    rows2 = ism_rows(ev2)
+    assert any(r["key"].startswith("signal_1") for r in rows2), rows2
+    assert not [r for r in rows2 if r["key"].startswith("Unknown")], rows2
 
 
 def test_adsb(tmp_path):
@@ -798,7 +848,7 @@ def test_ism_activity_line(tmp_path):
     path = radio_signals.save(tmp_path / "nexus.cu8", radio_signals.nexus_iq())
     mode, ev = run_radio("ism", path)
     line = mode.activity()
-    assert line.startswith("Listening on the recording") and "1 decoded" in line, line
+    assert line.startswith("Listening on the recording") and "1 devices" in line and " decoded" in line, line
 
 
 def test_adsb_map_points(tmp_path):
@@ -1283,3 +1333,68 @@ def test_ppm_confirmation_is_not_an_error():
                             ("_banner", [])):
             setattr(mode, attr, value)
         assert not [e for e in mode.parse(line) if e.style == "warn"], mode_id
+
+
+def test_dmr_trunk_following_settings_reach_dsd_fme(tmp_path, monkeypatch):
+    from sdr_toolkit.modes import digital_voice as dv
+    monkeypatch.setattr(dv, "dsd_fme", lambda: "dsd-fme")
+    m = BY_ID["dmr"]()
+    wav = tmp_path / "call.wav"
+    wav.write_bytes(b"")
+    m.values = dict(m.values, input="file", file=str(wav), protocol="-ft", trunk=True, chan_map="~/cap_plus.csv",
+                    tg_hold="505", private_calls=False)
+    cmd = m.command()
+    assert cmd[1] == "-ft" and "-T" in cmd and cmd[cmd.index("-I") + 1] == "505" and "-p" in cmd
+    assert cmd[cmd.index("-C") + 1].endswith("cap_plus.csv") and not cmd[cmd.index("-C") + 1].startswith("~")
+    # From Spectrum & receiver's audio DSD-FME can't tune anything: no trunking there.
+    m.values = dict(m.values, input=dv.RECEIVER_AUDIO)
+    cmd = m.command()
+    assert "-T" not in cmd
+    m.stop()
+
+
+def test_meters_list_ert_and_wireless_mbus_meters():
+    m = BY_ID["meters"]()
+    m.values = dict(m.values)
+    scm = ('{"Time":"2026-11-27T16:00:00.1+10:00","Offset":0,"Length":0,"Type":"SCM","Message":{"ID":17581447,'
+           '"Type":12,"TamperPhy":2,"TamperEnc":0,"Consumption":1601967,"ChecksumVal":46874}}')
+    idm = ('{"Time":"2026-11-27T16:00:01+10:00","Offset":0,"Length":0,"Type":"IDM","Message":{"Preamble":1431639715,'
+           '"PacketTypeID":28,"PacketLength":92,"ERTType":7,"ERTSerialNumber":34567890,"LastConsumptionCount":25004}}')
+    mbus = ('{"_":"telegram","media":"room sensor","meter":"lansenth","name":"AnyMeter","id":"00010203",'
+            '"current_temperature_c":21.8,"average_relative_humidity_1h_rh":8.7,"timestamp":"2019-04-03T19:00:42Z",'
+            '"device":"rtlwmbus[]","rssi_dbm":97}')
+    ev = []
+    for line in (scm, idm, scm, mbus, "(rtlwmbus) dll_len adjusted to 41 from 46. Upgrade rtl_wmbus?"):
+        ev += m.parse(line)
+    ev += m.stop()
+    rows = {r["key"]: r for r in [e.data["rows"] for e in ev if e.kind == "table"][-1]}
+    assert set(rows) == {"SCM 17581447", "IDM 34567890", "M-Bus 00010203"}, rows
+    assert rows["SCM 17581447"]["reading"] == 1601967 and rows["SCM 17581447"]["kind"] == "SCM · gas"
+    assert rows["SCM 17581447"]["count"] == 2 and rows["IDM 34567890"]["kind"] == "IDM · electricity"
+    assert rows["M-Bus 00010203"]["reading"] == "21.8 c" and "room sensor" in rows["M-Bus 00010203"]["kind"]
+    assert not [e for e in ev if e.kind == "line" and e.style == "warn"]
+    assert dict(m.details("SCM 17581447")["fields"])["Consumption"] == "1601967"
+
+
+def test_meters_commands(tmp_path, monkeypatch):
+    from sdr_toolkit.modes import meters
+    monkeypatch.setattr(meters, "rtlamr", lambda: "/x/rtlamr")
+    m = BY_ID["meters"]()
+
+    class Bridge:
+        local_port = 4567
+    m.values = dict(m.values, input="rtl", kind="ert", msgtype="scm", centre_mhz=912.6)
+    monkeypatch.setattr(m, "bridge", lambda: Bridge())
+    assert m.command() == ["/x/rtlamr", "-server=127.0.0.1:4567", "-msgtype=scm", "-format=json",
+                           "-centerfreq=912600000"] and m.upstream() is None
+    monkeypatch.setattr(m, "bridge", lambda: None)                 # this PC's dongle: an rtl_tcp for rtlamr
+    started = []
+    monkeypatch.setattr(m, "_start_rtl_tcp", lambda: started.append(m._port))
+    cmd = m.command()
+    assert m.upstream() is None and cmd[0] == "bash" and started and f"127.0.0.1:{started[0]}" in cmd[2]
+    m.values = dict(m.values, kind="wmbus")
+    assert m.upstream()[:1] == ["rtl_sdr"] and "868950000" in m.upstream() and "rtl_wmbus |" in m.command()[2]
+    rec = tmp_path / "x.cu8"
+    rec.write_bytes(b"")
+    m.values = dict(m.values, input="file", file=str(rec))
+    assert m.upstream() is None and f"rtl_wmbus < '{rec}'" in m.command()[2]

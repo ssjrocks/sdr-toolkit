@@ -12,6 +12,7 @@ from .satellites import SatelliteMode
 from .sondes import SondeMode
 from .morse import MorseMode
 from .ism import ISMMode
+from .meters import MetersMode
 from .lora import LoRaMode
 from .lora_find import LoRaFinderMode
 from .pager import PagerMode
@@ -27,7 +28,8 @@ MODES = [
     SSTVMode, WefaxMode,
     APRSMode, PagerMode,
     TonesMode,
-    ReceiverMode, ADSBMode, AISMode, SondeMode, ISMMode, LoRaMode, LoRaFinderMode, ExplorerMode, DigitalVoiceMode,
+    ReceiverMode, ADSBMode, AISMode, SondeMode, ISMMode, MetersMode, LoRaMode, LoRaFinderMode, ExplorerMode,
+    DigitalVoiceMode,
     GPSFixMode,
     SatelliteMode, SatTelemetryMode,
 ]

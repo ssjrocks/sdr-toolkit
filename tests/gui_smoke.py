@@ -42,6 +42,11 @@ from sdr_toolkit.modes import digital_voice as _dv, lora as _lora  # noqa: E402
 # Parts built for the app (gr-lora_sdr, DSD-FME) are where they really are, not in the test's data folder.
 _lora.LORA_PREFIX = REAL_DATA / "gr-lora_sdr"
 _dv.DSD_FME = REAL_DATA / "dsd-fme" / "bin" / "dsd-fme"
+from sdr_toolkit import deps as _deps  # noqa: E402
+from sdr_toolkit.modes import meters as _meters  # noqa: E402
+_meters.rtlamr = lambda: (str(REAL_DATA / "rtlamr" / "bin" / "rtlamr")
+                          if (REAL_DATA / "rtlamr" / "bin" / "rtlamr").is_file() else None)
+_deps.PARTS["rtlamr"] = (_deps.PARTS["rtlamr"][0], lambda: _meters.rtlamr() is not None, "build")
 # The radiosonde decoders: the app's install or this checkout's build (found on PATH).
 for _d in (REAL_DATA / "radiosonde" / "bin", Path(__file__).resolve().parents[1] / "build/ext/RS/demod/mod",
            Path(__file__).resolve().parents[1] / "build/ext/RS/scan"):

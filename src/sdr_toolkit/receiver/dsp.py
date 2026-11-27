@@ -245,14 +245,16 @@ class Demodulator:
 class Channelizer:
     """Several narrow channels out of the dongle's samples at once, from one FFT per block
     (overlap-save, half a block of overlap): each channel takes the m bins around its frequency,
-    through its low-pass, and an inverse FFT of m points gives it at 48 kHz directly. Adding
-    a channel costs a small inverse FFT, not another filter over millions of samples a second."""
+    through its low-pass, and an inverse FFT of m points gives it at out_rate (48 kHz for the
+    decoders; 1.2 MS/s for rtl_433's channels across a HackRF's band) directly. Adding a channel
+    costs a small inverse FFT, not another filter over millions of samples a second."""
 
-    def __init__(self, rate, m=1024):
+    def __init__(self, rate, m=1024, out_rate=AUDIO_RATE):
         self.rate = int(rate)
-        if self.rate % AUDIO_RATE:
-            raise ValueError(f"sample rate {rate} isn't a multiple of {AUDIO_RATE}")
-        self.d = self.rate // AUDIO_RATE
+        self.out_rate = int(out_rate)
+        if self.rate % self.out_rate:
+            raise ValueError(f"sample rate {rate} isn't a multiple of {self.out_rate}")
+        self.d = self.rate // self.out_rate
         self.m = int(m)
         self.n = self.d * self.m                        # FFT size; each block brings n / 2 new samples
         self._buf = np.zeros(self.n // 2, np.complex64)  # the previous half block (the overlap)
@@ -281,7 +283,7 @@ class Channelizer:
         k0 = int(round(offset / self.rate * self.n))
         old = self.channels.get(key)
         ch = {"offset": float(offset), "k0": k0, "H": self._filter(float(width)), "width": float(width),
-              "mixer": Mixer(AUDIO_RATE, offset - k0 * self.rate / self.n),
+              "mixer": Mixer(self.out_rate, offset - k0 * self.rate / self.n),
               "last": old["last"] if old else 1 + 0j}
         self.channels[key] = ch
 

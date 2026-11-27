@@ -3,6 +3,7 @@
 #   gr-lora_sdr (EPFL's LoRa modem for GNU Radio, github.com/tapparelj/gr-lora_sdr)
 #   mbelib (AMBE/IMBE voice codecs, github.com/lwvmobile/mbelib) and DSD-FME (github.com/lwvmobile/dsd-fme)
 #   rs1729's radiosonde decoders and dft_detect (github.com/rs1729/RS)
+#   rtlamr, utility meters' ERT / SCM / IDM / R900 messages (github.com/bemasher/rtlamr)
 # Parts already built are skipped; --rebuild builds them again.
 #
 # mbelib carries a patent notice: "Executable objects compiled or derived from this package may be
@@ -74,5 +75,14 @@ if (( rebuild )) || [[ ! -x "$rs/bin/rs41mod" || ! -x "$rs/bin/dft_detect" ]]; t
   echo "STEP Radiosonde decoders installed"
 else
   echo "STEP Radiosonde decoders already built"
+fi
+amr="$root/rtlamr"
+if (( rebuild )) || [[ ! -x "$amr/bin/rtlamr" ]]; then
+  echo "STEP Building rtlamr (utility meters), a minute"
+  mkdir -p "$amr/bin"
+  GOBIN="$amr/bin" GOPATH="$src/go" GOFLAGS=-modcacherw nice -n 10 go install github.com/bemasher/rtlamr@latest
+  echo "STEP rtlamr installed"
+else
+  echo "STEP rtlamr already built"
 fi
 echo "STEP Builds done"
