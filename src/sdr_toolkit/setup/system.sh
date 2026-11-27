@@ -10,7 +10,7 @@ packages=(
   # the app
   pipewire-bin python3-venv python3-numpy python3-scipy python3-pyqt6 python3-pil python3-cryptography
   # outside decoders
-  wsjtx direwolf multimon-ng rtl-433 readsb rtl-sdr gnuradio gnss-sdr gr-satellites libhackrf0 wmbusmeters rtl-wmbus welle.io ffmpeg satdump
+  wsjtx direwolf multimon-ng rtl-433 readsb rtl-sdr gnuradio gnss-sdr gr-satellites libhackrf0 wmbusmeters rtl-wmbus welle.io ffmpeg satdump tshark
   # to build gr-lora_sdr
   git cmake build-essential pkg-config gnuradio-dev libvolk-dev pybind11-dev libspdlog-dev libgmp-dev
   # to build DSD-FME and mbelib

@@ -11,6 +11,7 @@ dependencies = [
     "pillow>=10",
     "cryptography>=41",
     "sgp4>=2.23",
+    "bleak>=0.22",                                   # Bluetooth LE devices (BlueZ / WinRT)
     "soundcard>=0.4.6; sys_platform == 'win32'",   # WASAPI loopback capture and playback
 ]
 

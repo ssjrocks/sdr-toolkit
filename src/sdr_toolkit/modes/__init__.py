@@ -13,6 +13,9 @@ from .sat_telemetry import SatTelemetryMode
 from .satellites import SatelliteMode
 from .satdump import SatDumpMode
 from .astro import HydrogenLineMode, MeteorScatterMode
+from .ble import BLEMode
+from .wifi import WiFiMode
+from .zigbee import ZigbeeMode
 from .sondes import SondeMode
 from .morse import MorseMode
 from .ism import ISMMode
@@ -40,7 +43,9 @@ MODES = [
     DigitalVoiceMode,
     GPSFixMode,
     SatelliteMode, SatTelemetryMode, SatDumpMode, HydrogenLineMode, MeteorScatterMode,
+    WiFiMode, BLEMode, ZigbeeMode,
 ]
-GROUPS = ["Text", "Digital (weak signal)", "Pictures", "Packet & paging", "Tones", "SDR", "Satellites"]
+GROUPS = ["Text", "Digital (weak signal)", "Pictures", "Packet & paging", "Tones", "SDR", "Satellites",
+          "Wi-Fi & Bluetooth"]
 # The groups that decode audio (from a WebSDR, a radio's speaker...): under one WebSDR branch in the window.
 AUDIO_GROUPS = ("Text", "Digital (weak signal)", "Pictures", "Packet & paging", "Tones")

@@ -1847,3 +1847,135 @@ def test_meteor_pings(tmp_path):
     assert all(abs(a - b) < 0.15 for a, b in zip(durs, (0.2, 0.6, 1.2))), durs
     dops = [float(r["doppler"]) for r in rows]
     assert all(abs(a - b) <= 240 for a, b in zip(dops, (300, -150, 50))), dops
+
+
+# ---- Bluetooth LE
+
+
+def test_ble_classify():
+    from sdr_toolkit.engines.ble import classify
+    away = classify("", {0x004C: bytes([0x12, 0x19, 0x10]) + bytes(25)}, [], {})
+    assert away["tracker"] and "away from its owner" in away["what"] and away["maker"] == "Apple"
+    near = classify("", {0x004C: bytes([0x12, 0x02, 0x00, 0x01])}, [], {})
+    assert near["tracker"] and "near its owner" in near["what"]
+    beacon = classify("", {0x004C: bytes([0x02, 0x15]) + bytes(range(16)) + bytes([0, 1, 0, 2, 0xC5])}, [], {})
+    assert beacon["kind"] == "beacon" and beacon["extra"]["major"] == 1 and beacon["extra"]["minor"] == 2
+    assert beacon["extra"]["power"] == -59 and beacon["extra"]["uuid"].startswith("00010203-0405")
+    tag = classify("", {}, ["0000fd5a-0000-1000-8000-00805f9b34fb"], {})
+    assert tag["tracker"] and tag["what"] == "Samsung SmartTag"
+    assert classify("Galaxy Watch5", {0x0075: b"\x01"}, [], {})["kind"] == "wearable"
+
+
+def _rid_location(lat, lon, height, speed):
+    import struct
+    m = bytearray(25)
+    m[0] = 0x12                                     # type 1 (location), protocol 2
+    m[1] = 0x20                                     # airborne, speed multiplier 0
+    m[2] = 90                                       # track 90°
+    m[3] = int(speed / 0.25)
+    m[4] = 4                                        # climbing 2 m/s
+    struct.pack_into("<ii", m, 5, int(lat * 1e7), int(lon * 1e7))
+    struct.pack_into("<HHH", m, 13, int((120 + 1000) / 0.5), int((130 + 1000) / 0.5), int((height + 1000) / 0.5))
+    return bytes(m)
+
+
+def test_ble_remote_id_and_page():
+    import struct
+    from sdr_toolkit.engines.ble import remote_id
+    basic = bytes([0x02, 0x12]) + b"1581F5FKD229400H".ljust(20, b"\0") + bytes(3)    # serial number, multirotor
+    loc = _rid_location(-27.70, 153.10, 45.5, 7.5)
+    system = bytearray(25)
+    system[0] = 0x42
+    struct.pack_into("<ii", system, 2, int(-27.701 * 1e7), int(153.099 * 1e7))
+    pack = bytes([0xF2, 25, 3]) + basic + loc + bytes(system)
+    r = remote_id({"0000fffa-0000-1000-8000-00805f9b34fb": bytes([0x0D, 7]) + pack})
+    assert r["id"] == "1581F5FKD229400H" and r["ua_type"] == "helicopter / multirotor" and r["id_type"] == "serial number"
+    assert abs(r["lat"] + 27.70) < 1e-6 and abs(r["lon"] - 153.10) < 1e-6 and r["height"] == 45.5
+    assert r["speed_ms"] == 7.5 and r["climb_ms"] == 2.0 and r["track"] == 90 and r["status"] == "airborne"
+    assert abs(r["op_lat"] + 27.701) < 1e-6
+    # Through the page: a tracker and a drone, on the table and the map.
+    from sdr_toolkit.modes.ble import BLEMode
+    m = BLEMode()
+    m.values = dict(m.values)
+    m.command()
+    ev = m._adv({"address": "AA:BB:CC:00:00:01", "name": "", "rssi": -60,
+                 "manufacturer": {"76": (bytes([0x12, 0x19, 0x10]) + bytes(25)).hex()}, "services": [],
+                 "service_data": {}}, time.time())
+    assert any(e.kind == "line" and e.text.startswith("Tracker: Apple Find My, away") for e in ev)
+    ev = m._adv({"address": "AA:BB:CC:00:00:02", "name": "", "rssi": -70, "manufacturer": {}, "services": [],
+                 "service_data": {"0000fffa-0000-1000-8000-00805f9b34fb": (bytes([0x0D, 1]) + pack).hex()}}, time.time())
+    assert any(e.kind == "line" and e.text.startswith("Drone Remote ID: 1581F5FKD229400H") for e in ev)
+    table, points = m._views(time.time())
+    assert {r["address"] for r in table.data["rows"]} == {"AA:BB:CC:00:00:01", "AA:BB:CC:00:00:02"}
+    assert {p["id"] for p in points.data["points"]} == {"AA:BB:CC:00:00:02", "AA:BB:CC:00:00:02-pilot"}
+    d = m.details("AA:BB:CC:00:00:02")
+    assert ("Height (m)", "45.5") in d["fields"]
+
+
+# ---- Wi-Fi
+
+
+@pytest.mark.skipif(not shutil.which("tshark"), reason="tshark isn't installed")
+def test_wifi_from_a_capture(tmp_path):
+    import wifi_frames
+    path = wifi_frames.sample(tmp_path / "w.pcap")
+    m = BY_ID["wifi"]()
+    m.start(dict(m.values, input="file", file=str(path)))
+    ev = []
+    end = time.time() + 30
+    while time.time() < end:
+        time.sleep(0.2)
+        ev += m.poll()
+        if m._proc.poll() is not None and m._lines.empty():
+            break
+    ev += m.poll() + m.stop()
+    rows = {r["bssid"]: r for r in ism_rows(ev)}
+    assert {r["ssid"] for r in rows.values()} == {"HomeNet", "Cafe Free WiFi", "Neighbour"}
+    home = rows["aa:bb:cc:00:00:01"]
+    assert home["security"] == "WPA2" and home["channel"] == 6 and home["devices"] == 1
+    assert rows["aa:bb:cc:00:00:02"]["security"] == "Open" and rows["aa:bb:cc:00:00:03"]["security"] == "WPA3"
+    logs = [e.text for e in ev if e.kind == "log"]
+    assert 'Device 12:34:56:78:9a:bc is looking for the network "OldNetwork"' in logs
+    d = m.details("aa:bb:cc:00:00:01")
+    assert any(k == "Device 12:34:56:78:9a:bc" and "looks for OldNetwork" in v for k, v in d["fields"])
+
+
+def test_wifi_off_is_said(monkeypatch):
+    from sdr_toolkit.modes import wifi
+    monkeypatch.setattr(wifi, "wifi_off", lambda: True)
+    m = wifi.WiFiMode()
+    m.values = dict(m.values)
+    with pytest.raises(RuntimeError, match="switched off"):
+        m.upstream()
+
+
+# ---- Zigbee / 802.15.4
+
+
+def test_zigbee_frames_from_a_recording(tmp_path):
+    import numpy as np
+    from sdr_toolkit.engines import zigbee as z
+    # A coordinator's beacon (EUI-64 under Ember's 00:0D:6F), Zigbee beacon payload with an extended PAN ID.
+    ext = bytes([0x3D, 0x2C, 0x1B, 0x0A, 0x00, 0x6F, 0x0D, 0x00])          # 00:0D:6F:00:0A:1B:2C:3D, sent LSB first
+    fc_b = 0x00 | (3 << 14)                                                 # beacon, src mode 3 (extended)
+    beacon = bytes([fc_b & 0xFF, fc_b >> 8, 0x10, 0x34, 0x12]) + ext + bytes([0xFF, 0xCF, 0x00, 0x00]) \
+        + bytes([0x00, 0x22, 0x84]) + bytes([1, 2, 3, 4, 5, 6, 7, 8]) + bytes([0xFF, 0xFF, 0xFF, 0x00])
+    fc_d = 0x01 | 0x20 | 0x40 | (2 << 10) | (2 << 14)                       # data, ack req, PAN compressed, short
+    data = bytes([fc_d & 0xFF, fc_d >> 8, 0x42, 0x34, 0x12, 0x00, 0x00, 0x8C, 0x5A]) \
+        + bytes([0x08, 0x02, 0x00, 0x00, 0x8C, 0x5A, 0x1E, 0x01]) + b"temperature"
+    rng = np.random.default_rng(7)
+    pad = np.zeros(30000, np.complex64)
+    parts = [pad]
+    for m in (beacon, data, data, data):
+        parts += [z.modulate(z.frame_symbols(m), 4_000_000) * 0.5, pad]
+    x = np.concatenate(parts) * np.exp(2j * np.pi * 40e3 * np.arange(sum(len(p) for p in parts)) / 4e6)
+    x = (x + 0.1 * (rng.standard_normal(len(x)) + 1j * rng.standard_normal(len(x)))).astype(np.complex64)
+    path = radio_signals.save(tmp_path / "zb.cu8", x)
+    mode, ev = run_radio("zigbee", path, file_rate=4_000_000)
+    rows = {r["device"]: r for r in ism_rows(ev)}
+    assert set(rows) == {"00:0D:6F:00:0A:1B:2C:3D", "0x5A8C@0x1234"}, rows
+    assert rows["0x5A8C@0x1234"]["count"] == 3 and rows["0x5A8C@0x1234"]["protocol"] == "Zigbee"
+    assert rows["00:0D:6F:00:0A:1B:2C:3D"]["maker"] in ("Ember Corporation", "")        # the register may be absent
+    assert any(e.kind == "line" and e.text.startswith("Network 0x1234") and "extended PAN ID 08:07:06:05:04:03:02:01"
+               in e.text for e in ev), [e.text for e in ev if e.kind == "line"]
+    assert z.crc16(b"123456789") == 0x2189                                   # CRC-16/KERMIT's check value

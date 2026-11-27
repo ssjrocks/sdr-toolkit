@@ -10,7 +10,7 @@ ALLOWED = {"sdr_toolkit.relay_stream", "sdr_toolkit.satellites.worker", "sdr_too
            "sdr_toolkit.engines.dsc", "sdr_toolkit.engines.beacon406", "sdr_toolkit.engines.lora_find",
            "sdr_toolkit.engines.fm_band",
            "sdr_toolkit.engines.dab", "sdr_toolkit.engines.satdump_run",
-           "sdr_toolkit.engines.astro"}
+           "sdr_toolkit.engines.astro", "sdr_toolkit.engines.ble_scan", "sdr_toolkit.engines.wifi", "sdr_toolkit.engines.zigbee"}
 
 
 def main():
