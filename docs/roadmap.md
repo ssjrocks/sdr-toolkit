@@ -54,6 +54,20 @@ could pick up.
 ## 6. Cellular
 - [ ] LTE / 5G cell scanner: towers, bands, operators, cell IDs, signal map, tower locations — HF
 
+## To do: left over and blocked
+Built-in decoders that couldn't be built here yet, and checks still owed:
+- [ ] **dec406** (second-generation 406 MHz beacons): its build was blocked by Claude Code's auto mode
+      ("Undermining Oversight"); needs the user's approval or an allow rule. Use its file decoders only
+      (`dec406_iq`, `dec406_fgb_iq`): its live scanner resets the RTL-SDR's USB.
+- [ ] **Z-Wave** (waving-z): the build failed; looking into it was blocked the same way.
+- [ ] **FLARM / OGN**: port flare's decoders (GPL) and add Australia's 917-927 MHz hopping band.
+- [ ] Decode from real signals: VDL2, HFDL, ACARS (one real burst so far, one bit error too many), ERT
+      meters, trunk following, VOR / ILS, DSC, 406 MHz.
+- [ ] The relay PC: SDR Tools Relay hasn't come back since the 0.3.1 update; it needs a look there (with
+      the user's OK first).
+- [ ] GitHub: failed release drafts 0.18.0, 0.18.1 and 0.20.0 can be deleted (with the user's OK).
+- [ ] The flaky GPS test.
+
 ## Later (sections 7-8 of the wishlist)
 The map and timeline of everything seen, alerts, autopilot, two SDRs at once, the IQ time machine,
 direction finding, portable mode, exports, Flipper Zero.
