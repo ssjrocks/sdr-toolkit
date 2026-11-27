@@ -201,13 +201,24 @@ class DetailsPanel(QScrollArea):
         self.links.setText(" · ".join(f"<a href='{html.escape(u)}'>{html.escape(t)}</a>"
                                       for t, u in details.get("links", [])))
         photo = details.get("photo")
-        if new and photo:
+        image = details.get("image")                   # a picture on this PC (a DAB+ station's slide)
+        if image:
+            if new or image != getattr(self, "_image", None):
+                self._image = image
+                pix = QPixmap(str(image))
+                self.photo.setVisible(not pix.isNull())
+                self._pixmap = None if pix.isNull() else pix
+                self.credit.setText(details.get("image_caption", ""))
+                self._fit_photo()
+        elif new and photo:
+            self._image = None
             self.photo.setVisible(True)
             self._pixmap = None
             self.photo.setText("Looking for a photo…")
             self.credit.setText("")
             self._photo_key = self.photos.request(photo)
         elif new:
+            self._image = None
             self.photo.setVisible(False)
 
     def _fit_photo(self):

@@ -32,9 +32,9 @@ could pick up.
 - [x] HFDL — HF reception (+hw for good results) (not yet decoded from a signal)
 
 ## 3. Broadcast
-- [ ] FM RDS: station name, radiotext, traffic — RTL/HF
-- [ ] DAB+ radio: stations, listening, slideshow, programme info — RTL/HF
-- [ ] DRM shortwave — HF reception
+- [x] FM RDS: station name, radiotext, traffic — RTL/HF (a page for the whole band, and in the receiver)
+- [x] DAB+ radio: stations, listening, slideshow, programme info — RTL/HF (no ensemble in range here yet)
+- [ ] DRM shortwave — HF reception (no packaged decoder: Dream would have to be built; see the to-do list)
 
 ## 4. Satellites and space
 - [ ] METEOR-M weather pictures (SatDump) — RTL
@@ -67,6 +67,10 @@ Built-in decoders that couldn't be built here yet, and checks still owed:
       the user's OK first).
 - [ ] GitHub: failed release drafts 0.18.0, 0.18.1 and 0.20.0 can be deleted (with the user's OK).
 - [ ] The flaky GPS test.
+- [ ] **DRM** (digital shortwave): needs the Dream decoder (GPL) built from source; building third-party code was
+      blocked by auto mode, like dec406. RNZ Pacific's DRM shortwave is the likeliest one to hear in Australia.
+- [ ] DAB+ on a real ensemble: none reaches this PC indoors (blocks 9A-9C, Brisbane). Tested on an ensemble
+      generated with OpenDigitalRadio's tools.
 
 ## Later (sections 7-8 of the wishlist)
 The map and timeline of everything seen, alerts, autopilot, two SDRs at once, the IQ time machine,

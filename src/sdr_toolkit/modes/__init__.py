@@ -8,6 +8,7 @@ from .explorer import ExplorerMode
 from .gps_fix import GPSFixMode
 from .receiver import ReceiverMode
 from .fm_stations import FMStationsMode
+from .dab import DABMode
 from .sat_telemetry import SatTelemetryMode
 from .satellites import SatelliteMode
 from .sondes import SondeMode
@@ -33,7 +34,7 @@ MODES = [
     SSTVMode, WefaxMode,
     APRSMode, PagerMode,
     TonesMode,
-    ReceiverMode, FMStationsMode, ADSBMode, AeroMode, NavaidMode, AISMode, DSCMode, Beacon406Mode, SondeMode, ISMMode, MetersMode, LoRaMode, LoRaFinderMode, ExplorerMode,
+    ReceiverMode, FMStationsMode, DABMode, ADSBMode, AeroMode, NavaidMode, AISMode, DSCMode, Beacon406Mode, SondeMode, ISMMode, MetersMode, LoRaMode, LoRaFinderMode, ExplorerMode,
     DigitalVoiceMode,
     GPSFixMode,
     SatelliteMode, SatTelemetryMode,

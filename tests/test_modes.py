@@ -1704,3 +1704,70 @@ def test_fm_stations_from_a_recording(tmp_path):
     assert any(e.kind == "log" and e.text == "98.5 MHz 101FM: It's all about the music!" for e in ev)
     d = mode.details("98.5")
     assert ("PI code", "4033") in d["fields"]
+
+
+# ---- DAB+
+
+
+@pytest.fixture(scope="module")
+def dab_ensemble(tmp_path_factory):
+    import dab_signal
+    if not dab_signal.available() or not shutil.which("welle-cli"):
+        pytest.skip("needs OpenDigitalRadio's tools (odr-dabmod, odr-dabmux, odr-audioenc, odr-padenc) and welle-cli")
+    return dab_signal.make_ensemble(tmp_path_factory.mktemp("dab"), seconds=30)
+
+
+def test_dab_stations_from_a_recording(dab_ensemble, monkeypatch, tmp_path):
+    import dab_signal
+    from sdr_toolkit import system as _system
+    monkeypatch.setattr(_system, "state_dir", lambda: tmp_path)
+    mode, ev = run_radio("dab", dab_ensemble, wait=60, dwell=22)
+    rows = {r["label"]: r for r in ism_rows(ev)}
+    assert set(rows) == {s[0] for s in dab_signal.STATIONS}, rows
+    one = rows["Test Radio One"]
+    assert one["dls"] == "Now playing: the first test station" and one["ensemble"] == dab_signal.ENSEMBLE
+    assert one["mode"].startswith("HE-AAC") and one["pty"] == "Pop Music"
+    assert any(e.kind == "line" and e.text.startswith(f"Ensemble {dab_signal.ENSEMBLE}") for e in ev)
+    d = mode.details(one["key"])
+    assert d["image"] and Path(d["image"]).read_bytes()[:3] == b"\xff\xd8\xff"      # the slide, a JPEG
+    assert ("Now playing", "Now playing: the first test station") in d["fields"]
+
+
+def test_dab_listening(dab_ensemble, monkeypatch, tmp_path):
+    import shutil as _sh
+    if not _sh.which("ffmpeg"):
+        pytest.skip("needs ffmpeg")
+    from sdr_toolkit import system as _system
+    from sdr_toolkit.receiver import audio as _audio
+    monkeypatch.setattr(_system, "state_dir", lambda: tmp_path)
+    played = []
+
+    class Rec:
+        error = ""
+
+        def play(self, a, volume=1.0):
+            played.append(len(a))
+
+        def close(self):
+            pass
+    monkeypatch.setattr(_audio, "AudioOut", Rec)
+    mode = BY_ID["dab"]()
+    mode.start(dict(mode.values, input="file", file=str(dab_ensemble), dwell=25))
+    try:
+        end = time.time() + 20
+        while time.time() < end and not getattr(mode, "_services", None):
+            mode.poll()
+            time.sleep(0.2)
+        key = next(k for k, s in mode._services.items() if s["label"] == "Test Radio Two")
+        mode.selected = key
+        assert [a[1] for a in mode.actions()] == ["Listen to Test Radio Two"]
+        assert mode.run_action("listen") == {}                  # a recording is one channel: no restart
+        end = time.time() + 8
+        while time.time() < end and sum(played) < 48000:
+            mode.poll()
+            time.sleep(0.2)
+        assert sum(played) >= 48000, played[:5]                  # a second of its sound came through
+        assert "Stop listening" in [a[1] for a in mode.actions()]
+        assert "playing Test Radio Two" in mode.activity()
+    finally:
+        mode.stop()

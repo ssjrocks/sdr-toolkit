@@ -2086,6 +2086,8 @@ class MainWindow(QMainWindow):
         """A craft picked in the table, or on the map (jump: its row is selected and scrolled to)."""
         key = self._craft_key(key)
         self._selected = key
+        if self.mode is not None:
+            self.mode.selected = key                   # for actions on the picked row ("Listen to ...")
         col = getattr(self.mode, "key_column", "")
         c = next((i for i, (k, _) in enumerate(getattr(self.mode, "columns", ())) if k == col), None)
         if jump and c is not None:

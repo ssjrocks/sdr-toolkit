@@ -119,6 +119,8 @@ class Mode:
         """Stop; return anything still pending (a half-received picture)."""
         return []
 
+    selected = None                 # the key of the row picked in the table (set by the window)
+
     def actions(self) -> list[tuple[str, str, bool, str]]:
         """Buttons above the output: (id, label, enabled, tooltip). Asked again every second."""
         return []

@@ -194,6 +194,9 @@ class RadioMode(ProcessMode):
     def _wait_for_rtl_tcp(self, cmd) -> list[str]:
         """cmd, started once this PC's rtl_tcp listens (asking the system rather than connecting: rtl_tcp starts
         streaming to a test connection and exits on its broken pipe)."""
+        if system.WINDOWS:                  # no bash or ss: give rtl_tcp the time it takes to open the dongle
+            time.sleep(2.0)
+            return list(cmd)
         wait = (f"for i in $(seq 100); do ss -Hltn 'sport = :{self._port}' | grep -q . && break; "
                 "sleep 0.1; done; ")
         import shlex

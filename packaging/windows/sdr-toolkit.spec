@@ -33,7 +33,8 @@ helper = Analysis([os.path.join(SPECPATH, "helper_entry.py")], pathex=[SRC], hid
     "sdr_toolkit.relay_stream", "sdr_toolkit.satellites.worker", "sdr_toolkit.modes.radio",
     "sdr_toolkit.engines.ism_wide", "sdr_toolkit.engines.sonde_rx", "sdr_toolkit.engines.navaid",
     "sdr_toolkit.engines.dsc", "sdr_toolkit.engines.beacon406", "sdr_toolkit.engines.beacon_countries",
-    "sdr_toolkit.engines.lora_rx", "sdr_toolkit.engines.lora_find"],
+    "sdr_toolkit.engines.lora_rx", "sdr_toolkit.engines.lora_find", "sdr_toolkit.engines.fm_band",
+    "sdr_toolkit.engines.rds", "sdr_toolkit.engines.dab"],
     excludes=excludes + ["PyQt6"], noarchive=False)
 
 gui_exe = EXE(PYZ(gui.pure), gui.scripts, [], exclude_binaries=True, name="SDR Toolkit", icon=ICON,

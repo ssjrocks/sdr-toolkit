@@ -7,7 +7,7 @@ Decoders for amateur and utility radio in one window, from two kinds of source:
   Windows, WASAPI loopback), so you still hear the audio.
 - **SDR:** an RTL-SDR or a HackRF, plugged into this PC or into another one running
   [SDR Tools Relay](https://github.com/ssjrocks/sdr-tools-relay): a spectrum and receiver up to 19.2 MHz
-  wide, ADS-B, aircraft messages (ACARS, VDL2, HFDL), VOR / ILS beacons, AIS, marine DSC, 406 MHz distress
+  wide, FM stations with RDS, DAB+ radio, ADS-B, aircraft messages (ACARS, VDL2, HFDL), VOR / ILS beacons, AIS, marine DSC, 406 MHz distress
   beacons, ISM sensors, utility meters, LoRa, DMR / P25, radiosondes, GPS, and a satellite tracker.
 
 It runs on Ubuntu and on Windows 10 and 11 (see [Windows](#windows)).
@@ -68,6 +68,8 @@ it), set under **Settings → Input**: handy without a dongle, or to decode some
 |---|---|---|
 | ISM sensors (315/345/433/868/902-928 MHz) | rtl_433, one row per device; on a HackRF one per channel of a whole band at once | every band or a region's (hopping), one frequency, whole bands on a HackRF, sample rate, the analyser for signals nothing decodes, your own decoders, protocol filter |
 | Utility meters | rtlamr (ERT: SCM, SCM+, IDM, NetIDM, R900), rtl_wmbus and wmbusmeters (Wireless M-Bus T1/C1/S1) | which meters, ERT message types and centre frequency |
+| FM stations and RDS (87.5-108 MHz) | the toolkit's own RDS decoder, every station in view at once | the part of the band, time on each window, RBDS programme types |
+| DAB+ digital radio (band III) | welle.io's welle-cli (stations, now playing, slideshow) and ffmpeg (listening) | channels (a region's, all of band III, or a list), time on each, volume |
 | ADS-B aircraft (1090 MHz) | readsb | units, how long aircraft stay listed |
 | Aircraft messages (ACARS 129-132 MHz, VDL Mode 2 136 MHz, HFDL 2-22 MHz) | acarsdec, dumpvdl2, dumphfdl (with libacars), built by the installer | which system, its channels, the HFDL band, HF on an RTL-SDR (tuner or direct sampling) |
 | VOR and ILS beacons (108-118 MHz, 329-335 MHz) | the toolkit's own: a VOR's radial, a localizer's or glide slope's deviation, the Morse ident | centre frequency, the channels (all in view, or a list), sample rate (up to 8 MHz on a HackRF) |
@@ -353,6 +355,16 @@ timings and the rtl_433 decoder spec that would read it; **Add as a decoder** ma
 Wireless M-Bus meters and sensors through rtl_wmbus and wmbusmeters, which picks the driver for each
 meter by itself. Encrypted M-Bus meters show by ID and maker without readings.
 
+**FM stations and RDS** steps the SDR across the FM band (2 MHz at a time on an RTL-SDR, 16 MHz on a
+HackRF) and decodes the RDS of every station in view at once: name, radiotext, programme type, traffic flags,
+alternative frequencies and clock. Spectrum & receiver shows the RDS of the station tuned in WFM too. The RDS
+decoder is the toolkit's own; it corrects short bursts of errors only while it's in sync, so weak noise doesn't
+turn into made-up names.
+
+**DAB+ radio** runs welle.io's `welle-cli` on one band III channel at a time (or round a region's channels)
+and lists every station of the ensembles it finds with what's playing; a station's slideshow picture is in
+Details, and **Listen to ...** plays it (the SDR then stays on that channel).
+
 **Aircraft messages** lists one row per aircraft (by ICAO address, or registration or flight when that's all
 a message gives) with its latest message: ACARS through acarsdec, VDL Mode 2 through dumpvdl2 and HFDL through
 dumphfdl, all several channels at once from the SDR's raw samples, with libacars decoding what's inside (ADS-C
@@ -532,6 +544,8 @@ What the tests check, and against what:
 | ISM | a Nexus-TH sensor synthesized from rtl_433's protocol description, decoded by rtl_433 |
 | ADS-B | DF17 squitters (CRC-24, identification, CPR positions) encoded from the standard, decoded by readsb |
 | GPS | [gps-sdr-sim](https://github.com/osqzss/gps-sdr-sim) signals for a position in Sydney from a real broadcast ephemeris (1 Jan 2022), made to look like a dongle 54 ppm fast (sample clock and tuning) with noise above the satellites; the fix comes out within 20 m (3 m in practice). The test runs when gps-sdr-sim is built in `build/gps-sdr-sim` |
+| RDS | groups built to IEC 62106 (0A name, 2A radiotext, 4A clock), modulated on a multiplex with its 19 kHz pilot, FM-modulated and decoded through the FM stations page and the receiver; noise gives nothing. Also decoded off air indoors on a HackRF (101FM, KIIS973, triple j in Brisbane) |
+| DAB+ | a two-station ensemble made with OpenDigitalRadio's encoders, multiplexer and modulator (`tests/dab_signal.py`), with now-playing text and slides, decoded by welle-cli through the page, and listened to |
 | ACARS | blocks built to ARINC 618 (odd parity, CRC-16), MSK-modulated as acarsdec's demodulator expects, on AM, decoded by acarsdec through the page; VDL2 and HFDL parsing on JSON shaped as dumpvdl2's and dumphfdl's sources write it |
 | VOR, ILS | a VOR on four radials (0, 45, 181.5, 359°) and a localizer and glide slope with known DDM, synthesized to ICAO Annex 10, with Morse idents; radials within 0.5°, DDM within 0.002 |
 | Marine DSC | distress, routine and distress-acknowledgement calls built to ITU-R M.493 (10-unit code, DX/RX time diversity, ECC), FM-modulated with noise; decodes down to about 7 dB signal-to-noise |
