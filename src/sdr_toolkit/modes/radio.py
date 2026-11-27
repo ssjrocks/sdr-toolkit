@@ -147,6 +147,58 @@ class RadioMode(ProcessMode):
     def live(self) -> bool:
         return self.values["input"] == "rtl"
 
+    # ---- an rtl_tcp of the page's own, for decoders that retune (rtlamr, the FM band scan) ----------
+
+    @staticmethod
+    def _free_port() -> int:
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    def _start_rtl_tcp(self):
+        """This PC's dongle as an rtl_tcp of its own on self._port, its lines in the log (and a missing dongle
+        said)."""
+        import logging
+        import subprocess
+        import threading
+        log = logging.getLogger(__name__)
+        cmd = ["rtl_tcp", "-a", "127.0.0.1", "-p", str(self._port), "-d", self.device_index().lstrip(":") or "0"]
+        if self.values.get("ppm"):
+            cmd += ["-P", str(self.values["ppm"])]
+        log.info("starting %s", " ".join(cmd))
+        self._rtl_tcp = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+
+        def lines(proc):
+            for line in proc.stdout:
+                line = line.rstrip()
+                log.info("rtl_tcp: %s", line)
+                if self.device_problem(line) is not None:
+                    self._rtl_tcp_problem = line
+        self._rtl_tcp_problem = None
+        threading.Thread(target=lines, args=(self._rtl_tcp,), daemon=True).start()
+
+    def _stop_rtl_tcp(self):
+        import subprocess
+        p = getattr(self, "_rtl_tcp", None)
+        if p is not None:
+            p.terminate()
+            try:
+                p.wait(3)
+            except subprocess.TimeoutExpired:
+                p.kill()
+            self._rtl_tcp = None
+
+    def _wait_for_rtl_tcp(self, cmd) -> list[str]:
+        """cmd, started once this PC's rtl_tcp listens (asking the system rather than connecting: rtl_tcp starts
+        streaming to a test connection and exits on its broken pipe)."""
+        wait = (f"for i in $(seq 100); do ss -Hltn 'sport = :{self._port}' | grep -q . && break; "
+                "sleep 0.1; done; ")
+        import shlex
+        return ["bash", "-c", wait + "exec " + shlex.join(cmd)]
+
     def bridge(self):
         """The bridge to a connected SDR Tools Relay, when this mode reads live input: the relay's
         dongle is used instead of one on this PC."""

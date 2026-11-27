@@ -7,10 +7,7 @@ rtlamr talks rtl_tcp: to the relay bridge, or to an rtl_tcp started here for thi
 import collections
 import json
 import logging
-import socket
 import statistics
-import subprocess
-import threading
 import time
 
 from .. import system
@@ -69,13 +66,6 @@ class MetersMode(RadioMode):
 
     # ---- what runs ---------------------------------------------------------------------------------
 
-    def _free_port(self) -> int:
-        s = socket.socket()
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-        s.close()
-        return port
-
     def upstream(self):
         v = self.values
         if not self.live():
@@ -121,23 +111,6 @@ class MetersMode(RadioMode):
         if not self.live():
             return ["bash", "-c", f"rtl_wmbus < '{self.file_path()}' | {meters}"]
         return ["bash", "-c", f"rtl_wmbus | {meters}"]
-
-    def _start_rtl_tcp(self):
-        """This PC's dongle for rtlamr: an rtl_tcp of its own, its lines in the log (and a missing dongle said)."""
-        cmd = ["rtl_tcp", "-a", "127.0.0.1", "-p", str(self._port), "-d", self.device_index().lstrip(":") or "0"]
-        if self.values.get("ppm"):
-            cmd += ["-P", str(self.values["ppm"])]
-        log.info("starting %s", " ".join(cmd))
-        self._rtl_tcp = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-
-        def lines(proc):
-            for line in proc.stdout:
-                line = line.rstrip()
-                log.info("rtl_tcp: %s", line)
-                if self.device_problem(line) is not None:
-                    self._rtl_tcp_problem = line
-        self._rtl_tcp_problem = None
-        threading.Thread(target=lines, args=(self._rtl_tcp,), daemon=True).start()
 
     # ---- what it hears ----------------------------------------------------------------------------
 
@@ -219,14 +192,7 @@ class MetersMode(RadioMode):
 
     def stop(self):
         events = super().stop()                              # rtlamr first, then its rtl_tcp
-        p = getattr(self, "_rtl_tcp", None)
-        if p is not None:
-            p.terminate()
-            try:
-                p.wait(3)
-            except subprocess.TimeoutExpired:
-                p.kill()
-            self._rtl_tcp = None
+        self._stop_rtl_tcp()
         if getattr(self, "_meters", None):
             events.append(Event("table", data={"rows": self.rows()}))
         return events

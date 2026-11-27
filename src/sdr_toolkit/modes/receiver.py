@@ -949,11 +949,40 @@ class ReceiverMode(Mode):
             events.append(Event("identifying", data=dict(state)))
             if state["stage"] == "cancelled":
                 self._identify_state = None
+        events += self._rds_events()
         now = time.time()
         if now - self._last_activity >= 1.0:
             self._last_activity = now
             events += self._status()
         return events
+
+    def _rds_events(self):
+        """The tuned broadcast station's RDS, logged when its name or radiotext changes."""
+        demod = getattr(self, "demod", None)
+        if demod is None or not demod.rds_changed:
+            return []
+        changed, demod.rds_changed = demod.rds_changed, []
+        st = demod.rds_station()
+        if st is None:
+            return []
+        s = st.summary()
+        mhz = float(self.values["freq_mhz"])
+        out = []
+        if "ps" in changed and s["ps"]:
+            out.append(Event("log", f"RDS {mhz:.1f} MHz: {s['ps']}" + (f" ({s['pty']})" if s["pty"] else "")))
+        if "rt" in changed and s["rt"]:
+            out.append(Event("log", f"RDS {mhz:.1f} MHz {s['ps']}: {s['rt']}"))
+        if "clock" in changed and s["clock"]:
+            out.append(Event("log", f"RDS {mhz:.1f} MHz clock: {s['clock']}", style="dim"))
+        return out
+
+    def rds_text(self) -> str:
+        demod = getattr(self, "demod", None)
+        st = demod.rds_station() if demod is not None and self.values.get("demod") == "WFM" else None
+        if st is None or not st.ps_done.strip():
+            return ""
+        s = st.summary()
+        return " · RDS " + s["ps"] + (f": {s['rt']}" if s["rt"] else "") + (" · TA" if s["ta"] and s["tp"] else "")
 
     def _status(self):
         s, v = getattr(self, "src", None), self.values
@@ -979,7 +1008,7 @@ class ReceiverMode(Mode):
         text = ((on[:1].upper() + on[1:]) + (where if on else where[:1].upper() + where[1:]) + f" · centre {self.center / 1e6:.4f} MHz · {int(v['rate']) / 1e6:g} MS/s · "
                 f"{gain}" + (f" · {s.dropped} blocks dropped (too slow)" if s.dropped else "")
                 + (f" · decode channels behind: {self._chz_dropped} blocks lost" if self._chz_dropped else "")
-                + (f" · {self._decoder_note}" if self._decoder_note else ""))
+                + (f" · {self._decoder_note}" if self._decoder_note else "") + self.rds_text())
         return [Event("activity", text)]
 
     def stop(self):

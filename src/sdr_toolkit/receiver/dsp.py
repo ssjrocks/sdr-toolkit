@@ -141,6 +141,8 @@ class Demodulator:
         self.open = True
         self._peak = 0.0                    # the AGC's idea of the signal's peak level
         self.mixer = Mixer(self.rate, offset)
+        self.rds = None                       # WFM: the multiplex's RDS decoder, made on first use
+        self.rds_changed: list[str] = []
         self._build()
 
     @property
@@ -148,7 +150,13 @@ class Demodulator:
         return self.mixer.shift
 
     def retune(self, offset):
+        if abs(offset - self.mixer.shift) > 50000:
+            self.rds = None                        # another station: its RDS starts again
         self.mixer.set(offset)
+
+    def rds_station(self):
+        """The tuned WFM station's RDS so far (engines.rds.Station), or None."""
+        return self.rds.station if self.rds is not None else None
 
     def _build(self):
         total = self.rate // AUDIO_RATE
@@ -194,6 +202,7 @@ class Demodulator:
             self.deemphasis = deemphasis
             changed = True
         if changed:
+            self.rds = None
             self._build()
 
     def process(self, x: np.ndarray) -> np.ndarray:
@@ -209,6 +218,14 @@ class Demodulator:
             if len(y):
                 self._last = y[-1]
             disc = np.angle(y * np.conj(prev))
+            if m == "WFM" and self.if_rate >= 150000 and len(disc):
+                if self.rds is None:
+                    from ..engines import rds
+                    self.rds = rds.Decoder(self.if_rate)
+                try:
+                    self.rds_changed += self.rds.feed(disc)
+                except Exception:                   # RDS is extra: a fault in it mustn't stop the sound
+                    self.rds = None
             if m == "WFM":
                 # 75 kHz deviation -> +-1, then de-emphasis (one pole), then 15 kHz low-pass and 48 kHz.
                 a = disc * self.if_rate / (2 * np.pi * 75000)

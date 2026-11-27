@@ -1151,3 +1151,24 @@ def test_tags(tmp_path):
     assert lb.tags()[0]["decoder"] == "aprs"
     lb.delete_tag(i)
     assert [t["label"] for t in lb.tags()] == ["APRS"]
+
+
+def test_receiver_shows_rds(monkeypatch, tmp_path):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import radio_signals
+    from sdr_toolkit.engines import rds
+    mpx = rds.modulate(rds.groups_for(pi=0x9B12, ps="TESTFM  ", rt="Now playing: the test"), repeats=8)
+    rec = radio_signals.save(tmp_path / "rds.cu8", radio_signals.wfm_iq([(600000, mpx)], rate=RATE))
+    m = start_receiver(monkeypatch, input="file", file=str(rec), file_rate=RATE, freq_mhz=101.1, demod="WFM",
+                       bandwidth=180000)
+    try:
+        ev = poll_for(m, 12.0, until=lambda ev: any(e.kind == "log" and "Now playing" in e.text for e in ev))
+        logs = [e.text for e in ev if e.kind == "log"]
+        assert "RDS 101.1 MHz: TESTFM (Pop music)" in logs, logs
+        assert "RDS 101.1 MHz TESTFM: Now playing: the test" in logs
+        assert "RDS TESTFM: Now playing: the test" in m.rds_text()
+        # Tuned to another station: its RDS starts again.
+        m.apply(dict(m.values, freq_mhz=100.7))
+        assert m.rds_text() == ""
+    finally:
+        m.stop()

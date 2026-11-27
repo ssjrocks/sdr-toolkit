@@ -1649,3 +1649,58 @@ def test_every_helper_module_runs_on_windows():
     assert used and used <= helper.ALLOWED, used - helper.ALLOWED
     spec = (src.parents[1] / "packaging" / "windows" / "sdr-toolkit.spec").read_text(encoding="utf-8")
     assert all(f'"{m}"' in spec for m in used), [m for m in used if f'"{m}"' not in spec]
+
+
+# ---- FM stations and RDS
+
+
+def test_rds_blocks_and_groups():
+    from sdr_toolkit.engines import rds
+    for kind in ("A", "B", "C", "C'", "D"):
+        blk = rds.encode_block(0xBEEF, kind)
+        assert rds.block_kind(blk) == kind
+        assert rds.block_kind(blk ^ (1 << 13)) != kind
+        assert rds.corrected(blk ^ (0b11 << 4), kind) == blk               # a 2-bit burst is fixed
+    st = rds.Station()
+    # 4A: clock time, MJD 61000 = 2025-11-17? (computed, not assumed): 10:30 UTC, offset +10 h.
+    mjd, hour, minute = 61000, 10, 30
+    b = (4 << 12) | (mjd >> 15)
+    c = ((mjd & 0x7FFF) << 1) | (hour >> 4)
+    d = ((hour & 0xF) << 12) | (minute << 6) | 20
+    assert st.apply(0x9B12, b, c, d) == ["clock"]
+    assert st.clock.startswith("2025-") and "10:30 UTC (20:30 local, UTC+10)" in st.clock
+
+
+def test_rds_decoder_on_a_multiplex():
+    import numpy as np
+    from sdr_toolkit.engines import rds
+    mpx = rds.modulate(rds.groups_for(pi=0x1234, ps="ABC FM  ", rt="Hello from the test"), rate=240000)
+    mpx = mpx + np.random.default_rng(2).standard_normal(len(mpx)) * 0.02
+    d = rds.Decoder(240000)
+    for i in range(0, len(mpx), 9600):
+        d.feed(mpx[i:i + 9600])
+    s = d.station.summary()
+    assert (s["pi"], s["ps"], s["rt"], s["pty"], s["tp"]) == ("1234", "ABC FM", "Hello from the test", "Pop music", True)
+    # Noise alone: nothing (a chance-valid block doesn't sync, a "fix" isn't made from noise).
+    d = rds.Decoder(240000)
+    noise = np.random.default_rng(3).standard_normal(240000 * 10) * 0.1
+    for i in range(0, len(noise), 9600):
+        d.feed(noise[i:i + 9600])
+    assert d.station.summary()["pi"] == "" and d.station.groups == 0
+
+
+def test_fm_stations_from_a_recording(tmp_path):
+    from sdr_toolkit.engines import rds
+    a = rds.modulate(rds.groups_for(pi=0x9B12, ps="TESTFM  ", rt="Station one radiotext"), repeats=8)
+    b = rds.modulate(rds.groups_for(pi=0x4033, ps="101FM   ", rt="It's all about the music!", pty=12), repeats=8)
+    iq = radio_signals.wfm_iq([(-650000, a), (450000, b)])
+    path = radio_signals.save(tmp_path / "fm.cu8", iq)
+    mode, ev = run_radio("fm_stations", path, wait=120, file_rate=2_400_000, file_centre_mhz=98.05)
+    rows = {r["freq"]: r for r in ism_rows(ev)}
+    assert set(rows) == {"97.4", "98.5"}, rows
+    assert rows["97.4"]["ps"] == "TESTFM" and rows["97.4"]["rt"] == "Station one radiotext"
+    assert rows["98.5"]["ps"] == "101FM" and rows["98.5"]["pty"] == "Easy listening" and rows["98.5"]["pi"] == "4033"
+    assert "stereo" in rows["97.4"]["flags"] and "TP" in rows["97.4"]["flags"]
+    assert any(e.kind == "log" and e.text == "98.5 MHz 101FM: It's all about the music!" for e in ev)
+    d = mode.details("98.5")
+    assert ("PI code", "4033") in d["fields"]

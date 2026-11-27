@@ -375,3 +375,20 @@ def beacon406_iq(frame_bits, rate=960000, offset_hz=200000.0, carrier_hz=2000.0,
     t = np.arange(len(env)) / rate
     x = level * env * np.exp(1j * (phase + 2 * np.pi * (offset_hz + carrier_hz) * t + 0.7))
     return (x + _noise(len(x), noise, seed)).astype(np.complex64)
+
+
+# ---- FM broadcast with RDS
+
+
+def wfm_iq(stations, rate=2_400_000, seconds=None, seed=9, noise=0.01):
+    """Broadcast FM stations, each (offset Hz, multiplex at 240 kHz as rds.modulate makes it), 75 kHz deviation."""
+    from scipy.signal import resample_poly
+    up = rate // 240000
+    n = max(len(m) for _, m in stations) * up
+    t = np.arange(n) / rate
+    x = np.zeros(n, np.complex128)
+    for off, mpx in stations:
+        m = resample_poly(mpx, up, 1)
+        m = np.pad(m, (0, n - len(m)))
+        x += 0.3 * np.exp(1j * (2 * np.pi * 75000 * np.cumsum(m) / rate + 2 * np.pi * off * t))
+    return (x + _noise(n, noise, seed)).astype(np.complex64)
