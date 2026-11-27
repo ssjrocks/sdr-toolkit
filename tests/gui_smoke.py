@@ -105,6 +105,14 @@ if DONGLE:
         if getattr(M, "source", "audio") == "radio":
             pre.setValue(f"{M.id}/input", "file")
     pre.sync()
+# Never this PC's Wi-Fi (a password prompt for monitor mode) or a real Bluetooth scan.
+pre = QSettings(ini, QSettings.Format.IniFormat)
+pre.setValue("wifi/input", "file")
+pre.sync()
+from sdr_toolkit.modes import ble as _ble  # noqa: E402
+_ble.BLEMode.command = lambda self: (setattr(self, "_devices", {}), setattr(self, "_dirty", False),
+                                     setattr(self, "_last_table", 0.0), setattr(self, "_pointed", set()),
+                                     [sys.executable, "-c", "import time; time.sleep(30)"])[-1]
 # Pictures go to folders of the test's own, and none from ~/Pictures are taken into its logbook.
 pre = QSettings(ini, QSettings.Format.IniFormat)
 for _mid in ("sstv", "wefax"):

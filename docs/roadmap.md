@@ -37,22 +37,22 @@ could pick up.
 - [ ] DRM shortwave — HF reception (no packaged decoder: Dream would have to be built; see the to-do list)
 
 ## 4. Satellites and space
-- [ ] METEOR-M weather pictures (SatDump) — RTL
+- [x] METEOR-M weather pictures (SatDump) — RTL (and Inmarsat STD-C / AERO through SatDump)
 - [ ] Iridium: pager messages, ACARS, ring alerts, beams on the map — HF + patch antenna
-- [ ] Inmarsat STD-C and AERO — HF + patch antenna and LNA
-- [ ] Hydrogen line (1420 MHz) and meteor scatter — HF + LNA / dish
+- [x] Inmarsat STD-C and AERO — HF + patch antenna and LNA (SatDump; not heard yet)
+- [x] Hydrogen line (1420 MHz) and meteor scatter — HF + LNA / dish (synthetic tests; no line from indoors)
 
 ## 5. Wi-Fi, Bluetooth, drones
-- [ ] Wi-Fi map: networks, connected devices, probe requests, channel use, live Wireshark, your own WPA2
-      network decrypted with its password — WiFi
-- [ ] Bluetooth / BLE: every device, trackers following you, beacons, drone Remote ID — BT
+- [x] Wi-Fi map: networks, connected devices, probe requests, channel use, live Wireshark, your own WPA2
+      network decrypted with its password — WiFi (tested on a capture only: this PC's Wi-Fi is off)
+- [x] Bluetooth / BLE: every device, trackers following you, beacons, drone Remote ID — BT (live: 8 devices)
 - [ ] Bluetooth Classic devices (ice9) — HF
 - [ ] DJI DroneID: drone and pilot positions — HF
-- [ ] 5.8 GHz analog FPV video — HF
-- [ ] Zigbee / Thread: smart-home devices and channels — HF
+- [x] 5.8 GHz analog FPV video — HF (synthetic tests)
+- [x] Zigbee / Thread: smart-home devices and channels — HF (synthetic tests; nothing heard live)
 
 ## 6. Cellular
-- [ ] LTE / 5G cell scanner: towers, bands, operators, cell IDs, signal map, tower locations — HF
+- [x] LTE cell scanner: bands, EARFCN, PCI, signal — HF (live: cells in 7 bands). Not yet: 5G NR, operators
 
 ## To do: left over and blocked
 Built-in decoders that couldn't be built here yet, and checks still owed:
@@ -69,6 +69,14 @@ Built-in decoders that couldn't be built here yet, and checks still owed:
 - [ ] The flaky GPS test.
 - [ ] **DRM** (digital shortwave): needs the Dream decoder (GPL) built from source; building third-party code was
       blocked by auto mode, like dec406. RNZ Pacific's DRM shortwave is the likeliest one to hear in Australia.
+- [ ] **Decisions for you:** turn this PC's Wi-Fi on (rfkill) for a live monitor-mode test? Any Zigbee devices
+      at home (which channel) for a long live run? Allow building third-party code (dec406, Z-Wave, Dream, gr-iridium,
+      ice9 Bluetooth Classic, DJI DroneID)?
+- [ ] Not built: Iridium (gr-iridium), Bluetooth Classic (ice9), DJI DroneID, 5G NR cells: all need third-party
+      builds or more work.
+- [ ] Release 0.22.0 (sections 4-6 are committed, not yet released): run the full suite and window test first.
+- [ ] METEOR-M2-3 pass 2026-11-27 20:43: recorded in the background on both SDRs (logs in build/live/sat/,
+      pictures in ~/.local/share/sdr-toolkit/satdump); check what came out.
 - [ ] DAB+ on a real ensemble: none reaches this PC indoors (blocks 9A-9C, Brisbane). Tested on an ensemble
       generated with OpenDigitalRadio's tools.
 
