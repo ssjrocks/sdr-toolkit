@@ -277,6 +277,7 @@ class AeroMode(RadioMode):
                                             "systems": set()})
         a["count"] += 1
         a["last"] = now
+        a["seq"] = self._messages                         # newest first, even within one clock tick
         a["systems"].add(system_)
         for k, val in (("icao", icao), ("reg", reg), ("flight", flight)):
             if val:
@@ -315,7 +316,7 @@ class AeroMode(RadioMode):
     def _views(self):
         rows = []
         points = []
-        for key, a in sorted(self._aircraft.items(), key=lambda kv: -kv[1]["last"]):
+        for key, a in sorted(self._aircraft.items(), key=lambda kv: (-kv[1]["last"], -kv[1]["seq"])):
             rows.append({"key": key, "reg": a.get("reg", ""), "flight": a.get("flight", ""), "count": a["count"],
                          "last_msg": a.get("last_msg", ""), "system": ", ".join(sorted(a["systems"])),
                          "last": time.strftime("%H:%M:%S", time.localtime(a["last"]))})

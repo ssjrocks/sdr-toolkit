@@ -89,6 +89,7 @@ class DSCMode(RadioMode):
         s = self._stations.setdefault(key, {"count": 0, "calls": [], "first": now})
         s["count"] += 1
         s["last"] = now
+        s["seq"] = self._calls
         s["kind"] = c.get("from_kind", "")
         s["calls"] = (s["calls"] + [(now, c)])[-20:]
         if "lat" in c:
@@ -117,7 +118,7 @@ class DSCMode(RadioMode):
 
     def _views(self):
         rows, points = [], []
-        for key, s in sorted(self._stations.items(), key=lambda kv: -kv[1]["last"]):
+        for key, s in sorted(self._stations.items(), key=lambda kv: (-kv[1]["last"], -kv[1]["seq"])):
             c = s["calls"][-1][1]
             cat = "Distress" if c.get("format_code") == 112 else c.get("category", c.get("format", ""))
             rows.append({"mmsi": key, "kind": s["kind"], "category": cat, "last_call": c["summary"],

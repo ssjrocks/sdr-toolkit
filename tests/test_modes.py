@@ -1645,7 +1645,7 @@ def test_every_helper_module_runs_on_windows():
     src = Path(__file__).resolve().parents[1] / "src" / "sdr_toolkit"
     used = set()
     for f in src.rglob("*.py"):
-        used |= set(re.findall(r'python_command\(\s*"(sdr_toolkit\.[a-z0-9_.]+)"', f.read_text()))
+        used |= set(re.findall(r'python_command\(\s*"(sdr_toolkit\.[a-z0-9_.]+)"', f.read_text(encoding="utf-8")))
     assert used and used <= helper.ALLOWED, used - helper.ALLOWED
-    spec = (src.parents[1] / "packaging" / "windows" / "sdr-toolkit.spec").read_text()
+    spec = (src.parents[1] / "packaging" / "windows" / "sdr-toolkit.spec").read_text(encoding="utf-8")
     assert all(f'"{m}"' in spec for m in used), [m for m in used if f'"{m}"' not in spec]

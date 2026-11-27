@@ -93,6 +93,7 @@ class Beacon406Mode(RadioMode):
         b.update(e)
         b["count"] += 1
         b["last"] = now
+        b["seq"] = self._bursts
         self._dirty = True
         where = f" at {e['lat']:.4f}, {e['lon']:.4f}" if "lat" in e else ""
         text = (f"{'Self-test' if e['self_test'] else 'BEACON'} {key} ({e.get('protocol', '')}, "
@@ -118,7 +119,7 @@ class Beacon406Mode(RadioMode):
 
     def _views(self):
         rows, points = [], []
-        for key, b in sorted(self._beacons.items(), key=lambda kv: -kv[1]["last"]):
+        for key, b in sorted(self._beacons.items(), key=lambda kv: (-kv[1]["last"], -kv[1]["seq"])):
             pos = f"{b['lat']:.4f}, {b['lon']:.4f}" if "lat" in b else ""
             rows.append({"hex_id": key, "kind": b.get("protocol", ""), "ident": b.get("id", ""),
                          "country": b.get("country", ""), "pos": pos, "test": "yes" if b["self_test"] else "",
