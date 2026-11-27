@@ -37,7 +37,7 @@ helper = Analysis([os.path.join(SPECPATH, "helper_entry.py")], pathex=[SRC], hid
     "sdr_toolkit.engines.rds", "sdr_toolkit.engines.dab",
     "sdr_toolkit.engines.satdump_run", "sdr_toolkit.engines.astro",
     "sdr_toolkit.engines.ble_scan", "sdr_toolkit.engines.ble", "bleak", "bleak.backends.winrt.scanner",
-    "sdr_toolkit.engines.wifi", "sdr_toolkit.engines.zigbee"],
+    "sdr_toolkit.engines.wifi", "sdr_toolkit.engines.zigbee", "sdr_toolkit.engines.fpv", "sdr_toolkit.engines.lte"],
     excludes=excludes + ["PyQt6"], noarchive=False)
 
 gui_exe = EXE(PYZ(gui.pure), gui.scripts, [], exclude_binaries=True, name="SDR Toolkit", icon=ICON,
