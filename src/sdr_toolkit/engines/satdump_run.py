@@ -183,7 +183,9 @@ def main(argv=None):
               "max_el": round(p.max_el, 1)})
         while time.time() < p.start:
             time.sleep(min(5.0, max(0.1, p.start - time.time())))
-        folder = out / (time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(p.start)) + "_" + sat.name.replace(" ", "_"))
+        # The frequency in the name too: two SDRs recording the same pass (one on each frequency) mustn't share it.
+        folder = out / (time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(p.start)) + "_" + sat.name.replace(" ", "_")
+                        + f"_{a.frequency / 1e6:.1f}MHz")
         emit({"event": "start", "name": sat.name, "dir": str(folder)})
         state = {}
         secs = max(30, int(p.end - time.time()))

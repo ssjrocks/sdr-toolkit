@@ -54,7 +54,7 @@ DECODERS = {
 
 def program(name, bin_dir=None) -> str | None:
     """A decoder: the app's own build (setup/build.sh), else one on PATH."""
-    for d in ([Path(bin_dir)] if bin_dir else []) + [system.data_dir() / "radiosonde" / "bin"]:
+    for d in ([Path(bin_dir)] if bin_dir else []) + [system.tools_dir() / "bin", system.data_dir() / "radiosonde" / "bin"]:
         p = d / name
         if p.is_file() and os.access(p, os.X_OK):
             return str(p)

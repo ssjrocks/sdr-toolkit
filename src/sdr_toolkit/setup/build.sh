@@ -11,20 +11,22 @@
 # covered by one or more patents." It's built only with --accept-mbelib (the installer and the app
 # ask first).
 set -euo pipefail
-rebuild=0 mbelib=0
+rebuild=0 mbelib=0 only=""
 for a in "$@"; do
   case "$a" in
     --rebuild) rebuild=1 ;;
     --accept-mbelib) mbelib=1 ;;
+    --only=*) only="${a#--only=}" ;;      # just these parts (comma-separated): lora,dsd,sondes,rtlamr,aero
     *) echo "unknown option $a" >&2; exit 2 ;;
   esac
 done
-root="$HOME/.local/share/sdr-toolkit"
+root="${SDR_TOOLKIT_ROOT:-$HOME/.local/share/sdr-toolkit}"
 src="${SDR_TOOLKIT_SRC:-$HOME/.cache/sdr-toolkit/src}"
 jobs=$(( $(nproc) / 3 )); (( jobs < 1 )) && jobs=1
 mkdir -p "$src"
 # Compiles run at low priority so the desktop stays responsive.
 build() { nice -n 10 make -C "$1" -j"$jobs"; make -C "$1" install; }
+want() { [[ -z "$only" || ",$only," == *",$1,"* ]]; }
 fetch() {   # fetch DIR URL [BRANCH]
   if [[ ! -d "$src/$1/.git" ]]; then
     rm -rf "${src:?}/$1"
@@ -33,7 +35,8 @@ fetch() {   # fetch DIR URL [BRANCH]
 }
 
 lora="$root/gr-lora_sdr"
-if (( rebuild )) || ! compgen -G "$lora/lib*/python3*/*-packages/gnuradio/lora_sdr" >/dev/null; then
+if ! want lora; then :
+elif (( rebuild )) || ! compgen -G "$lora/lib*/python3*/*-packages/gnuradio/lora_sdr" >/dev/null; then
   echo "STEP Building gr-lora_sdr (LoRa), a few minutes"
   fetch gr-lora_sdr https://github.com/tapparelj/gr-lora_sdr.git
   cmake -S "$src/gr-lora_sdr" -B "$src/gr-lora_sdr/build" -DCMAKE_INSTALL_PREFIX="$lora" \
@@ -45,7 +48,8 @@ else
 fi
 
 dsd="$root/dsd-fme"
-if (( rebuild )) || [[ ! -x "$dsd/bin/dsd-fme" ]]; then
+if ! want dsd; then :
+elif (( rebuild )) || [[ ! -x "$dsd/bin/dsd-fme" ]]; then
   if (( ! mbelib )); then
     echo "STEP Skipping DSD-FME (DMR/P25): mbelib's patent notice wasn't accepted"
   else
@@ -64,7 +68,8 @@ else
 fi
 rs="$root/radiosonde"
 sondes="rs41mod rs92mod dfm09mod m10m20mod lms6Xmod imet54mod meisei100mod mp3h1mod mts01mod"
-if (( rebuild )) || [[ ! -x "$rs/bin/rs41mod" || ! -x "$rs/bin/dft_detect" ]]; then
+if ! want sondes; then :
+elif (( rebuild )) || [[ ! -x "$rs/bin/rs41mod" || ! -x "$rs/bin/dft_detect" ]]; then
   echo "STEP Building the radiosonde decoders, a minute"
   fetch RS https://github.com/rs1729/RS.git
   # shellcheck disable=SC2086
@@ -78,7 +83,8 @@ else
   echo "STEP Radiosonde decoders already built"
 fi
 amr="$root/rtlamr"
-if (( rebuild )) || [[ ! -x "$amr/bin/rtlamr" ]]; then
+if ! want rtlamr; then :
+elif (( rebuild )) || [[ ! -x "$amr/bin/rtlamr" ]]; then
   echo "STEP Building rtlamr (utility meters), a minute"
   mkdir -p "$amr/bin"
   GOBIN="$amr/bin" GOPATH="$src/go" GOFLAGS=-modcacherw nice -n 10 go install github.com/bemasher/rtlamr@latest
@@ -87,7 +93,8 @@ else
   echo "STEP rtlamr already built"
 fi
 aero="$root/aero"
-if (( rebuild )) || [[ ! -x "$aero/bin/dumpvdl2" || ! -x "$aero/bin/dumphfdl" || ! -x "$aero/bin/acarsdec" ]]; then
+if ! want aero; then :
+elif (( rebuild )) || [[ ! -x "$aero/bin/dumpvdl2" || ! -x "$aero/bin/dumphfdl" || ! -x "$aero/bin/acarsdec" ]]; then
   echo "STEP Building the aircraft message decoders (ACARS, VDL Mode 2, HFDL), a few minutes"
   # Installed under $aero, finding libacars there by their built-in library path (no system folders).
   aero_cmake=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$aero" -DCMAKE_PREFIX_PATH="$aero"

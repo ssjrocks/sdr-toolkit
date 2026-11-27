@@ -23,6 +23,9 @@ log = logging.getLogger(__name__)
 
 
 def rtlamr() -> str | None:
+    b = system.bundled("rtlamr")
+    if b:
+        return b
     p = system.data_dir() / "rtlamr" / "bin" / "rtlamr"
     return str(p) if p.is_file() else None
 

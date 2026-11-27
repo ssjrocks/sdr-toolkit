@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Installs SDR Toolkit for the current user, with everything its modes use:
-#   - Ubuntu packages: the app's libraries, WSJT-X, direwolf, multimon-ng, rtl_433, readsb,
-#     the RTL-SDR tools, GNU Radio, and what the builds below need (asks for your password once);
-#   - gr-lora_sdr (LoRa), and mbelib + DSD-FME (DMR/P25), built from source into
-#     ~/.local/share/sdr-toolkit (a few minutes);
+#   - a few Ubuntu packages: the app's libraries, the SDRs' device permissions, tshark, and compilers for
+#     DSD-FME (asks for your password once);
+#   - the tools bundle: every outside decoder with its libraries, in ~/.local/share/sdr-toolkit/tools
+#     (nothing system-wide);
+#   - mbelib + DSD-FME (DMR/P25), built from source into ~/.local/share/sdr-toolkit (a few minutes);
 #   - the app in ~/.local/share/sdr-toolkit/venv, and its app-menu entry.
 #
 #   From a checkout:  scripts/install.sh
@@ -102,10 +103,15 @@ EOF
     echo "No terminal to ask about mbelib: leaving out DMR/P25 (the app can add it later)."
   fi
 fi
-step "Decoders built from source (a few minutes)"
-flags=()
-[[ "$mbelib" == yes ]] && flags+=(--accept-mbelib)
-bash "$setup/build.sh" "${flags[@]}"
+step "The decoders (the tools bundle, into $ROOT/tools)"
+"$VENV/bin/python" -c "
+import sys
+from sdr_toolkit import deps
+sys.exit(0 if deps.install_tools(lambda s: print(s.removeprefix('STEP '), flush=True)) else 1)"
+if [[ "$mbelib" == yes ]]; then
+  step "DSD-FME and mbelib, built from source (a few minutes)"
+  bash "$setup/build.sh" --only=dsd --accept-mbelib
+fi
 
 step "App-menu entry"
 mkdir -p "$(dirname "$DESKTOP")"

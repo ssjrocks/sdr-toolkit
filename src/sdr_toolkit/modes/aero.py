@@ -51,6 +51,9 @@ def _mhz(freq) -> str:
 
 
 def tool(name) -> str | None:
+    b = system.bundled(name)
+    if b:
+        return b
     p = system.data_dir() / "aero" / "bin" / name
     return str(p) if p.is_file() else None
 

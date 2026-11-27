@@ -14,6 +14,7 @@ from pathlib import Path
 REAL_DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "sdr-toolkit"
 os.environ["SDR_TOOLKIT_SILENT"] = "1"               # no sound through the speakers
 os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp()      # its own logbook and aircraft database
+os.environ.setdefault("SDR_TOOLKIT_TOOLS", str(REAL_DATA / "tools"))   # the app's real tools bundle
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -45,12 +46,13 @@ _lora.LORA_PREFIX = REAL_DATA / "gr-lora_sdr"
 _dv.DSD_FME = REAL_DATA / "dsd-fme" / "bin" / "dsd-fme"
 from sdr_toolkit import deps as _deps  # noqa: E402
 from sdr_toolkit.modes import meters as _meters  # noqa: E402
-_meters.rtlamr = lambda: (str(REAL_DATA / "rtlamr" / "bin" / "rtlamr")
-                          if (REAL_DATA / "rtlamr" / "bin" / "rtlamr").is_file() else None)
+from sdr_toolkit import system as _system  # noqa: E402
+_meters.rtlamr = lambda: _system.bundled("rtlamr") or (str(REAL_DATA / "rtlamr" / "bin" / "rtlamr")
+                                                      if (REAL_DATA / "rtlamr" / "bin" / "rtlamr").is_file() else None)
 _deps.PARTS["rtlamr"] = (_deps.PARTS["rtlamr"][0], lambda: _meters.rtlamr() is not None, "build")
 from sdr_toolkit.modes import aero as _aero  # noqa: E402
-_aero.tool = lambda name: (str(REAL_DATA / "aero" / "bin" / name)
-                           if (REAL_DATA / "aero" / "bin" / name).is_file() else None)
+_aero.tool = lambda name: _system.bundled(name) or (str(REAL_DATA / "aero" / "bin" / name)
+                                                    if (REAL_DATA / "aero" / "bin" / name).is_file() else None)
 _deps.PARTS["aero"] = (_deps.PARTS["aero"][0], lambda: _aero.tool("acarsdec") is not None, _deps.PARTS["aero"][2])
 # The radiosonde decoders: the app's install or this checkout's build (found on PATH).
 for _d in (REAL_DATA / "radiosonde" / "bin", Path(__file__).resolve().parents[1] / "build/ext/RS/demod/mod",
@@ -106,8 +108,10 @@ if DONGLE:
             pre.setValue(f"{M.id}/input", "file")
     pre.sync()
 # Never this PC's Wi-Fi (a password prompt for monitor mode) or a real Bluetooth scan.
+import wifi_frames  # noqa: E402
 pre = QSettings(ini, QSettings.Format.IniFormat)
 pre.setValue("wifi/input", "file")
+pre.setValue("wifi/file", str(wifi_frames.sample(Path(tempfile.mkdtemp()) / "wifi.pcap")))
 pre.sync()
 from sdr_toolkit.modes import ble as _ble  # noqa: E402
 _ble.BLEMode.command = lambda self: (setattr(self, "_devices", {}), setattr(self, "_dirty", False),

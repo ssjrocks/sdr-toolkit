@@ -70,13 +70,15 @@ Built-in decoders that couldn't be built here yet, and checks still owed:
 - [ ] **DRM** (digital shortwave): needs the Dream decoder (GPL) built from source; building third-party code was
       blocked by auto mode, like dec406. RNZ Pacific's DRM shortwave is the likeliest one to hear in Australia.
 - [ ] **Decisions for you:** turn this PC's Wi-Fi on (rfkill) for a live monitor-mode test? Any Zigbee devices
-      at home (which channel) for a long live run? Allow building third-party code (dec406, Z-Wave, Dream, gr-iridium,
-      ice9 Bluetooth Classic, DJI DroneID)?
+      at home (which channel) for a long live run? (Building third-party code: allowed, 2026-11-27.)
 - [ ] Not built: Iridium (gr-iridium), Bluetooth Classic (ice9), DJI DroneID, 5G NR cells: all need third-party
       builds or more work.
-- [ ] Release 0.22.0 (sections 4-6 are committed, not yet released): run the full suite and window test first.
-- [ ] METEOR-M2-3 pass 2026-11-27 20:43: recorded in the background on both SDRs (logs in build/live/sat/,
-      pictures in ~/.local/share/sdr-toolkit/satdump); check what came out.
+- [ ] METEOR-M pictures from a real pass: the 2026-11-27 20:43 pass (55°) gave nothing indoors on either SDR
+      (HackRF 137.9 MHz: peak SNR 0.4 dB). Needs an antenna outdoors (a V-dipole or QFH for 137 MHz).
+- [ ] The tools bundle is built for Ubuntu 26.04 (x86-64): other releases would need their own build
+      (scripts/build-tools-bundle.sh TAG) and a choice of which to fetch.
+- [ ] Build the blocked decoders in the bundle's container now that building is allowed: dec406 (2nd-gen 406
+      MHz), waving-z (Z-Wave), Dream (DRM), gr-iridium (Iridium), ice9 (Bluetooth Classic).
 - [ ] DAB+ on a real ensemble: none reaches this PC indoors (blocks 9A-9C, Brisbane). Tested on an ensemble
       generated with OpenDigitalRadio's tools.
 

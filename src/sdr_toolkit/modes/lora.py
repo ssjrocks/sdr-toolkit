@@ -42,7 +42,13 @@ def meshtastic_freq(region: str, channel_name: str, bw: int) -> float:
 
 
 def lora_available() -> dict | None:
-    """Environment for running gr-lora_sdr from its install prefix, or None if it isn't built."""
+    """Environment for running gr-lora_sdr from the tools bundle or its install prefix, or None if it isn't there."""
+    t = system.tools_dir()
+    if (t / "python" / "gnuradio" / "lora_sdr").is_dir():
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join([str(t / "python"), env.get("PYTHONPATH", "")]).strip(os.pathsep)
+        env["LD_LIBRARY_PATH"] = os.pathsep.join([str(t / "lib"), env.get("LD_LIBRARY_PATH", "")]).strip(os.pathsep)
+        return env
     py = glob.glob(str(LORA_PREFIX / "lib*/python3*/*-packages")) + glob.glob(str(LORA_PREFIX / "lib*/*/python3*/*-packages"))
     py = [p for p in py if Path(p, "gnuradio", "lora_sdr").is_dir()]
     if not py:

@@ -401,12 +401,18 @@ curl -fsSL https://raw.githubusercontent.com/ssjrocks/sdr-toolkit/master/scripts
 (or `scripts/install.sh` from a checkout). It sets up everything the modes use, asking for your
 password once:
 
-- the Ubuntu packages: the app's libraries, WSJT-X, direwolf, multimon-ng, rtl_433, readsb, the
-  RTL-SDR tools and GNU Radio, plus compilers for the next step (readsb's own service is turned off:
-  it would hold the RTL-SDR, and the toolkit runs readsb itself);
-- gr-lora_sdr (LoRa), and mbelib + DSD-FME (DMR, P25), built from source into
-  `~/.local/share/sdr-toolkit`, which takes a few minutes. Before building mbelib it shows mbelib's
-  patent notice and asks (`--accept-mbelib` to say yes in advance, `--no-dmr` to leave it out);
+- a few Ubuntu packages: the app's own libraries, the RTL-SDR's and HackRF's device permissions (their
+  udev rules), tshark for Wi-Fi monitor mode, and compilers for DSD-FME;
+- **the tools bundle**: every outside decoder the pages run (rtl_433, readsb, direwolf, WSJT-X's jt9,
+  multimon-ng, the RTL-SDR tools, GNSS-SDR, gr-satellites and GNU Radio's modules, gr-lora_sdr, the
+  radiosonde decoders, rtlamr, wmbusmeters, the aircraft-message decoders, welle.io, SatDump, ffmpeg), with
+  the libraries they need, downloaded into `~/.local/share/sdr-toolkit/tools`. Nothing of it is installed
+  system-wide, each program finds its own libraries through a small wrapper (no other program sees them),
+  and removing the app removes it all. It's built in an Ubuntu container of the same release
+  (`scripts/build-tools-bundle.sh`);
+- mbelib + DSD-FME (DMR, P25), built from source into `~/.local/share/sdr-toolkit` (a few minutes).
+  mbelib's patent notice keeps it out of the bundle: the installer shows it and asks first
+  (`--accept-mbelib` to say yes in advance, `--no-dmr` to leave it out);
 - the app and its app-menu entry.
 
 If a mode still lacks something (an older install, or DMR/P25 left out), the app says which part and

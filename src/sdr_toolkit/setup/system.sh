@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Ubuntu packages SDR Toolkit uses: the app itself, the outside decoders, and what
-# build.sh needs to compile gr-lora_sdr and DSD-FME. Run as root (the installer uses
-# sudo, the app pkexec). Also turns off readsb's own service, which would hold the
+# Ubuntu packages SDR Toolkit uses: the app itself, the SDRs' device permissions, tshark, and what
+# build.sh needs to compile DSD-FME. The decoders come in the app's tools bundle (its own folder), not
+# from here. Run as root (the installer uses sudo, the app pkexec). Also turns off readsb's own service, which would hold the
 # RTL-SDR whenever it's plugged in (the toolkit runs readsb itself).
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "system.sh must run as root" >&2; exit 1; }
@@ -9,17 +9,13 @@ set -euo pipefail
 packages=(
   # the app
   pipewire-bin python3-venv python3-numpy python3-scipy python3-pyqt6 python3-pil python3-cryptography
-  # outside decoders
-  wsjtx direwolf multimon-ng rtl-433 readsb rtl-sdr gnuradio gnss-sdr gr-satellites libhackrf0 wmbusmeters rtl-wmbus welle.io ffmpeg satdump tshark
-  # to build gr-lora_sdr
-  git cmake build-essential pkg-config gnuradio-dev libvolk-dev pybind11-dev libspdlog-dev libgmp-dev
-  # to build DSD-FME and mbelib
-  libpulse-dev libsndfile1-dev libfftw3-dev liblapack-dev libusb-1.0-0-dev librtlsdr-dev
-  libncurses-dev libcodec2-dev
-  # to build rtlamr (meters)
-  golang-go
-  # to build libacars, dumpvdl2, dumphfdl and acarsdec (aircraft messages)
-  libliquid-dev libconfig++-dev libcjson-dev libxml2-dev libjansson-dev zlib1g-dev libglib2.0-dev
+  # the SDRs' device permissions (their udev rules); the decoders themselves come in the app's tools bundle
+  librtlsdr0 libhackrf0
+  # Wi-Fi monitor mode's frames (it needs the system's capture permissions)
+  tshark
+  # to build DSD-FME and mbelib (kept out of the bundle by mbelib's patent notice)
+  git cmake build-essential pkg-config libpulse-dev libsndfile1-dev libfftw3-dev liblapack-dev libusb-1.0-0-dev
+  librtlsdr-dev libncurses-dev libcodec2-dev
 )
 missing=()
 for p in "${packages[@]}"; do

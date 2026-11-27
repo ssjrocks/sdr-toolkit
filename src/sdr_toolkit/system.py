@@ -119,3 +119,46 @@ def open_folder(path: Path) -> None:
         os.startfile(str(path))                 # noqa: S606 - opening a folder of ours
     else:
         subprocess.Popen(["xdg-open", str(path)])
+
+
+# ---- the tools bundle (Linux): every outside decoder, with its libraries, in the app's own folder -------
+
+BUNDLED_LIBS = ("libhackrf.so.0", "librtlsdr.so.0")      # the built-in relay loads these through ctypes
+
+
+def tools_dir() -> Path:
+    """Where the tools bundle is unpacked: bin/ (a wrapper per program), libexec/, lib/, python/, satdump/."""
+    return Path(os.environ["SDR_TOOLKIT_TOOLS"]) if os.environ.get("SDR_TOOLKIT_TOOLS") else data_dir() / "tools"
+
+
+def use_bundled_tools(folder: Path | None = None) -> bool:
+    """Put the bundle's programs first on this process's PATH (so every program it starts finds them), and load
+    its libhackrf / librtlsdr, so the built-in relay uses those. Each program's own libraries are set by its
+    wrapper, for it alone: nothing else this app starts sees them. Returns whether a bundle was there."""
+    if WINDOWS:
+        return False
+    t = Path(folder) if folder else tools_dir()
+    b = t / "bin"
+    if not b.is_dir():
+        return False
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    if str(b) not in parts:
+        os.environ["PATH"] = os.pathsep.join([str(b)] + [p for p in parts if p])
+    import ctypes
+    for name in BUNDLED_LIBS:
+        p = t / "lib" / name
+        if p.is_file():
+            try:
+                ctypes.CDLL(str(p), mode=ctypes.RTLD_GLOBAL)    # later loads by name get this one
+            except OSError:
+                pass
+    return True
+
+
+def bundled(name: str) -> str | None:
+    """A program from the tools bundle (its wrapper), or None."""
+    p = tools_dir() / "bin" / name
+    return str(p) if not WINDOWS and p.is_file() else None
+
+
+use_bundled_tools()

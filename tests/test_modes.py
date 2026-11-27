@@ -551,7 +551,7 @@ def test_install_runs_setup_steps_in_order(tmp_path, monkeypatch):
     lines = []
     still = deps.install(["readsb", "dsd-fme"], True, lines.append)
     assert calls.read_text().splitlines() == [f"pkexec bash {setup}/system.sh", "system.sh",
-                                              "build.sh --accept-mbelib"]
+                                              "build.sh --only=dsd --accept-mbelib"]     # the bundle has the rest
     assert "STEP packages done" in lines and "STEP builds done" in lines
     assert still == ["readsb", "dsd-fme"]          # the fakes installed nothing
     assert "STEP builds done" in deps.log_file().read_text()
