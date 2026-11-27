@@ -1979,3 +1979,43 @@ def test_zigbee_frames_from_a_recording(tmp_path):
     assert any(e.kind == "line" and e.text.startswith("Network 0x1234") and "extended PAN ID 08:07:06:05:04:03:02:01"
                in e.text for e in ev), [e.text for e in ev if e.kind == "line"]
     assert z.crc16(b"123456789") == 0x2189                                   # CRC-16/KERMIT's check value
+
+
+# ---- Analog FPV video
+
+
+def test_fpv_picture_from_a_recording(tmp_path):
+    import numpy as np
+    x, bars = radio_signals.fpv_iq(fields=6)
+    path = radio_signals.save(tmp_path / "fpv.cu8", x)
+    mode, ev = run_radio("fpv", path, wait=120, file_rate=19_200_000, every=1)
+    imgs = [e for e in ev if e.kind == "image"]
+    assert len(imgs) >= 3 and all("PAL" in e.title for e in imgs[1:]), [e.title for e in imgs]
+    img = imgs[-1].image[:, :, 0].astype(float) / 255                    # 2x the field's lines
+    levels = img[40:240].mean(axis=0)[40::80]
+    assert all(a > b for a, b in zip(levels, levels[1:])) and levels[0] > 0.8 and levels[-1] < 0.15, levels
+    assert img[270:310].mean() > 0.85                                    # the white band (field rows 135-155)
+
+
+# ---- LTE cells
+
+
+def test_lte_cells_from_a_recording(tmp_path):
+    import numpy as np
+    from scipy.signal import resample_poly
+    from sdr_toolkit.engines import lte
+    # The sequences against 36.211's: the PSS roots' first values, and SSS m0/m1 for N_ID1 0 and 167.
+    assert np.allclose(lte.pss_seq(0)[0], np.exp(-1j * np.pi * 25 * 0 * 1 / 63))
+    assert set(np.unique(lte.sss_seq(167, 2))) <= {-1.0, 1.0}
+    a = resample_poly(radio_signals.lte_iq(pci=301), 10, 1)
+    b = resample_poly(radio_signals.lte_iq(pci=77, duplex="TDD", seed=22), 10, 1)
+    t = np.arange(len(a)) / 19.2e6
+    x = a * np.exp(2j * np.pi * (-2.05e6 + 2e3) * t) + b * np.exp(2j * np.pi * (3.95e6 + 2e3) * t)
+    path = radio_signals.save(tmp_path / "lte.cu8", x.astype(np.complex64))
+    mode, ev = run_radio("cellular", path, wait=120, file_rate=19_200_000, file_centre_mhz=770.05)
+    rows = {r["pci"]: r for r in ism_rows(ev)}
+    assert set(rows) == {301, 77}, rows
+    assert rows[301]["freq"] == "768.0" and rows[301]["band"] == 28 and rows[301]["earfcn"] == 9310
+    assert rows[301]["duplex"] == "FDD" and rows[77]["duplex"] == "TDD" and rows[77]["freq"] == "774.0"
+    d = mode.details(rows[301]["key"])
+    assert ("Physical cell ID", "301") in d["fields"]

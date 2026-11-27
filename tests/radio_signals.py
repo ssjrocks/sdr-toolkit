@@ -392,3 +392,75 @@ def wfm_iq(stations, rate=2_400_000, seconds=None, seed=9, noise=0.01):
         m = np.pad(m, (0, n - len(m)))
         x += 0.3 * np.exp(1j * (2 * np.pi * 75000 * np.cumsum(m) / rate + 2 * np.pi * off * t))
     return (x + _noise(n, noise, seed)).astype(np.complex64)
+
+
+# ---- Analog FPV video: PAL fields, FM-modulated
+
+
+def pal_field(rate, pattern):
+    """One PAL field's video (sync -0.3, blanking 0, white 0.7): vertical sync (5 equalising, 5 broad, 5
+    equalising half-line pulses), then 305 lines of *pattern* (rows x columns, 0..1)."""
+    line = int(round(64e-6 * rate))
+    half = line // 2
+    out = []
+
+    def pulse(width_s, length):
+        p = np.zeros(length)
+        p[:int(width_s * rate)] = -0.3
+        return p
+    for w in [2.35e-6] * 5 + [27.3e-6] * 5 + [2.35e-6] * 5:
+        out.append(pulse(w, half))
+    a0, alen = int(10.5e-6 * rate), int(52e-6 * rate)
+    for r in range(305):
+        ln = np.zeros(line)
+        ln[:int(4.7e-6 * rate)] = -0.3
+        row = pattern[min(r * len(pattern) // 288, len(pattern) - 1)]
+        ln[a0:a0 + alen] = 0.7 * np.interp(np.linspace(0, len(row) - 1, alen), np.arange(len(row)), row)
+        out.append(ln)
+    return np.concatenate(out)
+
+
+def fpv_iq(fields=4, rate=19_200_000, deviation=4e6, noise=0.05, seed=13):
+    """FPV video: PAL fields of an 8-step grey bar pattern with a white band across the middle, FM-modulated."""
+    bars = np.repeat(np.linspace(1, 0, 8), 80)[None, :].repeat(288, axis=0)
+    bars[130:160] = 1.0
+    video = np.concatenate([pal_field(rate, bars) for _ in range(fields)])
+    ph = 2 * np.pi * deviation * np.cumsum(video) / rate
+    x = 0.5 * np.exp(1j * ph)
+    return (x + _noise(len(x), noise, seed)).astype(np.complex64), bars
+
+
+# ---- LTE: synchronisation signals in OFDM frames (36.211), for the cell scanner
+
+
+def lte_iq(pci=301, frames=5, duplex="FDD", seed=21, noise=0.02):
+    """A 1.4 MHz LTE cell at 1.92 MS/s: PSS and SSS where FDD (or TDD) puts them, random QPSK elsewhere."""
+    from sdr_toolkit.engines import lte
+    rng = np.random.default_rng(seed)
+    nid1, nid2 = pci // 3, pci % 3
+    out = []
+    for _ in range(frames):
+        for slot in range(20):
+            for sym in range(7):
+                X = np.zeros(128, complex)
+                data = (rng.choice([1, -1], 72) + 1j * rng.choice([1, -1], 72)) / np.sqrt(2)
+                k = np.concatenate([np.arange(-36, 0), np.arange(1, 37)]) % 128
+                X[k] = data
+                sub = slot // 2
+                if duplex == "FDD" and slot in (0, 10) and sym in (5, 6):
+                    seq = lte.pss_seq(nid2) if sym == 6 else lte.sss_seq(nid1, nid2, sf5=slot == 10)
+                    X[:] = 0
+                    X[k] = 0
+                    X += lte._carriers(seq)
+                if duplex == "TDD":
+                    if sub in (1, 6) and slot % 2 == 0 and sym == 2:
+                        X[:] = 0
+                        X += lte._carriers(lte.pss_seq(nid2))
+                    if sub in (0, 5) and slot % 2 == 1 and sym == 6:
+                        X[:] = 0
+                        X += lte._carriers(lte.sss_seq(nid1, nid2, sf5=sub == 5))
+                s = np.fft.ifft(X) * np.sqrt(128)
+                cp = 10 if sym == 0 else 9
+                out.append(np.concatenate([s[-cp:], s]))
+    x = np.concatenate(out) * 0.3
+    return x + _noise(len(x), noise, seed)

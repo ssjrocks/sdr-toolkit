@@ -16,6 +16,8 @@ from .astro import HydrogenLineMode, MeteorScatterMode
 from .ble import BLEMode
 from .wifi import WiFiMode
 from .zigbee import ZigbeeMode
+from .fpv import FPVMode
+from .cellular import CellularMode
 from .sondes import SondeMode
 from .morse import MorseMode
 from .ism import ISMMode
@@ -39,11 +41,11 @@ MODES = [
     SSTVMode, WefaxMode,
     APRSMode, PagerMode,
     TonesMode,
-    ReceiverMode, FMStationsMode, DABMode, ADSBMode, AeroMode, NavaidMode, AISMode, DSCMode, Beacon406Mode, SondeMode, ISMMode, MetersMode, LoRaMode, LoRaFinderMode, ExplorerMode,
+    ReceiverMode, FMStationsMode, DABMode, CellularMode, ADSBMode, AeroMode, NavaidMode, AISMode, DSCMode, Beacon406Mode, SondeMode, ISMMode, MetersMode, LoRaMode, LoRaFinderMode, ExplorerMode,
     DigitalVoiceMode,
     GPSFixMode,
     SatelliteMode, SatTelemetryMode, SatDumpMode, HydrogenLineMode, MeteorScatterMode,
-    WiFiMode, BLEMode, ZigbeeMode,
+    WiFiMode, BLEMode, ZigbeeMode, FPVMode,
 ]
 GROUPS = ["Text", "Digital (weak signal)", "Pictures", "Packet & paging", "Tones", "SDR", "Satellites",
           "Wi-Fi & Bluetooth"]
