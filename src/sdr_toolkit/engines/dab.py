@@ -145,11 +145,10 @@ def run_channel(ch, a, slides, deadline, seen):
                 return False
         return got
     finally:
-        p.terminate()
-        try:
-            p.wait(5)
-        except subprocess.TimeoutExpired:
-            p.kill()
+        # SIGKILL: welle-cli has nothing to save, and stopped with SIGTERM it once aborted on its way out
+        # (an abort is a crash report and an "internal error" dialog on Ubuntu's desktop).
+        p.kill()
+        p.wait(5)
         shutil.rmtree(work, ignore_errors=True)
 
 
