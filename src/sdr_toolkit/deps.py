@@ -66,6 +66,7 @@ PARTS = {
     "wmbusmeters": ("rtl_wmbus and wmbusmeters (Wireless M-Bus meters)",
                     lambda: shutil.which("wmbusmeters") is not None and shutil.which("rtl_wmbus") is not None,
                     "system"),
+    "satdump": ("SatDump (METEOR-M pictures, Inmarsat)", lambda: shutil.which("satdump") is not None, "system"),
     "welle.io": ("welle.io and ffmpeg (DAB+ radio)",
                  lambda: shutil.which("welle-cli") is not None and shutil.which("ffmpeg") is not None, "system"),
 }
@@ -94,6 +95,8 @@ WINDOWS_HELP = {
     "rtlamr": ("ERT meters aren't decoded on Windows yet: use the Linux version of SDR Toolkit."),
     "aero": ("Aircraft messages (ACARS, VDL2, HFDL) aren't decoded on Windows yet: use the Linux version."),
     "wmbusmeters": ("Wireless M-Bus meters aren't decoded on Windows yet: use the Linux version of SDR Toolkit."),
+    "satdump": ("SatDump has its own Windows version (satdump.org), not yet used by SDR Toolkit: use the Linux "
+                "version for METEOR-M and Inmarsat."),
     "welle.io": ("DAB+ radio isn't on Windows yet: use the Linux version of SDR Toolkit (or welle.io's own Windows "
                  "program)."),
     "gr-satellites": ("gr-satellites has no Windows package (it runs on GNU Radio, e.g. through radioconda): use "

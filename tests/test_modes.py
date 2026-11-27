@@ -1771,3 +1771,79 @@ def test_dab_listening(dab_ensemble, monkeypatch, tmp_path):
         assert "playing Test Radio Two" in mode.activity()
     finally:
         mode.stop()
+
+
+# ---- SatDump
+
+
+@pytest.mark.skipif(not shutil.which("satdump"), reason="SatDump isn't installed")
+def test_satdump_recording_without_a_satellite(tmp_path, monkeypatch):
+    import numpy as np
+    from sdr_toolkit import system as _system
+    monkeypatch.setattr(_system, "data_dir", lambda: tmp_path)
+    x = (np.random.default_rng(5).standard_normal(1024000 * 3) * 0.1).astype(np.complex64)
+    path = radio_signals.save(tmp_path / "noise.cu8", x)
+    mode, ev = run_radio("satdump", path, wait=120, file_rate=1024000)
+    rows = ism_rows(ev)
+    assert len(rows) == 1 and rows[0]["result"] == "no picture" and rows[0]["what"] == "recording", rows
+    assert not any(e.kind == "line" and e.style == "warn" for e in ev), [e.text for e in ev if e.kind == "line"]
+
+
+def test_satdump_needs_a_location_for_passes(monkeypatch):
+    from sdr_toolkit.modes.satdump import SatDumpMode
+    m = SatDumpMode()
+    m.values = dict(m.values, input="rtl", lat="", lon="")
+    monkeypatch.setattr(m, "bridge", lambda: None)
+    import shutil as _sh
+    if not _sh.which("satdump"):
+        pytest.skip("SatDump isn't installed")
+    with pytest.raises(RuntimeError, match="your location"):
+        m.command()
+    m.values = dict(m.values, lat="-27.7", lon="153.1", target="stdc")
+    cmd = m.command()
+    assert "--norad" not in cmd and cmd[cmd.index("--pipeline") + 1] == "inmarsat_std_c"
+    m.values = dict(m.values, target="meteor")
+    cmd = m.command()
+    assert cmd[cmd.index("--norad") + 1] == "57166,59051" and cmd[cmd.index("--source") + 1] == "rtlsdr"
+
+
+# ---- Radio astronomy
+
+
+def test_hydrogen_line_found_at_its_velocity(tmp_path):
+    import numpy as np
+    rate, secs = 2_400_000, 6
+    rng = np.random.default_rng(11)
+    n = rate * secs
+    x = (rng.standard_normal(n) + 1j * rng.standard_normal(n)) * 0.08
+    # Hydrogen 2% above the noise, 60 km/s wide, at +40 km/s (receding: below 1420.406 MHz).
+    f = np.fft.fftfreq(n, 1 / rate)
+    v = -f / 1420.405751e6 * 299792.458
+    X = np.fft.fft(x) * np.sqrt(1 + 0.02 * np.exp(-0.5 * ((v - 40) / 25) ** 2))
+    x = np.fft.ifft(X).astype(np.complex64)
+    path = radio_signals.save(tmp_path / "hi.cu8", x)
+    mode, ev = run_radio("hline", path, wait=120, file_rate=rate, every=3)
+    imgs = [e for e in ev if e.kind == "image"]
+    assert imgs and imgs[-1].image.shape == (420, 900, 3)
+    last = mode._last
+    assert abs(last["peak_v"] - 40) < 8 and 1.0 < last["peak"] < 3.5, (last["peak_v"], last["peak"])
+
+
+def test_meteor_pings(tmp_path):
+    import numpy as np
+    rate = 240000
+    rng = np.random.default_rng(12)
+    n = rate * 6
+    x = (rng.standard_normal(n) + 1j * rng.standard_normal(n)) * 0.05
+    t = np.arange(n) / rate
+    for start, dur, dop in ((1.0, 0.2, 300), (2.5, 0.6, -150), (4.2, 1.2, 50)):
+        sel = (t >= start) & (t < start + dur)
+        x[sel] += 0.2 * np.exp(2j * np.pi * (20000 + dop) * t[sel])
+    path = radio_signals.save(tmp_path / "pings.cu8", x.astype(np.complex64))
+    mode, ev = run_radio("meteors", path, file_rate=rate, file_offset=20000, threshold=10)
+    rows = [e.data for e in ev if e.kind == "row"]
+    assert len(rows) == 3, rows
+    durs = [float(r["duration"]) for r in rows]
+    assert all(abs(a - b) < 0.15 for a, b in zip(durs, (0.2, 0.6, 1.2))), durs
+    dops = [float(r["doppler"]) for r in rows]
+    assert all(abs(a - b) <= 240 for a, b in zip(dops, (300, -150, 50))), dops

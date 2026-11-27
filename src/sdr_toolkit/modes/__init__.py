@@ -11,6 +11,8 @@ from .fm_stations import FMStationsMode
 from .dab import DABMode
 from .sat_telemetry import SatTelemetryMode
 from .satellites import SatelliteMode
+from .satdump import SatDumpMode
+from .astro import HydrogenLineMode, MeteorScatterMode
 from .sondes import SondeMode
 from .morse import MorseMode
 from .ism import ISMMode
@@ -37,7 +39,7 @@ MODES = [
     ReceiverMode, FMStationsMode, DABMode, ADSBMode, AeroMode, NavaidMode, AISMode, DSCMode, Beacon406Mode, SondeMode, ISMMode, MetersMode, LoRaMode, LoRaFinderMode, ExplorerMode,
     DigitalVoiceMode,
     GPSFixMode,
-    SatelliteMode, SatTelemetryMode,
+    SatelliteMode, SatTelemetryMode, SatDumpMode, HydrogenLineMode, MeteorScatterMode,
 ]
 GROUPS = ["Text", "Digital (weak signal)", "Pictures", "Packet & paging", "Tones", "SDR", "Satellites"]
 # The groups that decode audio (from a WebSDR, a radio's speaker...): under one WebSDR branch in the window.

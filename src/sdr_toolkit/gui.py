@@ -1899,6 +1899,11 @@ class MainWindow(QMainWindow):
                 self.decoded_log.add(e.text)
                 if e.style != "pos":
                     self.logbook.add(self.mode.id, e.text)
+            elif e.kind == "file":                       # a picture or recording the mode made (SatDump's)
+                d = e.data or {}
+                if d.get("path"):
+                    self.logbook.add_file(self.mode.id, d.get("kind", "picture"), d["path"], d.get("title", ""),
+                                          d.get("info"))
             elif e.kind == "raw":
                 self.raw_log.add(e.text)
             elif e.kind == "points":
